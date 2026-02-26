@@ -1,0 +1,38 @@
+name: Build Windows EXE
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:   # 手動実行ボタン
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller pillow
+
+      - name: Generate icon
+        run: python build/create_icon.py win
+
+      - name: Build EXE
+        run: python -m PyInstaller davintelop_win.spec --noconfirm --clean
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DavinTelop-windows
+          path: dist/DavinTelop.exe
+          retention-days: 30

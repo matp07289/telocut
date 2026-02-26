@@ -1,0 +1,1 @@
+# DavinTelop コアモジュール
