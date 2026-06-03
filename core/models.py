@@ -1,4 +1,5 @@
 """テロップのデータモデル定義"""
+from __future__ import annotations
 import copy
 from dataclasses import dataclass, field, asdict
 from typing import Optional

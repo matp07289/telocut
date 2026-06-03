@@ -1,0 +1,411 @@
+"""スクリーンキャプチャ・ファイル監視ワーカースレッド (tkinter 向け queue ベース)"""
+from __future__ import annotations
+import os
+import time
+import queue
+import threading
+from pathlib import Path
+from typing import Optional
+
+try:
+    import mss as _mss_mod
+    HAS_MSS = True
+except ImportError:
+    HAS_MSS = False
+
+try:
+    from PIL import Image as _PILImage
+    HAS_PILLOW = True
+except ImportError:
+    HAS_PILLOW = False
+
+
+# ─────────────────────────────────────────────
+#  スクリーンキャプチャスレッド
+# ─────────────────────────────────────────────
+
+class ScreenCaptureThread(threading.Thread):
+    """指定画面領域を連続キャプチャして out_queue に ("frame", PIL.Image) を積む。"""
+
+    def __init__(self, out_queue: queue.Queue, fps: float = 15.0):
+        super().__init__(daemon=True)
+        self._q       = out_queue
+        self._fps     = float(fps)
+        self._region: Optional[dict] = None
+        self._running = False
+        self._lock    = threading.Lock()
+
+    def set_region(self, x: int, y: int, w: int, h: int):
+        with self._lock:
+            self._region = {"left": x, "top": y, "width": w, "height": h}
+
+    def clear_region(self):
+        with self._lock:
+            self._region = None
+
+    def set_fps(self, fps: float):
+        with self._lock:
+            self._fps = max(1.0, min(30.0, float(fps)))
+
+    def stop(self):
+        self._running = False
+
+    def run(self):
+        if not HAS_MSS:
+            self._q.put(("error", "mss が未インストールです\npip install mss"))
+            return
+        if not HAS_PILLOW:
+            self._q.put(("error", "Pillow が未インストールです"))
+            return
+
+        self._running = True
+        with _mss_mod.mss() as sct:
+            while self._running:
+                t0 = time.perf_counter()
+
+                with self._lock:
+                    region = dict(self._region) if self._region else None
+                    fps    = self._fps
+
+                if region and region["width"] > 0 and region["height"] > 0:
+                    try:
+                        shot = sct.grab(region)
+                        # BGRA → RGBA (numpy が使えるなら高速パス)
+                        try:
+                            import numpy as _np
+                            arr = _np.array(shot)[:, :, [2, 1, 0, 3]]
+                            img = _PILImage.fromarray(arr, "RGBA")
+                        except ImportError:
+                            img = _PILImage.frombytes(
+                                "RGBA", shot.size, bytes(shot.raw), "raw", "BGRA"
+                            )
+                        # キューを溜めすぎない
+                        while self._q.qsize() > 2:
+                            try:
+                                self._q.get_nowait()
+                            except queue.Empty:
+                                break
+                        self._q.put(("frame", img))
+                    except Exception as e:
+                        self._q.put(("error", f"キャプチャエラー: {e}"))
+
+                elapsed = time.perf_counter() - t0
+                remain  = 1.0 / fps - elapsed
+                if remain > 0:
+                    time.sleep(remain)
+
+
+# ─────────────────────────────────────────────
+#  単一ファイル監視スレッド (Photoshop PNG)
+# ─────────────────────────────────────────────
+
+class FileWatchThread(threading.Thread):
+    """単一ファイルの更新を監視して out_queue に ("frame", PIL.Image) を積む。"""
+
+    POLL = 0.15
+
+    def __init__(self, out_queue: queue.Queue):
+        super().__init__(daemon=True)
+        self._q:          queue.Queue  = out_queue
+        self._path:       Optional[str] = None
+        self._last_mtime: float        = 0.0
+        self._running:    bool         = False
+
+    def set_path(self, path: str):
+        self._path       = path
+        self._last_mtime = 0.0
+
+    def stop(self):
+        self._running = False
+
+    def run(self):
+        self._running = True
+        while self._running:
+            path = self._path
+            if path and os.path.isfile(path):
+                try:
+                    mtime = os.path.getmtime(path)
+                    if mtime != self._last_mtime:
+                        self._last_mtime = mtime
+                        time.sleep(0.05)   # 書き込み完了を待つ
+                        img = _PILImage.open(path).convert("RGBA")
+                        self._q.put(("frame", img))
+                        self._q.put(("status", "更新を検出"))
+                except Exception as e:
+                    self._q.put(("error", f"読込エラー: {e}"))
+            time.sleep(self.POLL)
+
+
+# ─────────────────────────────────────────────
+#  DavinTelop 出力フォルダ監視スレッド
+# ─────────────────────────────────────────────
+
+class DirWatchThread(threading.Thread):
+    """telop_*.png の変更を監視して out_queue に ("dir_changed", [path, ...]) を積む。"""
+
+    POLL = 0.5
+
+    def __init__(self, out_queue: queue.Queue):
+        super().__init__(daemon=True)
+        self._q:       queue.Queue  = out_queue
+        self._dir:     Optional[str] = None
+        self._mtimes:  dict         = {}
+        self._running: bool         = False
+
+    def set_dir(self, dir_path: str):
+        self._dir    = dir_path
+        self._mtimes = {}
+
+    def stop(self):
+        self._running = False
+
+    def run(self):
+        self._running = True
+        while self._running:
+            dir_path = self._dir
+            if dir_path and os.path.isdir(dir_path):
+                try:
+                    pngs = sorted(Path(dir_path).glob("telop_*.png"))
+                    changed = False
+                    for p in pngs:
+                        mtime = p.stat().st_mtime
+                        key   = str(p)
+                        if self._mtimes.get(key) != mtime:
+                            self._mtimes[key] = mtime
+                            changed = True
+                    if changed:
+                        self._q.put(("dir_changed", [str(p) for p in pngs]))
+                except Exception as e:
+                    self._q.put(("error", f"フォルダ監視エラー: {e}"))
+            time.sleep(self.POLL)
+
+
+# ─────────────────────────────────────────────
+#  NDI 受信スレッド
+# ─────────────────────────────────────────────
+
+try:
+    import NDIlib as _ndi
+    HAS_NDI = _ndi.initialize()
+    if not HAS_NDI:
+        _ndi = None
+except ImportError:
+    _ndi   = None
+    HAS_NDI = False
+
+# NDI Tools インストーラーの既知ダウンロード URL
+NDI_DOWNLOAD_URLS: dict[str, str] = {
+    "NDI 6 Tools (最新 / 推奨)":
+        "https://downloads.ndi.tv/Tools/NDI%206%20Tools.exe",
+    "NDI 5 Tools (旧バージョン)":
+        "https://downloads.ndi.tv/Tools/NDI%205%20Tools.exe",
+}
+NDI_TOOLS_PAGE = "https://ndi.video/tools/"
+
+# Windows での NDI Tools インストールパス候補
+_NDI_INSTALL_DIRS: list[str] = [
+    r"C:\Program Files\NDI\NDI 6 Tools",
+    r"C:\Program Files\NDI\NDI 5 Tools",
+    r"C:\Program Files\NDI\NDI 4 Tools",
+    r"C:\Program Files\NewTek\NDI 5 SDK",
+    r"C:\Program Files\NewTek\NDI 4 SDK",
+]
+
+
+def check_ndi_installation() -> dict:
+    """
+    NDI Tools のインストール状態を確認する。
+    返値:
+        {
+          "ndilib_ok":   bool  – NDIlib で initialize() が成功したか
+          "dll_found":   bool  – DLL ファイルが存在するか
+          "install_dir": str   – インストールフォルダ (見つかった場合)
+          "dll_path":    str   – DLL パス (見つかった場合)
+        }
+    """
+    info = {
+        "ndilib_ok":   HAS_NDI,
+        "dll_found":   False,
+        "install_dir": "",
+        "dll_path":    "",
+    }
+    import platform
+    if platform.system() != "Windows":
+        return info
+
+    for d in _NDI_INSTALL_DIRS:
+        dll = os.path.join(d, "Processing.NDI.Lib.x64.dll")
+        if os.path.exists(dll):
+            info["dll_found"]   = True
+            info["install_dir"] = d
+            info["dll_path"]    = dll
+            return info
+
+    # ndi-python バンドルの DLL を確認
+    try:
+        import NDIlib as _check_ndi
+        pkg_dir = os.path.dirname(_check_ndi.__file__)
+        bundled = os.path.join(pkg_dir, "Processing.NDI.Lib.x64.dll")
+        if os.path.exists(bundled):
+            info["dll_found"]   = True
+            info["install_dir"] = pkg_dir
+            info["dll_path"]    = bundled
+    except Exception:
+        pass
+
+    return info
+
+
+def scan_ndi_sources(timeout_ms: int = 3000) -> list[str]:
+    """
+    ネットワーク/ローカル上の NDI ソース名を検索して返す。
+    DaVinci Resolve や Premiere が NDI 出力していれば検出される。
+    """
+    if not HAS_NDI or _ndi is None:
+        return []
+    try:
+        finder = _ndi.find_create_v2()
+        _ndi.find_wait_for_sources(finder, timeout_ms)
+        sources = _ndi.find_get_current_sources(finder)
+        names = [s.ndi_name for s in sources] if sources else []
+        _ndi.find_destroy(finder)
+        return names
+    except Exception:
+        return []
+
+
+class NDIReceiverThread(threading.Thread):
+    """
+    NDI ソースを受信して out_queue に ("frame", PIL.Image) を積む。
+
+    Resolve / Premiere Pro が NDI 出力している場合にリアルタイム受信する。
+    使い方:
+        t = NDIReceiverThread(q, source_name="RESOLVE (Program)")
+        t.start()
+        # q から ("frame", PIL.Image RGBA) を取り出してプレビューに使う
+    """
+
+    TIMEOUT_MS = 100   # recv_capture_v2 タイムアウト (ms)
+
+    def __init__(self, out_queue: queue.Queue, source_name: str = ""):
+        super().__init__(daemon=True)
+        self._q           = out_queue
+        self._source_name = source_name
+        self._running     = False
+
+    def set_source(self, name: str):
+        self._source_name = name
+
+    def stop(self):
+        self._running = False
+
+    def run(self):
+        if not HAS_NDI or _ndi is None:
+            self._q.put(("error",
+                "NDIlib が未インストールまたは初期化失敗\n"
+                "NDI Tools をインストール後に再起動してください\n"
+                "https://ndi.video/tools/"))
+            return
+        if not HAS_PILLOW:
+            self._q.put(("error", "Pillow が未インストールです"))
+            return
+
+        self._running = True
+        self._q.put(("status", f"NDI ソース検索中: {self._source_name}"))
+
+        # ── ソース検索 (find_destroy を finally で保証) ───
+        target = None
+        for _ in range(10):      # 最大 10 秒待機
+            if not self._running:
+                return             # ← 以前はここで finder をリークしていた
+            finder = _ndi.find_create_v2()
+            try:
+                _ndi.find_wait_for_sources(finder, 1000)
+                sources = _ndi.find_get_current_sources(finder)
+                if sources:
+                    if self._source_name:
+                        for s in sources:
+                            if self._source_name.lower() in s.ndi_name.lower():
+                                target = s
+                                break
+                    if target is None:
+                        target = sources[0]     # 名前未指定なら最初のソース
+            finally:
+                _ndi.find_destroy(finder)       # 必ず解放
+            if target:
+                break
+            time.sleep(1.0)
+
+        if target is None:
+            self._q.put(("error", f"NDI ソースが見つかりません: {self._source_name}"))
+            return
+
+        self._q.put(("status", f"NDI 接続: {target.ndi_name}"))
+
+        # ── レシーバー作成 ────────────────────────────
+        recv_desc = _ndi.RecvCreateV3()
+        recv_desc.source_to_connect_to = target
+        recv_desc.color_format         = _ndi.RECV_COLOR_FORMAT_RGBX_RGBA
+        recv_desc.bandwidth            = _ndi.RECV_BANDWIDTH_HIGHEST
+        recv_desc.allow_video_fields   = False
+        recv = _ndi.recv_create_v3(recv_desc)
+        if recv is None:
+            self._q.put(("error", "NDI レシーバー作成失敗"))
+            return
+
+        # ── フレーム受信ループ ────────────────────────
+        frame_count = 0
+        fps_time    = time.time()
+
+        try:
+            while self._running:
+                t, video, audio, meta = _ndi.recv_capture_v2(recv, self.TIMEOUT_MS)
+
+                if t == _ndi.FRAME_TYPE_VIDEO and video is not None:
+                    img = None
+                    try:
+                        # recv_free_video_v2 を finally で保証してフレームバッファリークを防ぐ
+                        try:
+                            import numpy as _np
+                            arr = _np.copy(video.data)   # copy してから free 可能にする
+                            img = _PILImage.fromarray(arr, "RGBA")
+                        except (ImportError, Exception):
+                            # numpy なしフォールバック
+                            w, h = video.xres, video.yres
+                            raw  = bytes(video.data)     # bytes に変換してから free
+                            img  = _PILImage.frombytes("RGBA", (w, h), raw)
+                    except Exception:
+                        pass   # img = None のまま → 以降でスキップ
+                    finally:
+                        _ndi.recv_free_video_v2(recv, video)   # 例外でも必ず解放
+
+                    if img is None:
+                        continue
+
+                    # キュー溢れ防止
+                    while self._q.qsize() > 3:
+                        try:
+                            self._q.get_nowait()
+                        except queue.Empty:
+                            break
+                    self._q.put(("frame", img))
+
+                    frame_count += 1
+                    now = time.time()
+                    if now - fps_time >= 1.0:
+                        fps = frame_count / (now - fps_time)
+                        self._q.put(("status", f"NDI 受信中  {fps:.1f} fps  {target.ndi_name}"))
+                        frame_count = 0
+                        fps_time    = now
+
+                elif t == _ndi.FRAME_TYPE_ERROR:
+                    self._q.put(("error", "NDI ストリームエラー"))
+                    break
+
+                elif t == getattr(_ndi, 'FRANE_TYPE_STATUS_CHANGE',   # ndi-python 現行のタイポ
+                                  getattr(_ndi, 'FRAME_TYPE_STATUS_CHANGE', None)):
+                    # ライブラリ側のタイポが修正された場合も両方に対応
+                    self._q.put(("status", "NDI 接続状態変化"))
+
+        finally:
+            _ndi.recv_destroy(recv)

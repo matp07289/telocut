@@ -1,4 +1,5 @@
 """プリセット管理 (JSON形式で保存/読み込み)"""
+from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 import json

@@ -1,14 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
-# DavinTelop Windows PyInstaller spec
+# DavinTelop Windows PyInstaller spec (PyInstaller 6.x 対応)
 # 生成物: dist\DavinTelop.exe (onefile)
-
-block_cipher = None
 
 a = Analysis(
     ['main.py'],
     pathex=['.'],
     binaries=[],
-    datas=[],
+    datas=[
+        # sv_ttk テーマファイル (TCL/TK)
+        (r'C:\Users\mizuk\AppData\Roaming\Python\Python38\site-packages\sv_ttk',
+         'sv_ttk'),
+    ],
     hiddenimports=[
         # Pillow
         'PIL',
@@ -41,7 +43,25 @@ a = Analysis(
         'json',
         'pathlib',
         'dataclasses',
+        'importlib.util',
         'xml.etree.ElementTree',
+        # テーマ
+        'sv_ttk',
+        'darkdetect',
+        # VoiceVox / LipSync
+        'core.voicevox',
+        'core.lipsync',
+        'psd_tools',
+        'psd_tools.api',
+        'psd_tools.constants',
+        # NDI
+        'NDIlib',
+        # 合成プレビュー
+        'core.capture',
+        'mss',
+        'mss.base',
+        'mss.windows',
+        'numpy',
     ],
     excludes=[
         'DaVinciResolveScript',
@@ -62,11 +82,10 @@ a = Analysis(
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
-    cipher=block_cipher,
     noarchive=False,
 )
 
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
@@ -88,5 +107,4 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='DavinTelop.ico',
-    version_file=None,
 )

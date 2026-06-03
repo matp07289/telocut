@@ -1,4 +1,5 @@
 """Pillowを使ったテロップ画像レンダリング"""
+from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Optional
@@ -12,8 +13,19 @@ except ImportError:
 from .models import DesignSettings
 
 
-# macOSの日本語フォント候補パス
-_MACOS_FONT_CANDIDATES = [
+# フォントフォールバック候補 (macOS / Windows 共通)
+_FONT_FALLBACK_CANDIDATES = [
+    # Windows 日本語フォント
+    "C:/Windows/Fonts/meiryo.ttc",
+    "C:/Windows/Fonts/meiryob.ttc",
+    "C:/Windows/Fonts/YuGothM.ttc",
+    "C:/Windows/Fonts/YuGothB.ttc",
+    "C:/Windows/Fonts/YuGothL.ttc",
+    "C:/Windows/Fonts/msgothic.ttc",
+    "C:/Windows/Fonts/msmincho.ttc",
+    "C:/Windows/Fonts/yugothic.ttf",
+    "C:/Windows/Fonts/yumin.ttf",
+    # macOS 日本語フォント
     "/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc",
     "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
     "/System/Library/Fonts/ヒラギノ角ゴシック W9.ttc",
@@ -27,13 +39,22 @@ _MACOS_FONT_CANDIDATES = [
 def get_system_fonts() -> list[tuple[str, str]]:
     """
     システムフォントを検索して (表示名, パス) のリストを返す。
-    日本語フォントを優先表示する。
+    Windows / macOS 両対応。日本語フォントを優先表示する。
     """
-    font_dirs = [
-        Path("/System/Library/Fonts"),
-        Path("/Library/Fonts"),
-        Path.home() / "Library/Fonts",
-    ]
+    import platform
+    font_dirs: list[Path] = []
+
+    if platform.system() == "Windows":
+        font_dirs = [
+            Path("C:/Windows/Fonts"),
+            Path.home() / "AppData/Local/Microsoft/Windows/Fonts",
+        ]
+    else:
+        font_dirs = [
+            Path("/System/Library/Fonts"),
+            Path("/Library/Fonts"),
+            Path.home() / "Library/Fonts",
+        ]
 
     fonts: list[tuple[str, str]] = []
     seen: set[str] = set()
@@ -48,9 +69,13 @@ def get_system_fonts() -> list[tuple[str, str]]:
                     fonts.append((p.stem, str(p)))
 
     # 日本語フォントを先頭に
-    jp_keywords = ["ヒラギノ", "游", "YuGo", "YuMin", "Hiragino", "Noto", "GenEi", "M PLUS"]
-    jp_fonts = [f for f in fonts if any(k in f[0] for k in jp_keywords)]
-    other_fonts = [f for f in fonts if not any(k in f[0] for k in jp_keywords)]
+    jp_keywords = [
+        "ヒラギノ", "游", "メイリオ", "明朝", "ゴシック",
+        "YuGo", "YuMin", "Hiragino", "Meiryo", "Noto", "GenEi", "M PLUS",
+        "msgothic", "msmincho", "yugoth", "yumin",
+    ]
+    jp_fonts = [f for f in fonts if any(k.lower() in f[0].lower() for k in jp_keywords)]
+    other_fonts = [f for f in fonts if not any(k.lower() in f[0].lower() for k in jp_keywords)]
 
     return jp_fonts + other_fonts
 
@@ -68,7 +93,7 @@ def load_font(font_path: str, size: int) -> "ImageFont.FreeTypeFont":
             pass
 
     # フォールバック: システムの日本語フォント
-    for path in _MACOS_FONT_CANDIDATES:
+    for path in _FONT_FALLBACK_CANDIDATES:
         if Path(path).exists():
             try:
                 return ImageFont.truetype(path, size)
