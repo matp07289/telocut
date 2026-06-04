@@ -2797,6 +2797,12 @@ class DavinTelopApp(tk.Tk):
             self._schedule_telop_pv_update()
 
     def _schedule_telop_pv_update(self):
+        # プレビューウィンドウ（とキャンバス）が無いときは何もしない
+        win = getattr(self, '_telop_pv_win', None)
+        if win is None or not win.winfo_exists():
+            return
+        if not hasattr(self, '_telop_pv_canvas'):
+            return
         if not self._telop_pv_pending:
             self._telop_pv_pending = True
             self.after(120, self._do_telop_pv_update)
@@ -2804,6 +2810,15 @@ class DavinTelopApp(tk.Tk):
     def _do_telop_pv_update(self):
         self._telop_pv_pending = False
         if not PILLOW_OK:
+            return
+        # ウィンドウが閉じられている場合はスキップ
+        win = getattr(self, '_telop_pv_win', None)
+        if win is None or not win.winfo_exists() or not hasattr(self, '_telop_pv_canvas'):
+            return
+        try:
+            if not self._telop_pv_canvas.winfo_exists():
+                return
+        except tk.TclError:
             return
         entry = self._telop_pv_entry
         canvas = self._telop_pv_canvas
@@ -3329,7 +3344,6 @@ class DavinTelopApp(tk.Tk):
         self._comp_bg_monitor_combo.bind(
             '<<ComboboxSelected>>', lambda e: self._on_monitor_selected())
         self._comp_monitors: list = []
-        self._refresh_monitors()
 
         reg_row = ttk.Frame(self._bg_screen_frame)
         reg_row.pack(fill='x', **pad)
@@ -3339,6 +3353,9 @@ class DavinTelopApp(tk.Tk):
         self._comp_bg_region_lbl = tk.StringVar(value="  未設定")
         ttk.Label(reg_row, textvariable=self._comp_bg_region_lbl,
                   foreground='gray', font=('', 8)).pack(side='left')
+
+        # 区画ラベル作成後にモニター一覧を初期化（_on_monitor_selected が参照するため）
+        self._refresh_monitors()
 
         fps_row = ttk.Frame(self._bg_screen_frame)
         fps_row.pack(fill='x', **pad)
@@ -3544,8 +3561,8 @@ class DavinTelopApp(tk.Tk):
             return
         m = self._comp_monitors[idx]
         self._comp_bg_region = (m["left"], m["top"], m["width"], m["height"])
-        self._comp_bg_region_lbl.set(
-            f"  {m['name']}")
+        if hasattr(self, '_comp_bg_region_lbl'):
+            self._comp_bg_region_lbl.set(f"  {m['name']}")
         if self._comp_bg_thread and self._comp_bg_thread.is_alive():
             self._comp_bg_thread.set_region(*self._comp_bg_region)
 
@@ -3852,7 +3869,13 @@ class DavinTelopApp(tk.Tk):
     # ─────────────────────────────────────────────
 
     def _refresh_template_list(self):
-        self._template_lb.delete(0, 'end')
+        # テンプレートウィンドウが開いていないときは何もしない
+        if not hasattr(self, '_template_lb'):
+            return
+        try:
+            self._template_lb.delete(0, 'end')
+        except tk.TclError:
+            return
         for name in self.preset_manager.list_presets():
             self._template_lb.insert('end', name)
 
@@ -3860,6 +3883,11 @@ class DavinTelopApp(tk.Tk):
         self._schedule_template_pv_update()
 
     def _schedule_template_pv_update(self):
+        win = getattr(self, '_template_win', None)
+        if win is None or not win.winfo_exists():
+            return
+        if not hasattr(self, '_template_pv_canvas'):
+            return
         if not self._template_pv_pending:
             self._template_pv_pending = True
             self.after(120, self._do_template_pv_update)
@@ -3867,6 +3895,14 @@ class DavinTelopApp(tk.Tk):
     def _do_template_pv_update(self):
         self._template_pv_pending = False
         if not PILLOW_OK:
+            return
+        win = getattr(self, '_template_win', None)
+        if win is None or not win.winfo_exists() or not hasattr(self, '_template_pv_canvas'):
+            return
+        try:
+            if not self._template_pv_canvas.winfo_exists():
+                return
+        except tk.TclError:
             return
         canvas = self._template_pv_canvas
         cw = canvas.winfo_width()
