@@ -2774,18 +2774,11 @@ class DavinTelopApp(tk.Tk):
 
     def show_telop_preview(self, entry: TelopEntry):
         self._telop_pv_entry = entry
-        # ウィンドウが存在しない場合のみ開く（再帰防止フラグ付き）
-        if getattr(self, '_opening_telop_pv_win', False):
-            self._schedule_telop_pv_update()
-            return
+        # プレビューウィンドウは自動起動しない。
+        # 既に開いている場合のみ内容を更新する。
         win = getattr(self, '_telop_pv_win', None)
-        if win is None or not win.winfo_exists():
-            self._opening_telop_pv_win = True
-            try:
-                self._toggle_telop_preview_window()
-            finally:
-                self._opening_telop_pv_win = False
-        self._schedule_telop_pv_update()
+        if win is not None and win.winfo_exists():
+            self._schedule_telop_pv_update()
 
     def _schedule_telop_pv_update(self):
         if not self._telop_pv_pending:
