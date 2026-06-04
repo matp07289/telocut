@@ -307,18 +307,34 @@ def scan_ndi_sources(timeout_ms: int = 3000) -> list[str]:
     """
     ネットワーク/ローカル上の NDI ソース名を検索して返す。
     DaVinci Resolve や Premiere が NDI 出力していれば検出される。
+
+    注意: ndi-python の find_wait_for_sources は呼び出し中 GIL を保持するため、
+    長いタイムアウトで一括待機すると呼び出し元スレッドがブロックされる。
+    短い待機を繰り返し、間に sleep を挟んで GIL を解放する。
     """
     if not HAS_NDI or _ndi is None:
         return []
+    finder = None
     try:
         finder = _ndi.find_create_v2()
-        _ndi.find_wait_for_sources(finder, timeout_ms)
-        sources = _ndi.find_get_current_sources(finder)
-        names = [s.ndi_name for s in sources] if sources else []
-        _ndi.find_destroy(finder)
+        deadline = time.time() + timeout_ms / 1000.0
+        names: list[str] = []
+        while time.time() < deadline:
+            _ndi.find_wait_for_sources(finder, 100)   # 短く待つ（GIL保持を短縮）
+            sources = _ndi.find_get_current_sources(finder)
+            if sources:
+                names = [s.ndi_name for s in sources]
+                break
+            time.sleep(0.03)   # GIL を解放して呼び出し元を進ませる
         return names
     except Exception:
         return []
+    finally:
+        if finder is not None:
+            try:
+                _ndi.find_destroy(finder)
+            except Exception:
+                pass
 
 
 class NDIReceiverThread(threading.Thread):
@@ -360,14 +376,16 @@ class NDIReceiverThread(threading.Thread):
         self._running = True
         self._q.put(("status", f"NDI ソース検索中: {self._source_name}"))
 
-        # ── ソース検索 (find_destroy を finally で保証) ───
+        # ── ソース検索 ───────────────────────────────
+        # find_wait_for_sources は GIL を保持するため短時間（200ms）に分割し、
+        # 間に sleep を入れて呼び出し元（GUI）スレッドを進ませる。
         target = None
-        for _ in range(10):      # 最大 10 秒待機
-            if not self._running:
-                return             # ← 以前はここで finder をリークしていた
-            finder = _ndi.find_create_v2()
-            try:
-                _ndi.find_wait_for_sources(finder, 1000)
+        finder = _ndi.find_create_v2()
+        try:
+            for _ in range(100):   # 100ms * 100 = 最大 ~10 秒
+                if not self._running:
+                    return
+                _ndi.find_wait_for_sources(finder, 100)
                 sources = _ndi.find_get_current_sources(finder)
                 if sources:
                     if self._source_name:
@@ -377,11 +395,11 @@ class NDIReceiverThread(threading.Thread):
                                 break
                     if target is None:
                         target = sources[0]     # 名前未指定なら最初のソース
-            finally:
-                _ndi.find_destroy(finder)       # 必ず解放
-            if target:
-                break
-            time.sleep(1.0)
+                if target:
+                    break
+                time.sleep(0.05)   # GIL 解放
+        finally:
+            _ndi.find_destroy(finder)
 
         if target is None:
             self._q.put(("error", f"NDI ソースが見つかりません: {self._source_name}"))
@@ -401,43 +419,60 @@ class NDIReceiverThread(threading.Thread):
             return
 
         # ── フレーム受信ループ ────────────────────────
+        # recv_capture_v2 は GIL を保持するためタイムアウトを短くし、
+        # 各反復で sleep を入れて GUI スレッドに GIL を渡す（フリーズ防止）。
+        # プレビュー用途なので受信レートを ~20fps に制限して CPU 負荷も抑える。
         frame_count = 0
         fps_time    = time.time()
+        status_typo = getattr(_ndi, 'FRANE_TYPE_STATUS_CHANGE',
+                              getattr(_ndi, 'FRAME_TYPE_STATUS_CHANGE', None))
+        min_interval = 1.0 / 20.0   # 最大 20fps
+        last_emit    = 0.0
 
         try:
             while self._running:
-                t, video, audio, meta = _ndi.recv_capture_v2(recv, self.TIMEOUT_MS)
+                loop_start = time.time()
+                t, video, audio, meta = _ndi.recv_capture_v2(recv, 30)
 
                 if t == _ndi.FRAME_TYPE_VIDEO and video is not None:
-                    img = None
-                    try:
-                        # recv_free_video_v2 を finally で保証してフレームバッファリークを防ぐ
+                    # レート制限: 直近の送出から min_interval 未満なら破棄
+                    if loop_start - last_emit < min_interval:
+                        _ndi.recv_free_video_v2(recv, video)
+                    else:
+                        img = None
                         try:
-                            import numpy as _np
-                            arr = _np.copy(video.data)   # copy してから free 可能にする
-                            img = _PILImage.fromarray(arr, "RGBA")
-                        except (ImportError, Exception):
-                            # numpy なしフォールバック
-                            w, h = video.xres, video.yres
-                            raw  = bytes(video.data)     # bytes に変換してから free
-                            img  = _PILImage.frombytes("RGBA", (w, h), raw)
-                    except Exception:
-                        pass   # img = None のまま → 以降でスキップ
-                    finally:
-                        _ndi.recv_free_video_v2(recv, video)   # 例外でも必ず解放
+                            try:
+                                import numpy as _np
+                                arr = _np.copy(video.data)
+                                img = _PILImage.fromarray(arr, "RGBA")
+                            except (ImportError, Exception):
+                                w, h = video.xres, video.yres
+                                raw  = bytes(video.data)
+                                img  = _PILImage.frombytes("RGBA", (w, h), raw)
+                        except Exception:
+                            pass
+                        finally:
+                            _ndi.recv_free_video_v2(recv, video)
 
-                    if img is None:
-                        continue
+                        if img is not None:
+                            # プレビュー用に縮小（4K をそのまま GUI に渡すと重い）
+                            if img.width > 1280:
+                                ratio = 1280 / img.width
+                                try:
+                                    img = img.resize(
+                                        (1280, max(1, int(img.height * ratio))),
+                                        _PILImage.BILINEAR)
+                                except Exception:
+                                    pass
+                            while self._q.qsize() > 2:
+                                try:
+                                    self._q.get_nowait()
+                                except queue.Empty:
+                                    break
+                            self._q.put(("frame", img))
+                            last_emit = loop_start
+                            frame_count += 1
 
-                    # キュー溢れ防止
-                    while self._q.qsize() > 3:
-                        try:
-                            self._q.get_nowait()
-                        except queue.Empty:
-                            break
-                    self._q.put(("frame", img))
-
-                    frame_count += 1
                     now = time.time()
                     if now - fps_time >= 1.0:
                         fps = frame_count / (now - fps_time)
@@ -445,14 +480,31 @@ class NDIReceiverThread(threading.Thread):
                         frame_count = 0
                         fps_time    = now
 
+                elif t == _ndi.FRAME_TYPE_AUDIO and audio is not None:
+                    # 音声フレームは使わないが必ず解放（リーク防止）
+                    try:
+                        _ndi.recv_free_audio_v2(recv, audio)
+                    except Exception:
+                        pass
+
+                elif t == _ndi.FRAME_TYPE_METADATA and meta is not None:
+                    try:
+                        _ndi.recv_free_metadata(recv, meta)
+                    except Exception:
+                        pass
+
                 elif t == _ndi.FRAME_TYPE_ERROR:
                     self._q.put(("error", "NDI ストリームエラー"))
                     break
 
-                elif t == getattr(_ndi, 'FRANE_TYPE_STATUS_CHANGE',   # ndi-python 現行のタイポ
-                                  getattr(_ndi, 'FRAME_TYPE_STATUS_CHANGE', None)):
-                    # ライブラリ側のタイポが修正された場合も両方に対応
+                elif status_typo is not None and t == status_typo:
                     self._q.put(("status", "NDI 接続状態変化"))
 
+                # GIL を解放して GUI スレッドを進ませる（フリーズ防止の要）
+                time.sleep(0.01)
+
         finally:
-            _ndi.recv_destroy(recv)
+            try:
+                _ndi.recv_destroy(recv)
+            except Exception:
+                pass
