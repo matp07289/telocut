@@ -45,6 +45,7 @@ a = Analysis(
         'dataclasses',
         'importlib.util',
         'xml.etree.ElementTree',
+        'faulthandler',
         # テーマ
         'sv_ttk',
         'darkdetect',

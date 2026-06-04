@@ -5368,7 +5368,55 @@ def _enable_dpi_awareness():
         pass
 
 
+_LOG_DIR  = Path.home() / ".davintelop"
+_LOG_PATH = _LOG_DIR / "crash.log"
+
+
+def _setup_crash_logging():
+    """例外と C 層のクラッシュ(segfault)をログファイルに記録する。
+    windowed EXE では標準エラーが見えないため、原因特定に必須。"""
+    import datetime, traceback, threading
+    try:
+        _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return
+
+    def _write(header: str, text: str):
+        try:
+            with open(_LOG_PATH, "a", encoding="utf-8") as f:
+                ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"\n===== {ts}  {header} =====\n{text}\n")
+        except Exception:
+            pass
+
+    # C 層クラッシュ(segfault 等)のネイティブスタックをダンプ
+    try:
+        import faulthandler
+        fh = open(_LOG_PATH, "a", encoding="utf-8")
+        faulthandler.enable(file=fh, all_threads=True)
+        _write("session", "起動: faulthandler 有効")
+    except Exception:
+        pass
+
+    # Python 未捕捉例外
+    def _excepthook(exc_type, exc_value, exc_tb):
+        _write("uncaught exception",
+               "".join(traceback.format_exception(exc_type, exc_value, exc_tb)))
+    sys.excepthook = _excepthook
+
+    # スレッド内例外 (Python 3.8+)
+    try:
+        def _threadhook(args):
+            _write(f"thread exception ({args.thread.name})",
+                   "".join(traceback.format_exception(
+                       args.exc_type, args.exc_value, args.exc_traceback)))
+        threading.excepthook = _threadhook
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
+    _setup_crash_logging()
     _enable_dpi_awareness()
 
     if not PILLOW_OK:
@@ -5376,5 +5424,26 @@ if __name__ == "__main__":
         print("  pip install Pillow  を実行してください。")
         print("  PNG書き出し・プレビュー機能が無効になります。\n")
 
-    app = DavinTelopApp()
-    app.mainloop()
+    try:
+        app = DavinTelopApp()
+        # tkinter コールバック内例外もログに記録
+        import traceback as _tb
+        def _report_cb_exc(exc, val, tb):
+            try:
+                with open(_LOG_PATH, "a", encoding="utf-8") as f:
+                    import datetime as _dt
+                    f.write(f"\n===== {_dt.datetime.now():%Y-%m-%d %H:%M:%S}  tk callback =====\n")
+                    f.write("".join(_tb.format_exception(exc, val, tb)) + "\n")
+            except Exception:
+                pass
+        app.report_callback_exception = _report_cb_exc
+        app.mainloop()
+    except Exception:
+        import traceback as _tb
+        try:
+            with open(_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write("\n===== FATAL (mainloop) =====\n")
+                f.write(_tb.format_exc() + "\n")
+        except Exception:
+            pass
+        raise
