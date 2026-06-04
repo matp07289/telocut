@@ -409,13 +409,21 @@ class NDIReceiverThread(threading.Thread):
 
         # ── レシーバー作成 ────────────────────────────
         recv_desc = _ndi.RecvCreateV3()
-        recv_desc.source_to_connect_to = target
-        recv_desc.color_format         = _ndi.RECV_COLOR_FORMAT_RGBX_RGBA
-        recv_desc.bandwidth            = _ndi.RECV_BANDWIDTH_HIGHEST
-        recv_desc.allow_video_fields   = False
+        recv_desc.color_format       = _ndi.RECV_COLOR_FORMAT_RGBX_RGBA
+        recv_desc.bandwidth          = _ndi.RECV_BANDWIDTH_HIGHEST
+        recv_desc.allow_video_fields = False
         recv = _ndi.recv_create_v3(recv_desc)
         if recv is None:
             self._q.put(("error", "NDI レシーバー作成失敗"))
+            return
+
+        # ndi-python では descriptor の source_to_connect_to だけでは接続されない。
+        # 明示的に recv_connect を呼ぶ必要がある（公式サンプル準拠）。
+        try:
+            _ndi.recv_connect(recv, target)
+        except Exception as e:
+            self._q.put(("error", f"NDI 接続失敗: {e}"))
+            _ndi.recv_destroy(recv)
             return
 
         # ── フレーム受信ループ ────────────────────────
@@ -441,16 +449,22 @@ class NDIReceiverThread(threading.Thread):
                     else:
                         img = None
                         try:
+                            import numpy as _np
+                            arr = _np.array(video.data)   # (H, W, 4) RGBX/RGBA
+                            # 背景映像は不透明として扱う。RGBX の X(4ch目) は
+                            # パディングで 0 のことがあり、そのまま RGBA にすると
+                            # 完全透明になり表示されない → RGB(先頭3ch) のみ使用。
+                            if arr.ndim == 3 and arr.shape[2] >= 3:
+                                rgb = _np.ascontiguousarray(arr[:, :, :3])
+                                img = _PILImage.fromarray(rgb, "RGB")
+                        except Exception:
+                            # numpy 不可時のフォールバック（RGBA→RGB変換）
                             try:
-                                import numpy as _np
-                                arr = _np.copy(video.data)
-                                img = _PILImage.fromarray(arr, "RGBA")
-                            except (ImportError, Exception):
                                 w, h = video.xres, video.yres
                                 raw  = bytes(video.data)
-                                img  = _PILImage.frombytes("RGBA", (w, h), raw)
-                        except Exception:
-                            pass
+                                img  = _PILImage.frombytes("RGBA", (w, h), raw).convert("RGB")
+                            except Exception:
+                                img = None
                         finally:
                             _ndi.recv_free_video_v2(recv, video)
 
