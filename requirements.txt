@@ -5,3 +5,4 @@ sv-ttk
 darkdetect
 psd-tools>=1.9
 ndi-python
+pyaaf2>=1.7

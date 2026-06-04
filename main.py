@@ -33,6 +33,11 @@ from core.exporter import (import_csv, export_png, export_srt, export_fcpxml,
                             export_resolve_script, ResolveConnector)
 
 try:
+    from core.exporter import export_aaf, HAS_AAF2
+except ImportError:
+    HAS_AAF2 = False
+
+try:
     from core.capture import ScreenCaptureThread, FileWatchThread, DirWatchThread
     HAS_CAPTURE = True
 except ImportError:
@@ -2492,6 +2497,7 @@ class DavinTelopApp(tk.Tk):
         export_menu.add_command(label="PNG を書き出し...", command=self.export_png)
         export_menu.add_command(label="SRT を書き出し...", command=self.export_srt)
         export_menu.add_command(label="FCPxml を書き出し...", command=self.export_fcpxml)
+        export_menu.add_command(label="AAF を書き出し (Avid)...", command=self.export_aaf)
         export_menu.add_separator()
         export_menu.add_command(label="🔊 VoiceVox 音声生成...", command=self.export_voicevox)
         export_menu.add_command(label="🎭 口パク生成...",          command=self.export_lipsync)
@@ -3888,6 +3894,7 @@ class DavinTelopApp(tk.Tk):
         ttk.Button(bar, text="PNG 書き出し", command=self.export_png).pack(side='left', padx=4)
         ttk.Button(bar, text="SRT 書き出し", command=self.export_srt).pack(side='left', padx=4)
         ttk.Button(bar, text="FCPxml 書き出し", command=self.export_fcpxml).pack(side='left', padx=4)
+        ttk.Button(bar, text="AAF 書き出し", command=self.export_aaf).pack(side='left', padx=4)
         ttk.Checkbutton(bar, text="ファイル名にテキスト",
                         variable=self._include_text_in_filename,
                         command=self._save_app_config).pack(side='left', padx=(2, 0))
@@ -4786,6 +4793,70 @@ class DavinTelopApp(tk.Tk):
                                 "DaVinci Resolve: タイムライン > インポート > タイムライン... から読み込めます。")
         except Exception as ex:
             messagebox.showerror("エラー", f"FCPxmlの書き出しに失敗しました:\n{ex}")
+
+    # ─── AAF 書き出し (Avid Media Composer) ──────
+
+    def export_aaf(self):
+        if not self.telop_list:
+            messagebox.showwarning("AAF書き出し", "テロップがありません。")
+            return
+        if not HAS_AAF2:
+            messagebox.showerror(
+                "AAF書き出し",
+                "pyaaf2 がインストールされていません。\n"
+                "pip install pyaaf2 を実行してください。")
+            return
+        if not PILLOW_OK:
+            messagebox.showerror("エラー", "Pillowをインストールしてください:\npip install Pillow")
+            return
+
+        if not messagebox.askyesno(
+            "AAF書き出し (Avid Media Composer)",
+            "AAFにはPNG画像への参照が含まれます。\n"
+            "PNGを同じフォルダに書き出してから AAF を生成します。\n\n"
+            "Avid では「ファイル > 入力 > AAF」または\n"
+            "ビンへのドラッグ&ドロップで取り込めます。\n\n"
+            "続行しますか？"
+        ):
+            return
+
+        png_dir = filedialog.askdirectory(title="PNGを書き出すフォルダを選択")
+        if not png_dir:
+            return
+
+        path = filedialog.asksaveasfilename(
+            title="AAFファイルを保存",
+            defaultextension=".aaf",
+            filetypes=[("AAF", "*.aaf")],
+        )
+        if not path:
+            return
+
+        self._run_with_progress(
+            "AAF書き出し中...",
+            lambda cb: self._do_export_aaf(png_dir, path, cb))
+
+    def _do_export_aaf(self, png_dir: str, aaf_path: str, callback):
+        s   = self._collect_design()
+        inc = self._include_text_in_filename.get()
+        # PNG を先に書き出し（AAF が参照する）
+        png_paths = export_png(self.telop_list, s, png_dir, callback=callback,
+                               include_text_in_filename=inc)
+        export_aaf(
+            [e for e in self.telop_list if e.enabled],
+            png_paths, aaf_path, s, callback=callback)
+
+        def _finish():
+            self._progress_var.set(f"AAFを書き出しました: {Path(aaf_path).name}")
+            messagebox.showinfo(
+                "AAF書き出し完了",
+                f"AAFを書き出しました:\n{aaf_path}\n\n"
+                "【Avid Media Composer での取り込み】\n"
+                "1. ファイル > 入力 > AAF を選択\n"
+                "   （またはビンへドラッグ&ドロップ）\n"
+                "2. 参照されたPNGをインポート/リンク\n"
+                "3. シーケンスをタイムラインに配置")
+        self.after(0, _finish)
 
     # ─── VoiceVox 音声生成 ──────────────────────
 

@@ -298,6 +298,136 @@ def export_fcpxml(
 
 
 # ─────────────────────────────────────────────
+#  AAF 書き出し (Avid Media Composer 対応)
+# ─────────────────────────────────────────────
+
+try:
+    import aaf2 as _aaf2
+    HAS_AAF2 = True
+except ImportError:
+    _aaf2 = None
+    HAS_AAF2 = False
+
+
+def _aaf_edit_rate(fps: float):
+    """fps を AAF の編集レート（分数）に変換する。"""
+    from fractions import Fraction
+    if abs(fps - 23.976) < 0.01:
+        return Fraction(24000, 1001)
+    if abs(fps - 29.97) < 0.01:
+        return Fraction(30000, 1001)
+    if abs(fps - 59.94) < 0.01:
+        return Fraction(60000, 1001)
+    # 整数 fps はそのまま
+    if abs(fps - round(fps)) < 0.01:
+        return int(round(fps))
+    return Fraction(round(fps * 1000), 1000)
+
+
+def export_aaf(
+    entries: list[TelopEntry],
+    png_paths: list[str],
+    output_path: str,
+    settings: DesignSettings,
+    callback: Optional[Callable[[int, int, str], None]] = None,
+) -> None:
+    """
+    PNG 参照付き AAF を書き出す（Avid Media Composer 対応）。
+
+    各テロップを ImportDescriptor + NetworkLocator で PNG ファイルへ
+    リンクした SourceMob として作成し、CompositionMob のビデオトラックに
+    タイムコード順で配置する。
+
+    Avid Media Composer での取り込み:
+      ファイル > 入力 > AAF/OMF を選択、もしくはビンへドラッグ&ドロップ。
+      リンク先 PNG はインポート（取り込み）またはリンクで取り込まれる。
+    """
+    if not HAS_AAF2:
+        raise RuntimeError(
+            "pyaaf2 がインストールされていません。\n"
+            "pip install pyaaf2 を実行してください。")
+
+    fps        = settings.frame_rate
+    edit_rate  = _aaf_edit_rate(fps)
+    W, H       = settings.canvas_width, settings.canvas_height
+
+    enabled = [e for e in entries if e.enabled]
+
+    # (entry, png_path, start_frame, length_frame) を収集
+    items: list[tuple] = []
+    for entry, png_path in zip(enabled, png_paths):
+        try:
+            start_s = parse_timecode(entry.start_time, fps)
+            end_s   = parse_timecode(entry.end_time, fps)
+        except ValueError:
+            continue
+        start_frame  = seconds_to_frames(start_s, fps)
+        length_frame = seconds_to_frames(end_s, fps) - start_frame
+        if length_frame <= 0:
+            continue
+        items.append((entry, png_path, start_frame, length_frame))
+
+    if not items:
+        raise ValueError("配置できるテロップがありません。")
+
+    with _aaf2.open(output_path, "w") as f:
+        comp = f.create.CompositionMob("DavinTelop_Telops")
+        f.content.mobs.append(comp)
+
+        # タイムコードスロット（タイムラインの開始TCを 0 に）
+        try:
+            tc_slot = comp.create_timecode_slot(edit_rate)
+        except Exception:
+            tc_slot = None
+
+        # ビデオトラック
+        pic_slot = comp.create_picture_slot(edit_rate)
+        seq = f.create.Sequence(media_kind="picture")
+        pic_slot["Segment"].value = seq
+
+        prev_end = 0
+        total = len(items)
+        for i, (entry, png_path, start_frame, length_frame) in enumerate(items):
+            if callback:
+                callback(i + 1, total, entry.text[:20])
+
+            # ギャップ（Filler）
+            gap = start_frame - prev_end
+            if gap > 0:
+                seq.components.append(
+                    f.create.Filler(media_kind="picture", length=gap))
+
+            name = Path(png_path).stem
+
+            # ── SourceMob: 外部 PNG への参照 ──
+            src = f.create.SourceMob(name)
+            f.content.mobs.append(src)
+            desc = f.create.ImportDescriptor()
+            loc  = f.create.NetworkLocator()
+            loc["URLString"].value = Path(png_path).absolute().as_uri()
+            desc["Locator"].append(loc)
+            src.descriptor = desc
+            s_slot = src.create_picture_slot(edit_rate)
+            s_slot["Segment"].value = f.create.SourceClip(
+                media_kind="picture", length=length_frame)
+
+            # ── MasterMob: SourceMob を参照 ──
+            master = f.create.MasterMob(name)
+            f.content.mobs.append(master)
+            m_slot = master.create_picture_slot(edit_rate)
+            m_clip = f.create.SourceClip(media_kind="picture", length=length_frame)
+            m_clip.mob = src
+            m_slot["Segment"].value = m_clip
+
+            # ── Composition に配置 ──
+            clip = f.create.SourceClip(media_kind="picture", length=length_frame)
+            clip.mob = master
+            seq.components.append(clip)
+
+            prev_end = start_frame + length_frame
+
+
+# ─────────────────────────────────────────────
 #  Resolve コンソール用スクリプト生成
 # ─────────────────────────────────────────────
 

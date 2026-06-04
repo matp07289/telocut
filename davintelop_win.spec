@@ -56,6 +56,13 @@ a = Analysis(
         'psd_tools.constants',
         # NDI
         'NDIlib',
+        # AAF (Avid Media Composer)
+        'aaf2',
+        'aaf2.file',
+        'aaf2.mobs',
+        'aaf2.components',
+        'aaf2.essence',
+        'aaf2.misc',
         # 合成プレビュー
         'core.capture',
         'mss',
