@@ -11,8 +11,15 @@ __pycache__/
 *.icns
 *.ico
 /dist/
-/build/DavinTelop/
-/build/*.iconset/
+/dist_*/
+/build/
+/DavinTelop.spec
+
+# 配布アーカイブ
+*.zip
+
+# Claude Code ローカル設定
+.claude/
 
 # macOS
 .DS_Store
