@@ -21,6 +21,53 @@ except ImportError:
 
 
 # ─────────────────────────────────────────────
+#  モニター情報 (マルチディスプレイ対応)
+# ─────────────────────────────────────────────
+
+def get_virtual_screen() -> dict:
+    """全モニターを含む仮想デスクトップ全体の矩形を返す。
+    返値: {"left", "top", "width", "height"}（left/top は負になりうる）。
+    mss の座標系（物理ピクセル）に一致する。
+    """
+    if HAS_MSS:
+        try:
+            with _mss_mod.mss() as sct:
+                return dict(sct.monitors[0])   # [0] = 全モニター結合
+        except Exception:
+            pass
+    return {"left": 0, "top": 0, "width": 1920, "height": 1080}
+
+
+def list_monitors() -> list[dict]:
+    """
+    利用可能なモニター一覧を返す。
+    各要素: {"name", "left", "top", "width", "height"}
+    先頭は「全モニター(仮想画面)」、以降は個別モニター。
+    """
+    if not HAS_MSS:
+        return []
+    try:
+        with _mss_mod.mss() as sct:
+            mons = sct.monitors        # [0]=全体, [1..]=個別
+            result: list[dict] = []
+            allm = mons[0]
+            result.append({
+                "name": f"全モニター ({allm['width']}x{allm['height']})",
+                "left": allm["left"], "top": allm["top"],
+                "width": allm["width"], "height": allm["height"],
+            })
+            for i, m in enumerate(mons[1:], start=1):
+                result.append({
+                    "name": f"モニター{i} ({m['width']}x{m['height']})  @({m['left']},{m['top']})",
+                    "left": m["left"], "top": m["top"],
+                    "width": m["width"], "height": m["height"],
+                })
+            return result
+    except Exception:
+        return []
+
+
+# ─────────────────────────────────────────────
 #  スクリーンキャプチャスレッド
 # ─────────────────────────────────────────────
 

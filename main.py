@@ -1131,9 +1131,22 @@ class RegionSelectorWindow(tk.Toplevel):
         self._rect_id   = None
         self._size_id   = None
 
-        sw = self.winfo_screenwidth()
-        sh = self.winfo_screenheight()
-        self.geometry(f"{sw}x{sh}+0+0")
+        # 仮想デスクトップ全体（全モニター）をカバーする
+        vs = {"left": 0, "top": 0,
+              "width": self.winfo_screenwidth(),
+              "height": self.winfo_screenheight()}
+        if HAS_CAPTURE:
+            try:
+                from core.capture import get_virtual_screen
+                vs = get_virtual_screen()
+            except Exception:
+                pass
+        self._vx = vs["left"]
+        self._vy = vs["top"]
+        sw, sh   = vs["width"], vs["height"]
+
+        # left/top が負になりうる（プライマリより左/上のモニター）
+        self.geometry(f"{sw}x{sh}+{self._vx}+{self._vy}")
         self.overrideredirect(True)
         self.attributes('-topmost', True)
         self.attributes('-alpha', 0.35)
@@ -1143,10 +1156,10 @@ class RegionSelectorWindow(tk.Toplevel):
                              cursor='crosshair')
         self._cv.pack(fill='both', expand=True)
 
-        # ヒント
+        # ヒント（各モニター中央付近に表示）
         self._cv.create_text(
             sw // 2, 36, fill='white', font=('', 15, 'bold'),
-            text="ドラッグして範囲を選択  /  ESC でキャンセル")
+            text="ドラッグして範囲を選択（全モニター対応）  /  ESC でキャンセル")
 
         self._cv.bind('<ButtonPress-1>',   self._on_press)
         self._cv.bind('<B1-Motion>',       self._on_drag)
@@ -1180,7 +1193,10 @@ class RegionSelectorWindow(tk.Toplevel):
         y2 = max(self._sy, e.y)
         self.destroy()
         if x2 - x1 > 10 and y2 - y1 > 10:
-            self._callback(x1, y1, x2 - x1, y2 - y1)
+            # キャンバス座標 → 絶対画面座標（仮想画面オフセットを加算）
+            abs_x = self._vx + x1
+            abs_y = self._vy + y1
+            self._callback(abs_x, abs_y, x2 - x1, y2 - y1)
 
 
 # ─────────────────────────────────────────────
@@ -3299,10 +3315,27 @@ class DavinTelopApp(tk.Tk):
             ttk.Radiobutton(app_row, text=lbl, variable=self._comp_bg_app_var,
                             value=val).pack(side='left', padx=6)
 
+        # モニター選択（マルチディスプレイ対応・ドラッグ不要）
+        mon_row = ttk.Frame(self._bg_screen_frame)
+        mon_row.pack(fill='x', **pad)
+        ttk.Label(mon_row, text="モニター:").pack(side='left')
+        self._comp_bg_monitor_var = tk.StringVar()
+        self._comp_bg_monitor_combo = ttk.Combobox(
+            mon_row, textvariable=self._comp_bg_monitor_var,
+            state='readonly', width=26)
+        self._comp_bg_monitor_combo.pack(side='left', padx=4)
+        ttk.Button(mon_row, text="🔄", width=3,
+                   command=self._refresh_monitors).pack(side='left', padx=2)
+        self._comp_bg_monitor_combo.bind(
+            '<<ComboboxSelected>>', lambda e: self._on_monitor_selected())
+        self._comp_monitors: list = []
+        self._refresh_monitors()
+
         reg_row = ttk.Frame(self._bg_screen_frame)
         reg_row.pack(fill='x', **pad)
+        ttk.Label(reg_row, text="または範囲:").pack(side='left')
         ttk.Button(reg_row, text="範囲選択", width=8,
-                   command=self._select_bg_region).pack(side='left')
+                   command=self._select_bg_region).pack(side='left', padx=4)
         self._comp_bg_region_lbl = tk.StringVar(value="  未設定")
         ttk.Label(reg_row, textvariable=self._comp_bg_region_lbl,
                   foreground='gray', font=('', 8)).pack(side='left')
@@ -3486,6 +3519,35 @@ class DavinTelopApp(tk.Tk):
                 self._comp_fg_path_var.set(p)
 
     # ── 背景キャプチャ ──────────────────────────────
+
+    def _refresh_monitors(self):
+        """モニター一覧をドロップダウンに反映する。"""
+        if not HAS_CAPTURE:
+            return
+        try:
+            from core.capture import list_monitors
+            self._comp_monitors = list_monitors()
+        except Exception:
+            self._comp_monitors = []
+        names = [m["name"] for m in self._comp_monitors]
+        self._comp_bg_monitor_combo['values'] = names
+        if names and not self._comp_bg_monitor_var.get():
+            # デフォルトは個別モニターがあれば最初の個別、なければ全体
+            idx = 1 if len(self._comp_monitors) > 1 else 0
+            self._comp_bg_monitor_combo.current(idx)
+            self._on_monitor_selected()
+
+    def _on_monitor_selected(self):
+        """選択モニター全体を背景キャプチャ範囲に設定する。"""
+        idx = self._comp_bg_monitor_combo.current()
+        if idx < 0 or idx >= len(self._comp_monitors):
+            return
+        m = self._comp_monitors[idx]
+        self._comp_bg_region = (m["left"], m["top"], m["width"], m["height"])
+        self._comp_bg_region_lbl.set(
+            f"  {m['name']}")
+        if self._comp_bg_thread and self._comp_bg_thread.is_alive():
+            self._comp_bg_thread.set_region(*self._comp_bg_region)
 
     def _select_bg_region(self):
         self.withdraw()
@@ -5244,7 +5306,35 @@ class DavinTelopApp(tk.Tk):
 #  エントリーポイント
 # ─────────────────────────────────────────────
 
+def _enable_dpi_awareness():
+    """Windows: Per-Monitor DPI 対応にして tkinter 座標と mss 物理ピクセルを一致させる。
+    （マルチモニター・スクリーンキャプチャの座標ずれ防止）"""
+    import platform
+    if platform.system() != "Windows":
+        return
+    try:
+        import ctypes
+        # Per-Monitor Aware V2 (Win10 1703+)
+        try:
+            ctypes.windll.user32.SetProcessDpiAwarenessContext(-4)
+            return
+        except Exception:
+            pass
+        # フォールバック: Per-Monitor Aware
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+            return
+        except Exception:
+            pass
+        # 最終フォールバック: System DPI Aware
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
+    _enable_dpi_awareness()
+
     if not PILLOW_OK:
         print("警告: Pillow がインストールされていません。")
         print("  pip install Pillow  を実行してください。")
