@@ -2507,6 +2507,8 @@ class DavinTelopApp(tk.Tk):
         mb.add_cascade(label="Resolve", menu=resolve_menu)
         resolve_menu.add_command(label="⚡ Resolve API送信",
                                  command=self.send_to_resolve)
+        resolve_menu.add_command(label="📍 選択テロップを再生ヘッドに配置",
+                                 command=self.place_selected_at_playhead)
         resolve_menu.add_command(label="🐍 Resolveスクリプトを生成...",
                                  command=self.export_resolve_script)
 
@@ -2703,6 +2705,9 @@ class DavinTelopApp(tk.Tk):
         self._ctx_menu.add_command(label="複製", command=self.duplicate_selected)
         self._ctx_menu.add_separator()
         self._ctx_menu.add_command(label="有効/無効", command=self.toggle_enabled)
+        self._ctx_menu.add_separator()
+        self._ctx_menu.add_command(label="📍 再生ヘッドに配置 (Resolve)",
+                                   command=self.place_selected_at_playhead)
         self._ctx_menu.add_separator()
         self._ctx_menu.add_command(label="削除", command=self.delete_selected)
         self._tree.bind('<Button-2>', self._show_context_menu)
@@ -5003,6 +5008,84 @@ class DavinTelopApp(tk.Tk):
             # 成功時はポップアップなし — ステータスバーに表示
             self.after(0, lambda: self._progress_var.set(
                 f"✓ Resolve V{track_idx} にテロップを配置しました"))
+        else:
+            err = self._resolve.error
+            self.after(0, lambda: messagebox.showerror("エラー", err))
+
+    # ─── 再生ヘッド位置に配置 ───────────────────
+
+    def place_selected_at_playhead(self):
+        """選択中のテロップ1件を Resolve の現在の再生ヘッド位置に配置する。"""
+        sel = self._get_selected_entries()
+        if not sel:
+            messagebox.showwarning("再生ヘッド配置",
+                "テロップリストで配置するテロップを1件選択してください。")
+            return
+        if len(sel) > 1:
+            if not messagebox.askyesno("確認",
+                f"{len(sel)} 件選択されています。\n"
+                "先頭の1件のみを再生ヘッドに配置します。続行しますか？"):
+                return
+        entry = sel[0]
+
+        if not PILLOW_OK:
+            messagebox.showerror("エラー", "Pillowをインストールしてください:\npip install Pillow")
+            return
+
+        output_dir = self._resolve_out_dir.get().strip()
+        if not output_dir:
+            messagebox.showwarning("出力先未設定", "出力先フォルダを設定してください。")
+            return
+
+        if not self._resolve.connect():
+            messagebox.showerror("接続失敗", self._resolve.error)
+            return
+
+        info      = self._resolve.get_timeline_info()
+        track_idx = self._resolve_track.get()
+        fps       = info.get("fps", self.design.frame_rate)
+        self._save_app_config()
+
+        self._run_with_progress(
+            "再生ヘッドに配置中...",
+            lambda cb: self._do_place_at_playhead(entry, output_dir, track_idx, fps, cb))
+
+    def _do_place_at_playhead(self, entry, png_dir: str, track_idx: int,
+                              fps: float, callback):
+        from core.renderer import render_telop_image
+        s = self._collect_design()
+
+        # 尺（フレーム数）を計算
+        try:
+            start_s = parse_timecode(entry.start_time, fps)
+            end_s   = parse_timecode(entry.end_time, fps)
+        except ValueError:
+            self.after(0, lambda: messagebox.showerror(
+                "エラー", "テロップのタイムコードが不正です。"))
+            return
+        dur_frames = max(1, round((end_s - start_s) * fps))
+
+        # 単一PNGを書き出し
+        try:
+            callback(1, 1, entry.text[:20])
+            img = render_telop_image(entry.text, s)
+            out_dir = Path(png_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            png_path = str(out_dir / f"telop_playhead_{entry.id:04d}.png")
+            img.save(png_path, "PNG")
+        except Exception as ex:
+            self.after(0, lambda e=str(ex): messagebox.showerror("PNG書き出しエラー", e))
+            return
+
+        # 再生ヘッド位置を取得（メッセージ用）
+        tc = self._resolve.get_current_timecode() or "?"
+
+        ok = self._resolve.place_png_at_playhead(
+            png_path, dur_frames, fps, track_index=track_idx)
+
+        if ok:
+            self.after(0, lambda: self._progress_var.set(
+                f"✓ 再生ヘッド {tc} に V{track_idx} へ配置しました"))
         else:
             err = self._resolve.error
             self.after(0, lambda: messagebox.showerror("エラー", err))

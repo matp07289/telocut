@@ -951,6 +951,80 @@ class ResolveConnector:
             self._error = f"タイムライン配置エラー: {e}"
             return False
 
+    def get_current_timecode(self) -> Optional[str]:
+        """現在のタイムラインの再生ヘッド位置のタイムコードを返す。"""
+        if not self._timeline:
+            return None
+        try:
+            return self._timeline.GetCurrentTimecode()
+        except Exception:
+            return None
+
+    def place_png_at_playhead(
+        self,
+        png_path: str,
+        duration_frames: int,
+        fps: float,
+        track_index: int = 2,
+    ) -> bool:
+        """
+        PNG 1 枚を現在の再生ヘッド位置に配置する。
+        duration_frames: クリップの尺（フレーム数）
+        track_index: 配置するビデオトラック (1始まり)
+        """
+        if not self._project or not self._timeline:
+            self._error = "Resolveに接続されていません。"
+            return False
+        if not os.path.exists(png_path):
+            self._error = f"PNGが見つかりません: {Path(png_path).name}"
+            return False
+        if duration_frames <= 0:
+            self._error = "クリップの尺が不正です。"
+            return False
+
+        try:
+            media_pool = self._project.GetMediaPool()
+
+            # ビデオトラック確保
+            v_count = self._timeline.GetTrackCount("video")
+            while v_count < track_index:
+                self._timeline.AddTrack("video")
+                v_count += 1
+
+            # 再生ヘッド位置のタイムコード → フレーム
+            tc = self._timeline.GetCurrentTimecode()
+            if not tc:
+                self._error = "再生ヘッド位置を取得できませんでした。"
+                return False
+            playhead_frame = seconds_to_frames(parse_timecode(tc, fps), fps)
+
+            # PNG をインポート
+            result = media_pool.ImportMedia([png_path])
+            if result:
+                mpi = result[0]
+            else:
+                mpi = self._find_pool_item(media_pool, png_path)
+                if not mpi:
+                    self._error = f"メディアインポート失敗: {Path(png_path).name}"
+                    return False
+
+            clip_info = [{
+                "mediaPoolItem": mpi,
+                "startFrame":    0,
+                "endFrame":      duration_frames - 1,
+                "recordFrame":   playhead_frame,   # GetCurrentTimecode は絶対フレーム基準
+                "mediaType":     1,
+                "trackIndex":    track_index,
+            }]
+            r = media_pool.AppendToTimeline(clip_info)
+            if not r:
+                self._error = "再生ヘッド位置への配置に失敗しました。"
+                return False
+            return True
+        except Exception as e:
+            self._error = f"再生ヘッド配置エラー: {e}"
+            return False
+
     def _get_or_create_folder(self, media_pool, folder_name: str):
         """メディアプールのルートに指定名フォルダを取得または作成する。"""
         root = media_pool.GetRootFolder()
