@@ -3906,12 +3906,17 @@ class DavinTelopApp(tk.Tk):
 
         ttk.Separator(bar, orient='vertical').pack(side='left', fill='y', padx=8)
 
-        # ── Resolve出力設定 ──────────────────────────
-        ttk.Label(bar, text="出力先:").pack(side='left')
-        ttk.Entry(bar, textvariable=self._resolve_out_dir, width=32).pack(
-            side='left', padx=(2, 2))
+        # ── テロップ保存先設定 ──────────────────────────
+        ttk.Label(bar, text="📁 保存先:").pack(side='left')
+        save_entry = ttk.Entry(bar, textvariable=self._resolve_out_dir, width=30)
+        save_entry.pack(side='left', padx=(2, 2))
+        # フォーカスアウトで自動保存
+        save_entry.bind('<FocusOut>', lambda e: self._save_app_config())
+        save_entry.bind('<Return>',   lambda e: self._save_app_config())
         ttk.Button(bar, text="📂", width=3,
-                   command=self._pick_resolve_out_dir).pack(side='left', padx=(0, 6))
+                   command=self._pick_resolve_out_dir).pack(side='left', padx=(0, 2))
+        ttk.Button(bar, text="開く", width=4,
+                   command=self._open_save_dir).pack(side='left', padx=(0, 6))
 
         ttk.Label(bar, text="V:").pack(side='left')
         ttk.Spinbox(bar, from_=1, to=20, textvariable=self._resolve_track,
@@ -4715,22 +4720,42 @@ class DavinTelopApp(tk.Tk):
         if not self.telop_list:
             messagebox.showwarning("PNG書き出し", "テロップがありません。")
             return
-        output_dir = filedialog.askdirectory(title="PNG書き出し先フォルダを選択")
-        if not output_dir:
-            return
         if not PILLOW_OK:
             messagebox.showerror("エラー", "Pillowをインストールしてください:\npip install Pillow")
             return
+
+        # 保存先フィールドを直接使用（毎回ダイアログを出さない）
+        output_dir = self._get_save_dir(prompt_if_empty=True)
+        if not output_dir:
+            return
+
         self._run_with_progress("PNG書き出し中...", lambda cb: self._do_export_png(output_dir, cb))
+
+    def _get_save_dir(self, prompt_if_empty: bool = False) -> str:
+        """テロップ保存先フォルダを返す。未設定時は (任意で) 一度だけ選択させる。"""
+        d = self._resolve_out_dir.get().strip()
+        if not d and prompt_if_empty:
+            d = filedialog.askdirectory(title="テロップ保存先フォルダを選択")
+            if d:
+                self._resolve_out_dir.set(d)
+                self._save_app_config()
+        if d:
+            try:
+                Path(d).mkdir(parents=True, exist_ok=True)
+            except Exception as ex:
+                messagebox.showerror("保存先エラー",
+                    f"保存先フォルダを作成できません:\n{d}\n{ex}")
+                return ""
+        return d
 
     def _do_export_png(self, output_dir: str, callback):
         s = self._collect_design()
         inc = self._include_text_in_filename.get()
         paths = export_png(self.telop_list, s, output_dir, callback=callback,
                            include_text_in_filename=inc)
-        self.after(0, lambda: messagebox.showinfo(
-            "PNG書き出し完了",
-            f"{len(paths)} 件のPNGを書き出しました:\n{output_dir}"))
+        # 完了はステータスバーに表示（毎回モーダルを出さない）
+        self.after(0, lambda: self._progress_var.set(
+            f"✓ {len(paths)} 件のPNGを書き出しました → {output_dir}"))
 
     # ─── SRT 書き出し ─────────────────────────────
 
@@ -4900,11 +4925,39 @@ class DavinTelopApp(tk.Tk):
         messagebox.showinfo("接続成功", msg)
 
     def _pick_resolve_out_dir(self):
-        d = filedialog.askdirectory(title="Resolve出力フォルダを選択",
+        d = filedialog.askdirectory(title="テロップ保存先フォルダを選択",
                                     initialdir=self._resolve_out_dir.get())
         if d:
             self._resolve_out_dir.set(d)
             self._save_app_config()
+
+    def _open_save_dir(self):
+        """保存先フォルダをエクスプローラー/Finder で開く。"""
+        d = self._resolve_out_dir.get().strip()
+        if not d:
+            messagebox.showinfo("保存先", "保存先フォルダが未設定です。\n「📂」で選択してください。")
+            return
+        p = Path(d)
+        if not p.exists():
+            if messagebox.askyesno("保存先",
+                f"フォルダが存在しません:\n{d}\n\n作成して開きますか？"):
+                try:
+                    p.mkdir(parents=True, exist_ok=True)
+                except Exception as ex:
+                    messagebox.showerror("エラー", f"作成に失敗しました:\n{ex}")
+                    return
+            else:
+                return
+        import subprocess, platform
+        try:
+            if platform.system() == "Windows":
+                subprocess.Popen(["explorer", str(p)])
+            elif platform.system() == "Darwin":
+                subprocess.Popen(["open", str(p)])
+            else:
+                subprocess.Popen(["xdg-open", str(p)])
+        except Exception as ex:
+            messagebox.showerror("エラー", f"フォルダを開けませんでした:\n{ex}")
 
     def export_resolve_script(self):
         """PNG + Resolveコンソール用スクリプトを生成してフォルダを開く。(ダイアログなし)"""
