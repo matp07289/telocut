@@ -654,3 +654,90 @@ class NDIReceiverThread(threading.Thread):
                 _ndi.recv_destroy(recv)
             except Exception:
                 pass
+
+
+# ─────────────────────────────────────────────
+#  NDI 送信 (合成映像を NDI ソースとして配信)
+# ─────────────────────────────────────────────
+
+class NDISender:
+    """
+    合成映像を NDI ソースとして配信する。
+    NDI Studio Monitor 等で受信し、DeckLink/DNxIO の SDI 出力へ
+    ルーティングできる（Studio Monitor のビデオ出力機能等）。
+
+    使い方:
+        s = NDISender("DavinTelop")
+        ok, err = s.start()
+        s.send_pil(pil_image)   # 合成更新のたびに呼ぶ
+        s.stop()
+    """
+
+    def __init__(self, name: str = "DavinTelop", fps_n: int = 30000, fps_d: int = 1001):
+        self._name    = name
+        self._fps_n   = fps_n
+        self._fps_d   = fps_d
+        self._sender  = None
+        self._buf     = None          # numpy バッファの参照を保持
+        self._lock    = threading.Lock()
+
+    @property
+    def active(self) -> bool:
+        return self._sender is not None
+
+    def start(self) -> tuple:
+        """送信を開始。返値 (成功bool, エラー文字列)。"""
+        if not HAS_NDI or _ndi is None:
+            return False, ("NDI が利用できません。\n"
+                           "NDI Tools をインストールして再起動してください。")
+        try:
+            sc = _ndi.SendCreate()
+            sc.ndi_name = self._name
+            with self._lock:
+                self._sender = _ndi.send_create(sc)
+            if self._sender is None:
+                return False, "NDI 送信の作成に失敗しました。"
+            return True, ""
+        except Exception as e:
+            return False, f"NDI 送信開始エラー: {e}"
+
+    def send_pil(self, img) -> None:
+        """PIL.Image（RGB/RGBA）を1フレーム送信する。"""
+        if self._sender is None or not HAS_NDI:
+            return
+        try:
+            import numpy as _np
+            if img.mode != "RGBA":
+                img = img.convert("RGBA")
+            # NDI は偶数サイズを要求するため奇数なら切り詰める
+            w = img.width  - (img.width  % 2)
+            h = img.height - (img.height % 2)
+            if (w, h) != img.size:
+                img = img.crop((0, 0, w, h))
+            rgba = _np.asarray(img)
+            # RGBA → BGRA（R と B を入替）して連続配列化
+            bgra = _np.ascontiguousarray(rgba[:, :, [2, 1, 0, 3]])
+            self._buf = bgra      # 送信完了まで参照保持
+
+            vf = _ndi.VideoFrameV2()
+            vf.data         = bgra
+            vf.FourCC       = _ndi.FOURCC_VIDEO_TYPE_BGRA
+            vf.xres         = bgra.shape[1]
+            vf.yres         = bgra.shape[0]
+            vf.frame_rate_N = self._fps_n
+            vf.frame_rate_D = self._fps_d
+            with self._lock:
+                if self._sender is not None:
+                    _ndi.send_send_video_v2(self._sender, vf)
+        except Exception:
+            pass
+
+    def stop(self) -> None:
+        with self._lock:
+            if self._sender is not None:
+                try:
+                    _ndi.send_destroy(self._sender)
+                except Exception:
+                    pass
+                self._sender = None
+        self._buf = None

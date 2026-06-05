@@ -3461,6 +3461,20 @@ class DavinTelopApp(tk.Tk):
         self._comp_canvas.pack(fill='both', expand=True, pady=(2, 2))
         self._comp_canvas.bind('<Configure>', lambda e: self._redraw_composite())
 
+        # ── NDI 出力 ──────────────────────────────
+        ndiout_row = ttk.Frame(outer)
+        ndiout_row.pack(fill='x', **pad)
+        self._comp_ndiout_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(ndiout_row, text="NDI出力", variable=self._comp_ndiout_var,
+                        command=self._toggle_ndi_output).pack(side='left')
+        ttk.Label(ndiout_row, text="名前:").pack(side='left', padx=(8, 2))
+        self._comp_ndiout_name = tk.StringVar(value="DavinTelop")
+        ttk.Entry(ndiout_row, textvariable=self._comp_ndiout_name, width=16).pack(side='left')
+        self._comp_ndiout_status = tk.StringVar(value="")
+        ttk.Label(ndiout_row, textvariable=self._comp_ndiout_status,
+                  foreground='gray', font=('', 8)).pack(side='left', padx=6)
+        self._ndi_sender = None
+
         # ── 下部ボタン ─────────────────────────────
         bot = ttk.Frame(outer)
         bot.pack(fill='x')
@@ -3868,6 +3882,11 @@ class DavinTelopApp(tk.Tk):
                     fg_work = _PIL.merge("RGBA", (r, g, b, a))
                 bg = _PIL.alpha_composite(bg, fg_work)
 
+            # NDI 出力（合成済みフル解像度を配信）
+            sender = getattr(self, '_ndi_sender', None)
+            if sender is not None and sender.active:
+                sender.send_pil(bg)
+
             # キャンバスにフィット
             W, H = bg.size
             scale = min(cw / W, ch / H)
@@ -3888,6 +3907,33 @@ class DavinTelopApp(tk.Tk):
         except Exception as ex:
             canvas.create_text(cw // 2, ch // 2,
                 text=f"合成エラー:\n{ex}", fill='red', justify='center')
+
+    # ── NDI 出力 ──────────────────────────────────
+
+    def _toggle_ndi_output(self):
+        """合成映像の NDI 出力を開始/停止する。"""
+        if self._comp_ndiout_var.get():
+            from core.capture import NDISender, HAS_NDI
+            if not HAS_NDI:
+                self._comp_ndiout_var.set(False)
+                self._open_ndi_install_dialog()
+                return
+            name = self._comp_ndiout_name.get().strip() or "DavinTelop"
+            self._ndi_sender = NDISender(name)
+            ok, err = self._ndi_sender.start()
+            if ok:
+                self._comp_ndiout_status.set(f"● 配信中: {name}")
+                self._redraw_composite()   # 即時1フレーム送出
+            else:
+                self._ndi_sender = None
+                self._comp_ndiout_var.set(False)
+                self._comp_ndiout_status.set("✗ 開始失敗")
+                messagebox.showerror("NDI出力", err, parent=self)
+        else:
+            if self._ndi_sender is not None:
+                self._ndi_sender.stop()
+                self._ndi_sender = None
+            self._comp_ndiout_status.set("停止")
 
     # ── 合成画像の保存 ──────────────────────────────
 
@@ -5406,6 +5452,12 @@ class DavinTelopApp(tk.Tk):
         """ウィンドウを閉じる際にバックグラウンドスレッドを停止する。"""
         self._stop_bg_capture()
         self._stop_fg_source()
+        sender = getattr(self, '_ndi_sender', None)
+        if sender is not None:
+            try:
+                sender.stop()
+            except Exception:
+                pass
         self.destroy()
 
 
