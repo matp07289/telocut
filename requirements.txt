@@ -6,3 +6,5 @@ darkdetect
 psd-tools>=1.9
 ndi-python
 pyaaf2>=1.7
+opencv-python>=4.5
+pygrabber==0.1

@@ -19,6 +19,12 @@ try:
 except ImportError:
     HAS_PILLOW = False
 
+try:
+    import cv2 as _cv2
+    HAS_CV2 = True
+except ImportError:
+    HAS_CV2 = False
+
 
 # ─────────────────────────────────────────────
 #  モニター情報 (マルチディスプレイ対応)
@@ -65,6 +71,132 @@ def list_monitors() -> list[dict]:
             return result
     except Exception:
         return []
+
+
+# ─────────────────────────────────────────────
+#  映像キャプチャデバイス (Blackmagic / カメラ等)
+# ─────────────────────────────────────────────
+
+def list_capture_devices() -> list[str]:
+    """
+    DirectShow の映像入力デバイス名一覧を返す。
+    例: ['Blackmagic WDM Capture', 'Decklink Video Capture', ...]
+    インデックスが OpenCV(CAP_DSHOW) のデバイス番号に対応する。
+    """
+    try:
+        from pygrabber.dshow_graph import FilterGraph
+        return list(FilterGraph().get_input_devices())
+    except Exception:
+        return []
+
+
+class CaptureDeviceThread(threading.Thread):
+    """
+    OpenCV(DirectShow) で映像キャプチャデバイスを取り込み、
+    out_queue に ("frame", PIL.Image) を積む。
+    Blackmagic WDM Capture / DeckLink Video Capture / Webカメラ等に対応。
+    """
+
+    def __init__(self, out_queue: queue.Queue, device_index: int = 0,
+                 fps: float = 30.0):
+        super().__init__(daemon=True)
+        self._q       = out_queue
+        self._index   = int(device_index)
+        self._fps     = float(fps)
+        self._running = False
+
+    def stop(self):
+        self._running = False
+
+    def run(self):
+        if not HAS_CV2:
+            self._q.put(("error",
+                "OpenCV が未インストールです\npip install opencv-python"))
+            return
+        if not HAS_PILLOW:
+            self._q.put(("error", "Pillow が未インストールです"))
+            return
+
+        self._running = True
+        self._q.put(("status", f"デバイス {self._index} を開いています..."))
+
+        # DirectShow バックエンドで開く（Blackmagic WDM Capture 等）
+        cap = None
+        try:
+            cap = _cv2.VideoCapture(self._index, _cv2.CAP_DSHOW)
+        except Exception as e:
+            self._q.put(("error", f"デバイスを開けません: {e}"))
+            return
+
+        if cap is None or not cap.isOpened():
+            self._q.put(("error",
+                f"キャプチャデバイス {self._index} を開けませんでした。\n"
+                "他アプリが使用中でないか、信号が来ているか確認してください。"))
+            if cap is not None:
+                cap.release()
+            return
+
+        self._q.put(("status", "キャプチャ中..."))
+
+        import numpy as _np
+        frame_count = 0
+        fps_time    = time.time()
+        interval    = 1.0 / max(1.0, self._fps)
+        no_frame    = 0
+
+        try:
+            while self._running:
+                t0 = time.perf_counter()
+                ok, frame = cap.read()
+
+                if not ok or frame is None:
+                    no_frame += 1
+                    if no_frame == 30:
+                        self._q.put(("status",
+                            "信号待ち... (デバイスは開いていますが映像がありません)"))
+                    time.sleep(0.05)
+                    continue
+                no_frame = 0
+
+                try:
+                    # OpenCV は BGR。RGB へ変換して PIL Image 化
+                    rgb = _np.ascontiguousarray(frame[:, :, ::-1])
+                    img = _PILImage.fromarray(rgb, "RGB")
+                    # プレビュー用に縮小
+                    if img.width > 1280:
+                        ratio = 1280 / img.width
+                        img = img.resize(
+                            (1280, max(1, int(img.height * ratio))),
+                            _PILImage.BILINEAR)
+                    while self._q.qsize() > 2:
+                        try:
+                            self._q.get_nowait()
+                        except queue.Empty:
+                            break
+                    self._q.put(("frame", img))
+                    frame_count += 1
+                except Exception:
+                    pass
+
+                now = time.time()
+                if now - fps_time >= 1.0:
+                    fps = frame_count / (now - fps_time)
+                    self._q.put(("status", f"キャプチャ中  {fps:.1f} fps"))
+                    frame_count = 0
+                    fps_time    = now
+
+                # フレームレート制限 + GIL 解放
+                elapsed = time.perf_counter() - t0
+                remain  = interval - elapsed
+                if remain > 0:
+                    time.sleep(remain)
+                else:
+                    time.sleep(0.005)
+        finally:
+            try:
+                cap.release()
+            except Exception:
+                pass
 
 
 # ─────────────────────────────────────────────

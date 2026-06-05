@@ -3294,9 +3294,11 @@ class DavinTelopApp(tk.Tk):
         mode_row = ttk.Frame(bg_lf)
         mode_row.pack(fill='x')
         self._comp_bg_mode_var = tk.StringVar(value="ndi")
-        ttk.Radiobutton(mode_row, text="NDI（推奨）", variable=self._comp_bg_mode_var,
+        ttk.Radiobutton(mode_row, text="NDI", variable=self._comp_bg_mode_var,
                         value="ndi", command=self._on_bg_mode_change).pack(side='left', padx=4)
-        ttk.Radiobutton(mode_row, text="スクリーンキャプチャ", variable=self._comp_bg_mode_var,
+        ttk.Radiobutton(mode_row, text="映像キャプチャ(Blackmagic)", variable=self._comp_bg_mode_var,
+                        value="device", command=self._on_bg_mode_change).pack(side='left', padx=4)
+        ttk.Radiobutton(mode_row, text="スクリーン", variable=self._comp_bg_mode_var,
                         value="screen", command=self._on_bg_mode_change).pack(side='left', padx=4)
 
         # ── NDI 設定エリア ────────────────────────────
@@ -3318,6 +3320,26 @@ class DavinTelopApp(tk.Tk):
             text="Resolve/Premiere で NDI 出力を有効にして「🔍 検索」をクリック",
             foreground='gray', font=('', 8))
         ndi_hint.pack(anchor='w', pady=(2, 0))
+
+        # ── 映像キャプチャデバイス設定エリア ───────────
+        self._bg_device_frame = ttk.Frame(bg_lf)
+
+        dev_row = ttk.Frame(self._bg_device_frame)
+        dev_row.pack(fill='x')
+        ttk.Label(dev_row, text="デバイス:").pack(side='left')
+        self._comp_dev_var = tk.StringVar()
+        self._comp_dev_combo = ttk.Combobox(
+            dev_row, textvariable=self._comp_dev_var,
+            state='readonly', width=32)
+        self._comp_dev_combo.pack(side='left', padx=4, fill='x', expand=True)
+        ttk.Button(dev_row, text="🔄", width=3,
+                   command=self._refresh_capture_devices).pack(side='left', padx=2)
+
+        ttk.Label(self._bg_device_frame,
+            text="Blackmagic WDM Capture / DeckLink Video Capture を選択。\n"
+                 "Resolve の出力を SDI/HDMI でループバック入力すると取り込めます。",
+            foreground='gray', font=('', 8), justify='left').pack(anchor='w', pady=(2, 0))
+        self._comp_devices: list = []
 
         # ── スクリーンキャプチャ設定エリア ───────────
         self._bg_screen_frame = ttk.Frame(bg_lf)
@@ -3356,6 +3378,7 @@ class DavinTelopApp(tk.Tk):
 
         # 区画ラベル作成後にモニター一覧を初期化（_on_monitor_selected が参照するため）
         self._refresh_monitors()
+        self._refresh_capture_devices()
 
         fps_row = ttk.Frame(self._bg_screen_frame)
         fps_row.pack(fill='x', **pad)
@@ -3450,14 +3473,41 @@ class DavinTelopApp(tk.Tk):
         self._on_fg_mode_change()
 
     def _on_bg_mode_change(self):
-        """背景ソードの NDI/スクリーンキャプチャ切り替え。"""
+        """背景ソースの NDI / 映像キャプチャ / スクリーンキャプチャ切り替え。"""
         mode = self._comp_bg_mode_var.get() if hasattr(self, '_comp_bg_mode_var') else "ndi"
+        # まず全て隠す
+        for fr in (getattr(self, '_bg_ndi_frame', None),
+                   getattr(self, '_bg_device_frame', None),
+                   getattr(self, '_bg_screen_frame', None)):
+            if fr is not None:
+                fr.pack_forget()
         if mode == "ndi":
             self._bg_ndi_frame.pack(fill='x', padx=4, pady=2)
-            self._bg_screen_frame.pack_forget()
+        elif mode == "device":
+            self._bg_device_frame.pack(fill='x', padx=4, pady=2)
         else:
-            self._bg_ndi_frame.pack_forget()
             self._bg_screen_frame.pack(fill='x', padx=4, pady=2)
+
+    def _refresh_capture_devices(self):
+        """映像キャプチャデバイス一覧をドロップダウンに反映する。"""
+        if not HAS_CAPTURE:
+            return
+        try:
+            from core.capture import list_capture_devices
+            self._comp_devices = list_capture_devices()
+        except Exception:
+            self._comp_devices = []
+        names = [f"[{i}] {n}" for i, n in enumerate(self._comp_devices)]
+        self._comp_dev_combo['values'] = names
+        if names and not self._comp_dev_var.get():
+            # Blackmagic / DeckLink を優先選択
+            pref = 0
+            for i, n in enumerate(self._comp_devices):
+                low = n.lower()
+                if 'decklink' in low or 'blackmagic' in low:
+                    pref = i
+                    break
+            self._comp_dev_combo.current(pref)
 
     def _scan_ndi_sources(self):
         """NDI ソースをスキャンしてコンボボックスに反映する。NDI 未インストール時はインストールダイアログを表示。"""
@@ -3603,6 +3653,27 @@ class DavinTelopApp(tk.Tk):
             self._comp_bg_thread = t
             self._comp_bg_status_var.set(
                 f"NDI 接続中: {src_name or '(自動検出)'}")
+
+        elif mode == "device":
+            # ── 映像キャプチャデバイス (Blackmagic等) ────
+            from core.capture import CaptureDeviceThread, HAS_CV2
+            if not HAS_CV2:
+                messagebox.showerror(
+                    "OpenCV 未対応",
+                    "映像キャプチャには OpenCV が必要です。\n"
+                    "pip install opencv-python を実行してください。")
+                return
+            idx = self._comp_dev_combo.current()
+            if idx < 0:
+                messagebox.showwarning("デバイス未選択",
+                    "キャプチャデバイスを選択してください。\n"
+                    "（🔄 でデバイス一覧を更新できます）")
+                return
+            t = CaptureDeviceThread(self._comp_bg_queue, device_index=idx, fps=30.0)
+            t.start()
+            self._comp_bg_thread = t
+            dev_name = self._comp_devices[idx] if idx < len(self._comp_devices) else f"#{idx}"
+            self._comp_bg_status_var.set(f"キャプチャ開始: {dev_name}")
 
         else:
             # ── スクリーンキャプチャモード ─────────────
