@@ -1203,6 +1203,88 @@ class RegionSelectorWindow(tk.Toplevel):
 #  Photoshop アクション設定ガイドダイアログ
 # ─────────────────────────────────────────────
 
+class LipSyncGuideDialog(tk.Toplevel):
+    """口パクの作り方を説明するダイアログ。"""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("口パクの作り方ガイド")
+        self.geometry("600x560")
+        self.resizable(True, True)
+
+        text = tk.Text(self, wrap='word', padx=12, pady=8,
+                       font=('', 10), relief='flat')
+        sb = ttk.Scrollbar(self, command=text.yview)
+        text.configure(yscrollcommand=sb.set)
+        sb.pack(side='right', fill='y')
+        text.pack(fill='both', expand=True)
+
+        guide = (
+            "■ 口パク（リップシンク）の作り方\n\n"
+            "DavinTelop の口パクは「立ち絵（ベース）」と「口形状の画像」を\n"
+            "音声に合わせて切り替えるアニメーションです。\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "【手順1】キャラクター画像を用意する\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "必要な画像（すべて同じキャンバスサイズ・透過PNG推奨）:\n"
+            "  ・ベース画像（口を除いた立ち絵、または口閉じ状態の全身）\n"
+            "  ・口「あ」「い」「う」「え」「お」\n"
+            "  ・口「ん」「閉じ」（任意）\n\n"
+            "口パーツはベースと同じ位置に重なるように作ります。\n\n"
+            "■ PSD から自動抽出する場合\n"
+            "  ・口レイヤーの名前に「口」と母音を入れる\n"
+            "    例: 口_あ / 口_い / 口_う / 口_え / 口_お / 口_閉じ\n"
+            "  ・「キャラクター」タブで PSD を開き「レイヤー抽出」\n\n"
+            "■ PNG を個別指定する場合\n"
+            "  ・「キャラクター」タブでベースと各口形状の PNG を指定\n"
+            "  ・口の位置がずれる場合は「口オフセット X/Y」で微調整\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "【手順2】タイミングを決める\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "「音声・タイミング」タブで口の動かし方を選びます。\n\n"
+            "● VoiceVox 音素データ（高精度・推奨）\n"
+            "  VoiceVox を起動し、話者とテロップを選択。\n"
+            "  発音（あいうえお）に正確に合わせて口が動きます。\n\n"
+            "● WAV 振幅解析（シンプル）\n"
+            "  既存の WAV の音量に応じて「あ/閉じ」を切替。\n\n"
+            "■ AnimType（口の滑らかさ）\n"
+            "  aiueo   : 子音=閉じ。最も厳密\n"
+            "  aiueo2  : 子音=次の母音。自然（推奨）\n"
+            "  aiueo3  : 子音=前の形状維持。最も滑らか\n"
+            "  open    : 発話中は常に「あ」。シンプル\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "【手順3】出力する\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "「出力設定」タブで形式を選んで出力します。\n\n"
+            "■ 動画用ファイルとして出す（PNG連番 / GIF / APNG）\n"
+            "  「▶ 生成開始」→ lipsync フォルダに出力。\n"
+            "  Resolve/Premiere に読み込んで配置します。\n\n"
+            "■ Resolve エフェクト（Fusion マクロ）として出す ★おすすめ\n"
+            "  「🎬 Resolveエフェクト(.setting)を書き出し」をクリック。\n"
+            "  ・立ち絵+口パクが Fusion マクロになります\n"
+            "  ・Resolve 側で口形状・位置・サイズ・不透明度を調整可能\n"
+            "  ・VoiceVox タイミングがあれば口パクのキーフレームを\n"
+            "    自動で焼き込み（後から編集も可）\n\n"
+            "  Resolve での使い方:\n"
+            "  1. Fusion ページを開く\n"
+            "  2. ノードエリアで右クリック → Macro → DavinTelop_LipSync\n"
+            "  3. Inspector でパラメータを調整\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "【ヒント】音声と立ち絵をまとめて Resolve へ\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "「🔊 VoiceVox」タブでは、音声生成と同時に\n"
+            "立ち絵をビデオトラックへ自動配置できます\n"
+            "（「立ち絵をビデオトラックに配置」をオン）。\n"
+            "口パクのアニメは本ダイアログの Fusion マクロを併用すると\n"
+            "セリフに合わせて口が動く立ち絵が完成します。\n"
+        )
+        text.insert('1.0', guide)
+        text.configure(state='disabled')
+
+        ttk.Button(self, text="閉じる", command=self.destroy).pack(pady=8)
+        self.grab_set()
+
+
 class PsGuideDialog(tk.Toplevel):
     """Photoshopファイル監視の設定方法を説明するダイアログ。"""
 
@@ -2060,6 +2142,24 @@ class LipSyncDialog(tk.Toplevel):
         ttk.Label(sz_lf, text="H:").pack(side='left', padx=(8, 2))
         ttk.Spinbox(sz_lf, from_=100, to=4320, textvariable=self._resize_h, width=6).pack(side='left')
 
+        # ── Resolve エフェクト (Fusion マクロ) ──
+        fx_lf = ttk.LabelFrame(tab, text="Resolve エフェクト (Fusion マクロ)", padding=8)
+        fx_lf.pack(fill='x', pady=(8, 0))
+        ttk.Label(fx_lf,
+            text="立ち絵+口パクを Fusion マクロ(.setting)として書き出します。\n"
+                 "Resolve 側で口形状・位置・サイズ・不透明度を調整でき、\n"
+                 "VoiceVox タイミングがあれば口パクのキーフレームを焼き込みます。",
+            foreground='gray', font=('', 8), justify='left').pack(anchor='w')
+        self._bake_keys_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(fx_lf, text="口パクのキーフレームを焼き込む（音声・タイミングタブの設定を使用）",
+                        variable=self._bake_keys_var).pack(anchor='w', pady=(4, 4))
+        fxbtn = ttk.Frame(fx_lf)
+        fxbtn.pack(fill='x')
+        ttk.Button(fxbtn, text="🎬 Resolveエフェクト(.setting)を書き出し",
+                   command=self._export_fusion_macro).pack(side='left', padx=2)
+        ttk.Button(fxbtn, text="❓ 口パクの作り方",
+                   command=lambda: LipSyncGuideDialog(self)).pack(side='left', padx=8)
+
     # ─── Tab 4: プレビュー ─────────────────────────────────────────────────
 
     def _build_preview_tab(self, nb):
@@ -2226,6 +2326,120 @@ class LipSyncDialog(tk.Toplevel):
                 self._pv_canvas.winfo_width() // 2,
                 self._pv_canvas.winfo_height() // 2,
                 text=f"エラー: {ex}", fill='red', justify='center')
+
+    # ─── Resolve エフェクト (Fusion マクロ) 書き出し ───────────────────────
+
+    def _export_fusion_macro(self):
+        if not self._load_images():
+            messagebox.showwarning("画像未設定",
+                "ベース画像と口形状を設定してください。", parent=self)
+            return
+        if self._base_img is None:
+            messagebox.showwarning("ベース未設定", "ベース画像を設定してください。", parent=self)
+            return
+
+        out_dir = self._out_dir_var.get().strip()
+        if not out_dir:
+            messagebox.showwarning("出力先未設定", "出力フォルダを設定してください。", parent=self)
+            return
+
+        from pathlib import Path as _P
+        out = _P(out_dir) / "lipsync_macro"
+        out.mkdir(parents=True, exist_ok=True)
+
+        # 画像をディスクに用意（PSD抽出のメモリ画像も書き出す）
+        def _ensure_png(img, name, path_var=None):
+            if path_var is not None:
+                p = path_var.get().strip()
+                if p and _P(p).exists():
+                    return p
+            if img is None:
+                return None
+            dest = str(out / name)
+            img.save(dest, "PNG")
+            return dest
+
+        base_path = _ensure_png(self._base_img, "base.png", self._base_var)
+        mouth_paths = {}
+        for key, var in self._mouth_vars.items():
+            img = self._mouth_imgs.get(key)
+            mp = _ensure_png(img, f"mouth_{key}.png", var)
+            if mp:
+                mouth_paths[key] = mp
+
+        if not mouth_paths:
+            messagebox.showwarning("口画像なし",
+                "口形状の画像が1つもありません。", parent=self)
+            return
+
+        # 口パクキーフレーム（任意）
+        timeline = None
+        fps = self._fps_var.get()
+        if self._bake_keys_var.get():
+            try:
+                self._status_var.set("タイミング解析中...")
+                self.update()
+                if self._timing_mode.get() == "voicevox":
+                    timeline = self._build_vv_timeline(fps)
+                else:
+                    import core.lipsync as ls
+                    wav = self._wav_path_var.get().strip()
+                    if wav and _P(wav).exists():
+                        timeline = ls.analyze_wav_timeline(
+                            wav, fps, self._threshold_var.get())
+            except Exception as ex:
+                if not messagebox.askyesno("タイミング取得失敗",
+                    f"キーフレーム生成に失敗しました:\n{ex}\n\n"
+                    "キーフレーム無し（手動調整用）で続行しますか？", parent=self):
+                    self._status_var.set("")
+                    return
+                timeline = None
+
+        # マクロ書き出し
+        try:
+            from core.fusion import generate_lipsync_macro, resolve_macros_dir
+            macro_path = str(out / "DavinTelop_LipSync.setting")
+            generate_lipsync_macro(
+                macro_path, base_path, mouth_paths,
+                timeline=timeline, fps=fps,
+                macro_name="DavinTelop_LipSync")
+        except Exception as ex:
+            self._status_var.set("")
+            messagebox.showerror("マクロ書き出しエラー", str(ex), parent=self)
+            return
+
+        # Resolve の Macros フォルダへコピー提案
+        from core.fusion import resolve_macros_dir
+        mdir = resolve_macros_dir()
+        copied = ""
+        if mdir and _P(mdir).exists() is False:
+            try:
+                _P(mdir).mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+        if mdir and _P(mdir).exists():
+            if messagebox.askyesno("Resolve へインストール",
+                f"Fusion Macros フォルダにコピーしますか？\n{mdir}\n\n"
+                "コピーすると Fusion ページの右クリック > Macro から使えます。",
+                parent=self):
+                try:
+                    import shutil
+                    shutil.copy(macro_path, str(_P(mdir) / "DavinTelop_LipSync.setting"))
+                    copied = f"\n→ Macros にインストール済み"
+                except Exception as ex:
+                    copied = f"\n（コピー失敗: {ex}）"
+
+        self._status_var.set(f"Fusionマクロを書き出しました → {out}")
+        messagebox.showinfo("Resolveエフェクト書き出し完了",
+            f"Fusionマクロを書き出しました:\n{macro_path}{copied}\n\n"
+            "【使い方】\n"
+            "1. Resolve の Fusion ページを開く\n"
+            "2. ノードエリアで右クリック → Macro → DavinTelop_LipSync\n"
+            "   （Macros にコピーしていない場合は、\n"
+            "    .setting をノードエリアにドラッグ&ドロップ）\n"
+            "3. Inspector で 口形状 / 位置 / サイズ / 不透明度 を調整\n"
+            "   口パクキーフレームは焼き込み済み（編集可）",
+            parent=self)
 
     # ─── 生成 ──────────────────────────────────────────────────────────────
 

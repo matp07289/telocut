@@ -52,6 +52,7 @@ a = Analysis(
         # VoiceVox / LipSync
         'core.voicevox',
         'core.lipsync',
+        'core.fusion',
         'psd_tools',
         'psd_tools.api',
         'psd_tools.constants',
