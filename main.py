@@ -2353,6 +2353,13 @@ class LipSyncDialog(tk.Toplevel):
         ttk.Label(fxbtn2b, text="各レイヤーをチェックで表示切替",
                   foreground='gray', font=('', 8)).pack(side='left', padx=4)
 
+        fxbtn2c = ttk.Frame(fx_lf)
+        fxbtn2c.pack(fill='x', pady=(4, 0))
+        ttk.Button(fxbtn2c, text="🎭 立ち絵ジェネレータを作成（眉/目/口/腕をカテゴリ選択）",
+                   command=self._psd_to_generator).pack(side='left', padx=2)
+        ttk.Label(fxbtn2c, text="りぞりぷと風：ジェネレータとして追加",
+                  foreground='gray', font=('', 8)).pack(side='left', padx=4)
+
         fxbtn3 = ttk.Frame(fx_lf)
         fxbtn3.pack(fill='x', pady=(4, 0))
         ttk.Button(fxbtn3, text="🧩 PSD全レイヤー → Fusionコンポに展開（Fusionで編集）",
@@ -2825,6 +2832,73 @@ class LipSyncDialog(tk.Toplevel):
         except Exception as ex:
             self._status_var.set("")
             messagebox.showerror("Resolve配置エラー", str(ex), parent=self)
+
+    def _psd_to_generator(self):
+        """PSD を全レイヤー分解し、りぞりぷと風の立ち絵ジェネレータ(.setting)を
+        作成して Resolve の Generators テンプレートに追加する。
+        眉/目/口/腕などはインスペクタのカテゴリ選択で切替できる。"""
+        from pathlib import Path as _P
+        psd = self._psd_path_var.get().strip() if hasattr(self, '_psd_path_var') else ""
+        if not psd or not _P(psd).exists():
+            messagebox.showwarning("PSD未選択",
+                "「キャラクター」タブで PSD を指定してください。", parent=self)
+            return
+        from core.lipsync import HAS_PSD_TOOLS
+        if not HAS_PSD_TOOLS:
+            messagebox.showerror("エラー", "psd-tools が必要です。\npip install psd-tools",
+                                 parent=self)
+            return
+        out_dir = self._out_dir_var.get().strip()
+        if not out_dir:
+            messagebox.showwarning("出力先未設定", "出力フォルダを設定してください。", parent=self)
+            return
+
+        # ジェネレータ名（PSDファイル名から）
+        gen_label = _P(psd).stem
+        out = _P(out_dir) / "tatie_generator" / gen_label
+        try:
+            self._status_var.set("PSD を分解中...")
+            self.update()
+            from core.fusion import (split_psd_all_layers, generate_tatie_generator,
+                                     resolve_generators_dir, _safe)
+            layers = split_psd_all_layers(psd, str(out))
+            if not layers:
+                messagebox.showwarning("レイヤーなし", "レイヤーが取得できませんでした。",
+                                       parent=self)
+                self._status_var.set("")
+                return
+            gen_name = "Tatie_" + _safe(gen_label)
+            setting_path = str(out / f"{gen_name}.setting")
+            cats = generate_tatie_generator(setting_path, layers, gen_name=gen_name)
+        except Exception as ex:
+            self._status_var.set("")
+            messagebox.showerror("ジェネレータ生成エラー", str(ex), parent=self)
+            return
+
+        # Generators テンプレートフォルダへインストール
+        installed = ""
+        try:
+            from core.fusion import resolve_generators_dir
+            gdir = resolve_generators_dir()
+            if gdir:
+                _P(gdir).mkdir(parents=True, exist_ok=True)
+                import shutil
+                shutil.copy(setting_path, str(_P(gdir) / f"{gen_name}.setting"))
+                installed = f"\n→ Generators に追加済み（Resolve再起動で反映）"
+        except Exception as ex:
+            installed = f"\n（自動追加失敗: {ex}）"
+
+        self._status_var.set(f"立ち絵ジェネレータ作成: {len(layers)}レイヤー")
+        cat_txt = "\n".join(f"  ・{c}: {len(v)}択" for c, v in cats.items()) or "  （選択カテゴリなし）"
+        messagebox.showinfo("立ち絵ジェネレータ作成完了",
+            f"立ち絵ジェネレータを作成しました:\n{setting_path}{installed}\n\n"
+            f"カテゴリ選択:\n{cat_txt}\n\n"
+            "【使い方】\n"
+            "1. Resolve を再起動\n"
+            "2. Effects → Generators → " + gen_name + " をタイムラインへ\n"
+            "3. インスペクタの「ポーズ」ページで眉/目/口/腕などを選択\n"
+            "   位置/サイズは「Settings」ページ",
+            parent=self)
 
     def _psd_layers_to_fusion(self):
         """PSD の全レイヤーを個別PNGに分解し、Fusionコンポ(全ノード展開)を生成して

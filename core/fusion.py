@@ -430,3 +430,207 @@ def resolve_macros_dir() -> Optional[str]:
         return None
     p = Path(appdata) / "Blackmagic Design" / "DaVinci Resolve" / "Support" / "Fusion" / "Macros"
     return str(p)
+
+
+# ─────────────────────────────────────────────
+#  立ち絵ジェネレータ（りぞりぷと風・カテゴリ別レイヤー選択）
+# ─────────────────────────────────────────────
+
+# カテゴリ判定キーワード（順序＝優先）
+_CATEGORY_KEYWORDS = [
+    ("口",   ("口", "mouth", "lip", "kuchi")),
+    ("目",   ("目", "eye", "瞳", "瞼", "eyelid")),
+    ("眉",   ("眉", "まゆ", "eyebrow", "brow")),
+    ("右腕", ("右腕", "右手", "rarm", "r_arm", "r arm", "right arm", "right hand")),
+    ("左腕", ("左腕", "左手", "larm", "l_arm", "l arm", "left arm", "left hand")),
+    ("頬",   ("頬", "ほお", "ほほ", "blush", "cheek")),
+    ("髪",   ("髪", "hair", "前髪", "後ろ髪")),
+    ("体",   ("体", "body", "胴", "服", "dress")),
+]
+
+
+def categorize_layer(name: str):
+    """レイヤー名からカテゴリを返す。該当なしは None（常時表示）。"""
+    low = name.lower()
+    for cat, kws in _CATEGORY_KEYWORDS:
+        for k in kws:
+            if k.lower() in low:
+                return cat
+    return None
+
+
+def generate_tatie_generator(
+    out_path: str,
+    layers: list,            # [(name, png_path)] 下→上の順
+    gen_name: str = "DavinTelop_Tatie",
+) -> dict:
+    """
+    りぞりぷと風の立ち絵ジェネレータ(.setting マクロ)を生成。
+    同カテゴリ(眉/目/口/腕…)のレイヤーは選択式(ComboControl)で1つだけ表示、
+    カテゴリ無しのレイヤーは常時表示。インスペクタの「ポーズ」ページに
+    各カテゴリの選択コントロールを公開する。
+
+    返値: {category: [option_name,...]}（生成したカテゴリと選択肢）
+    """
+    avail = [(n, p) for (n, p) in layers if p]
+    if not avail:
+        raise ValueError("レイヤーがありません。")
+
+    # カテゴリ分類
+    cats: dict = {}            # category -> [(name, path, global_index)]
+    normals: list = []         # [(name, path)]
+    for i, (n, p) in enumerate(avail):
+        c = categorize_layer(n)
+        if c is None:
+            normals.append((n, p))
+        else:
+            cats.setdefault(c, []).append((n, p))
+    # 選択肢が1つだけのカテゴリは通常レイヤー扱い
+    for c in list(cats.keys()):
+        if len(cats[c]) <= 1:
+            normals.extend([(n, p) for (n, p, *_) in
+                            [(x[0], x[1]) for x in cats[c]]])
+            del cats[c]
+
+    used = set()
+
+    def nodename(base):
+        b = base
+        i = 1
+        while b in used:
+            b = f"{base}_{i}"; i += 1
+        used.add(b)
+        return b
+
+    L = []
+    A = L.append
+    A("{")
+    A("\tTools = ordered() {")
+    A(f"\t\t{gen_name} = GroupOperator {{")
+    A("\t\t\tCtrlWZoom = false,")
+    A("\t\t\tInputs = ordered() {")
+    # カテゴリ選択を公開（ポーズページ）
+    cat_ctrls = {}   # category -> controller node name
+    for ci, (cat, opts) in enumerate(cats.items()):
+        ctrl_node = nodename(f"Ctrl_{ci}")
+        cat_ctrls[cat] = ctrl_node
+        A(f'\t\t\t\tSel_{ci} = InstanceInput {{')
+        A(f'\t\t\t\t\tSourceOp = "{ctrl_node}",')
+        A('\t\t\t\t\tSource = "Sel",')
+        A(f'\t\t\t\t\tName = "{cat}",')
+        A('\t\t\t\t\tControlGroup = 1,')
+        A(f'\t\t\t\t\tPage = "ポーズ",')
+        A("\t\t\t\t\tDefault = 0,")
+        A("\t\t\t\t},")
+    A('\t\t\t\tTX = InstanceInput { SourceOp = "RootXF", Source = "Center", Name = "位置", Page = "Settings", },')
+    A('\t\t\t\tTS = InstanceInput { SourceOp = "RootXF", Source = "Size", Name = "サイズ", Default = 1.0, Page = "Settings", },')
+    A("\t\t\t},")
+    A("\t\t\tOutputs = ordered() {")
+    A('\t\t\t\tOutput = InstanceOutput { SourceOp = "RootXF", Source = "Output", },')
+    A("\t\t\t},")
+    A("\t\t\tViewInfo = GroupInfo { Pos = { 0, 0 } },")
+    A("\t\t\tTools = ordered() {")
+
+    # カテゴリ選択コントロール（ComboControl を持つ Background）
+    for cat, opts in cats.items():
+        ctrl_node = cat_ctrls[cat]
+        items = "".join(
+            f'\t\t\t\t\t\t\t{{ MBTNC_AddButton = "{_esc(n)}" }},\n'
+            for (n, p) in opts)
+        A(f"\t\t\t\t{ctrl_node} = Background {{")
+        A("\t\t\t\t\tNameSet = true,")
+        A("\t\t\t\t\tUserControls = ordered() {")
+        A("\t\t\t\t\t\tSel = {")
+        A('\t\t\t\t\t\t\tLINKID_DataType = "Number",')
+        A('\t\t\t\t\t\t\tINPID_InputControl = "ComboControl",')
+        A("\t\t\t\t\t\t\tINP_Integer = true,")
+        A("\t\t\t\t\t\t\tINP_Default = 0,")
+        A(f'\t\t\t\t\t\t\tLINKS_Name = "{cat}",')
+        A("\t\t\t\t\t\t\tINP_MinAllowed = 0,")
+        A(f"\t\t\t\t\t\t\tINP_MaxAllowed = {len(opts) - 1},")
+        A("\t\t\t\t\t\t\tComboControl = {")
+        # 選択肢ラベル
+        for (n, p) in opts:
+            A(f'\t\t\t\t\t\t\t\tComboControl {{ MBTNC_AddButton = "{_esc(n)}" }},')
+        A("\t\t\t\t\t\t\t},")
+        A("\t\t\t\t\t\t},")
+        A("\t\t\t\t\t},")
+        A("\t\t\t\t\tInputs = { Width = Input { Value = 16, }, Height = Input { Value = 16, }, },")
+        A("\t\t\t\t},")
+
+    # ローダー + マージ
+    prev = None
+    y = 0
+    # まず通常レイヤー（常時表示）と各カテゴリのレイヤーを元の順序で重ねる
+    for n, p in avail:
+        ld = nodename("Ld_" + _safe(n))
+        A(f"\t\t\t\t{ld} = Loader {{")
+        A("\t\t\t\t\tClips = { Clip {")
+        A(f'\t\t\t\t\t\tFilename = "{_lua_path(p)}",')
+        A('\t\t\t\t\t\tFormatID = "PNGFormat", Length = 1, TrimIn = 0,')
+        A("\t\t\t\t\t} },")
+        A(f"\t\t\t\t\tViewInfo = OperatorInfo {{ Pos = {{ 0, {y} }} }},")
+        A("\t\t\t\t},")
+        if prev is None:
+            prev = ld
+            y += 33
+            continue
+        mg = nodename("Mg_" + _safe(n))
+        A(f"\t\t\t\t{mg} = Merge {{")
+        A("\t\t\t\t\tInputs = {")
+        A(f'\t\t\t\t\t\tBackground = Input {{ SourceOp = "{prev}", Source = "Output", }},')
+        A(f'\t\t\t\t\t\tForeground = Input {{ SourceOp = "{ld}", Source = "Output", }},')
+        # カテゴリレイヤーは選択式、それ以外は常時表示
+        cat = categorize_layer(n)
+        if cat in cat_ctrls:
+            opts = cats[cat]
+            idx = next((k for k, (nn, pp) in enumerate(opts) if nn == n), 0)
+            A(f'\t\t\t\t\t\tBlend = Input {{ Expression = "iif({cat_ctrls[cat]}.Sel == {idx}, 1, 0)", }},')
+        A("\t\t\t\t\t},")
+        A(f"\t\t\t\t\tViewInfo = OperatorInfo {{ Pos = {{ 165, {y} }} }},")
+        A("\t\t\t\t},")
+        prev = mg
+        y += 33
+
+    # ルート Transform
+    A("\t\t\t\tRootXF = Transform {")
+    A("\t\t\t\t\tInputs = {")
+    A(f'\t\t\t\t\t\tInput = Input {{ SourceOp = "{prev}", Source = "Output", }},')
+    A("\t\t\t\t\t},")
+    A(f"\t\t\t\t\tViewInfo = OperatorInfo {{ Pos = {{ 360, 0 }} }},")
+    A("\t\t\t\t},")
+
+    A("\t\t\t},")   # Tools
+    A("\t\t},")     # GroupOperator
+    A("\t},")       # Tools
+    A(f'\tActiveTool = "{gen_name}",')
+    A("}")
+
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(L))
+
+    return {c: [n for (n, p) in opts] for c, opts in cats.items()}
+
+
+def _safe(name: str) -> str:
+    import re
+    b = re.sub(r'[^0-9A-Za-z_]', '_', name).strip('_') or "L"
+    if b[0].isdigit():
+        b = "L_" + b
+    return b
+
+
+def _esc(s: str) -> str:
+    return str(s).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def resolve_generators_dir() -> Optional[str]:
+    """Resolve の Edit ジェネレータ テンプレートフォルダを返す。"""
+    import os
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return None
+    p = (Path(appdata) / "Blackmagic Design" / "DaVinci Resolve" / "Support"
+         / "Fusion" / "Templates" / "Edit" / "Generators")
+    return str(p)
