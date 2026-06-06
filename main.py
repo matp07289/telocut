@@ -1415,6 +1415,33 @@ class VoiceVoxPanel(ttk.Frame):
                         variable=self._resolve_playhead_var).grid(
             row=2, column=0, columnspan=3, sticky='w', padx=6, pady=2)
 
+        # 立ち絵をビデオトラックに配置
+        self._tachie_send_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(resolve_lf, text="立ち絵をビデオトラックに配置",
+                        variable=self._tachie_send_var).grid(
+            row=3, column=0, columnspan=3, sticky='w', padx=6, pady=(6, 2))
+
+        ttk.Label(resolve_lf, text="立ち絵画像:").grid(row=4, column=0, sticky='e', **pad)
+        tachie_row = ttk.Frame(resolve_lf)
+        tachie_row.grid(row=4, column=1, columnspan=2, sticky='ew', **pad)
+        self._tachie_path_var = tk.StringVar()
+        ttk.Entry(tachie_row, textvariable=self._tachie_path_var, width=24).pack(
+            side='left', fill='x', expand=True)
+        ttk.Button(tachie_row, text="参照", width=5,
+                   command=self._pick_tachie).pack(side='left', padx=4)
+
+        ttk.Label(resolve_lf, text="ビデオトラック:").grid(row=5, column=0, sticky='e', **pad)
+        vt_row = ttk.Frame(resolve_lf)
+        vt_row.grid(row=5, column=1, columnspan=2, sticky='w', **pad)
+        self._tachie_vtrack_var = tk.IntVar(value=3)
+        ttk.Spinbox(vt_row, from_=1, to=20, textvariable=self._tachie_vtrack_var,
+                    width=4).pack(side='left')
+        ttk.Label(vt_row, text="V (1始まり)", foreground='gray',
+                  font=('',8)).pack(side='left', padx=4)
+        self._tachie_merge_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(vt_row, text="連続テロップを1クリップに結合",
+                        variable=self._tachie_merge_var).pack(side='left', padx=8)
+
         # ─ テロップ一覧タブ ─────────────────────
         list_tab = ttk.Frame(nb, padding=8)
         nb.add(list_tab, text=" テロップ ")
@@ -1568,6 +1595,14 @@ class VoiceVoxPanel(ttk.Frame):
         if d:
             self._out_var.set(d)
 
+    def _pick_tachie(self):
+        p = filedialog.askopenfilename(
+            parent=self, title="立ち絵画像を選択",
+            filetypes=[("画像", "*.png *.jpg *.jpeg *.tga *.tif *.tiff"),
+                       ("すべて", "*")])
+        if p:
+            self._tachie_path_var.set(p)
+
     def _on_tree_click(self, event):
         region = self._tree.identify_region(event.x, event.y)
         col    = self._tree.identify_column(event.x)
@@ -1714,26 +1749,50 @@ class VoiceVoxPanel(ttk.Frame):
                     writer.writeheader()
                     writer.writerows(meta_rows)
 
-            # Resolve オーディオトラック送信
-            if (not self._stop_flag and self._resolve_send_var.get()
-                    and meta_rows):
-                self.after(0, lambda: self._prog_var.set("Resolve にオーディオを送信中..."))
+            # Resolve 送信（オーディオ / 立ち絵）
+            need_resolve = (not self._stop_flag and meta_rows and
+                            (self._resolve_send_var.get() or self._tachie_send_var.get()))
+            if need_resolve:
+                self.after(0, lambda: self._prog_var.set("Resolve に送信中..."))
                 try:
                     from core.exporter import ResolveConnector
                     rc = ResolveConnector()
                     if rc.connect():
-                        wav_paths = [str(out / r["filename"]) for r in meta_rows]
                         fps_tl = rc.get_timeline_info().get("fps", 29.97)
                         sent_entries = [e for e in targets
                                         if str(e.id) in self._checked][:len(meta_rows)]
-                        atrack = self._resolve_atrack_var.get()
-                        rc.import_wavs_to_timeline(
-                            sent_entries, wav_paths, fps_tl,
-                            audio_track_index=atrack,
-                            playhead_relative=self._resolve_playhead_var.get())
+                        ph = self._resolve_playhead_var.get()
+
+                        # オーディオ送信
+                        if self._resolve_send_var.get():
+                            wav_paths = [str(out / r["filename"]) for r in meta_rows]
+                            atrack = self._resolve_atrack_var.get()
+                            rc.import_wavs_to_timeline(
+                                sent_entries, wav_paths, fps_tl,
+                                audio_track_index=atrack,
+                                playhead_relative=ph)
+
+                        # 立ち絵をビデオトラックに配置
+                        if self._tachie_send_var.get():
+                            tachie = self._tachie_path_var.get().strip()
+                            if tachie:
+                                okt = rc.place_tachie_to_timeline(
+                                    sent_entries, tachie, fps_tl,
+                                    video_track_index=self._tachie_vtrack_var.get(),
+                                    playhead_relative=ph,
+                                    merge_adjacent=self._tachie_merge_var.get())
+                                if not okt:
+                                    self.after(0, lambda m=rc.error:
+                                        self._prog_var.set(f"立ち絵配置: {m[:40]}"))
+                            else:
+                                self.after(0, lambda: messagebox.showwarning(
+                                    "立ち絵", "立ち絵画像を選択してください。", parent=self))
+                    else:
+                        self.after(0, lambda m=rc.error:
+                            messagebox.showwarning("Resolve送信", m, parent=self))
                 except Exception as ex:
                     self.after(0, lambda e=str(ex):
-                        messagebox.showwarning("Resolve送信", f"WAV送信エラー:\n{e}", parent=self))
+                        messagebox.showwarning("Resolve送信", f"送信エラー:\n{e}", parent=self))
 
             def _done():
                 self._running = False

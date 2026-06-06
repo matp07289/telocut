@@ -1148,6 +1148,122 @@ class ResolveConnector:
             self._error = f"音声配置エラー: {e}"
             return False
 
+    def place_tachie_to_timeline(
+        self,
+        entries: list[TelopEntry],
+        tachie_path: str,
+        fps: float,
+        video_track_index: int = 3,
+        callback: Optional[Callable[[int, int, str], None]] = None,
+        playhead_relative: bool = False,
+        merge_adjacent: bool = True,
+    ) -> bool:
+        """
+        立ち絵（静止画 PNG）を各テロップの位置でビデオトラックに配置する。
+        同一の立ち絵を 1 回だけインポートし、各テロップ尺ぶん並べる。
+
+        merge_adjacent=True: 連続するテロップを1つの立ち絵クリップに結合
+                             （喋っている間ずっと立ち絵を出す用途）
+        playhead_relative=True: 再生ヘッド基準で相対配置
+        """
+        if not self._project or not self._timeline:
+            self._error = "Resolveに接続されていません。"
+            return False
+        if not os.path.exists(tachie_path):
+            self._error = f"立ち絵が見つかりません: {Path(tachie_path).name}"
+            return False
+
+        try:
+            media_pool = self._project.GetMediaPool()
+            dt_folder  = self._get_or_create_folder(media_pool, "DavinTelop")
+            media_pool.SetCurrentFolder(dt_folder)
+
+            enabled = [e for e in entries if e.enabled]
+
+            # ビデオトラック確保
+            v_count = self._timeline.GetTrackCount("video")
+            while v_count < video_track_index:
+                self._timeline.AddTrack("video")
+                v_count += 1
+
+            tl_start = 0
+            try:
+                tl_start = int(self._timeline.GetStartFrame())
+            except Exception:
+                pass
+
+            # 各テロップの (start_frame, end_frame) を収集
+            spans = []
+            for entry in enabled:
+                try:
+                    s = parse_timecode(entry.start_time, fps)
+                    e = parse_timecode(entry.end_time, fps)
+                except ValueError:
+                    continue
+                sf = seconds_to_frames(s, fps)
+                ef = seconds_to_frames(e, fps)
+                if ef > sf:
+                    spans.append([sf, ef])
+            if not spans:
+                self._error = "配置できるテロップがありません。"
+                return False
+
+            spans.sort()
+            # 隣接/重複スパンを結合
+            if merge_adjacent:
+                merged = [spans[0]]
+                for sf, ef in spans[1:]:
+                    if sf <= merged[-1][1]:
+                        merged[-1][1] = max(merged[-1][1], ef)
+                    else:
+                        merged.append([sf, ef])
+                spans = merged
+
+            # 配置基準オフセット
+            if playhead_relative:
+                tc = self._timeline.GetCurrentTimecode()
+                if not tc:
+                    self._error = "再生ヘッド位置を取得できませんでした。"
+                    return False
+                playhead_frame = seconds_to_frames(parse_timecode(tc, fps), fps)
+                base_offset    = playhead_frame - spans[0][0]
+            else:
+                base_offset    = tl_start
+
+            # 立ち絵を1回インポート
+            result = media_pool.ImportMedia([tachie_path])
+            if result:
+                mpi = result[0]
+            else:
+                mpi = self._find_pool_item(media_pool, tachie_path)
+                if not mpi:
+                    self._error = f"立ち絵インポート失敗: {Path(tachie_path).name}"
+                    return False
+
+            placed = 0
+            for i, (sf, ef) in enumerate(spans):
+                dur = ef - sf
+                clip_info = [{
+                    "mediaPoolItem": mpi,
+                    "startFrame":   0,
+                    "endFrame":     dur - 1,
+                    "recordFrame":  sf + base_offset,
+                    "mediaType":    1,      # video
+                    "trackIndex":   video_track_index,
+                }]
+                if media_pool.AppendToTimeline(clip_info):
+                    placed += 1
+                if callback:
+                    callback(i + 1, len(spans), "立ち絵配置中")
+
+            if placed == 0:
+                self._error = "立ち絵のビデオトラック配置に失敗しました。"
+                return False
+            return True
+        except Exception as e:
+            self._error = f"立ち絵配置エラー: {e}"
+            return False
+
     def create_text_plus_srt(
         self,
         entries: list[TelopEntry],
