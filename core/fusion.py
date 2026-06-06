@@ -517,8 +517,7 @@ def generate_tatie_generator(
         A(f'\t\t\t\tSel_{ci} = InstanceInput {{')
         A(f'\t\t\t\t\tSourceOp = "{ctrl_node}",')
         A('\t\t\t\t\tSource = "Sel",')
-        A(f'\t\t\t\t\tName = "{cat}",')
-        A('\t\t\t\t\tControlGroup = 1,')
+        A(f'\t\t\t\t\tName = "{_esc(cat)}",')
         A(f'\t\t\t\t\tPage = "ポーズ",')
         A("\t\t\t\t\tDefault = 0,")
         A("\t\t\t\t},")
@@ -548,7 +547,12 @@ def generate_tatie_generator(
             A(f'\t\t\t\t\t\t\t{{ MBTNC_AddButton = "{_esc(n)}" }},')
         A("\t\t\t\t\t\t},")
         A("\t\t\t\t\t},")
-        A("\t\t\t\t\tInputs = { Width = Input { Value = 16, }, Height = Input { Value = 16, }, },")
+        # Sel に具体値(0)を設定。これが無いと選択肢が表示されない
+        A("\t\t\t\t\tInputs = {")
+        A("\t\t\t\t\t\tSel = Input { Value = 0, },")
+        A("\t\t\t\t\t\tWidth = Input { Value = 16, },")
+        A("\t\t\t\t\t\tHeight = Input { Value = 16, },")
+        A("\t\t\t\t\t},")
         A("\t\t\t\t},")
 
     # ローダー + マージ
