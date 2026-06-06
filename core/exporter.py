@@ -1117,10 +1117,15 @@ class ResolveConnector:
         timeline: Optional[list] = None,    # 口パク用 mora タイムライン
         fps: float = 30.0,
         blink_frames: Optional[set] = None,  # 目を閉じるフレーム集合（まばたき）
+        toggle_mode: bool = False,      # True: キーフレーム焼かず各レイヤーをON/OFF制御
     ) -> bool:
         """
         PSD の全レイヤーを個別 Loader として Fusion comp に展開する。
-        role 別の挙動:
+        toggle_mode=True のとき:
+          口パク/まばたきのキーフレームを焼かず、全レイヤーを表示(1)にし、
+          各レイヤーの表示ON/OFFチェックボックスを MediaOut1 に公開する
+          （Editページのインスペクタ/Fusionで好きな立ち絵を組める）。
+        toggle_mode=False のとき（従来）role 別の挙動:
           口形状キー(a/i/u/e/o/N/closed): 口パク（Blendキーフレーム）
           'eye_closed' : まばたきで閉じるフレームのみ表示
           'eye_open'   : 常時表示（閉じ目の下）
@@ -1240,6 +1245,7 @@ class ResolveConnector:
 
             prev = None
             placed = 0
+            toggle_merges = []   # [(merge, ctrl_name, layer_name)]  toggle_mode 用
             for i, (name, path, role) in enumerate(valid):
                 ld = _add_loader(path, 0, i, name=name)
                 _set_color(ld, role)
@@ -1256,6 +1262,16 @@ class ResolveConnector:
                     mg.ConnectInput("Foreground", ld)
                 except Exception:
                     pass
+
+                if toggle_mode:                 # 全レイヤーON/OFF制御モード
+                    try:
+                        mg.SetInput("Blend", 1.0)   # 既定は表示
+                    except Exception:
+                        pass
+                    toggle_merges.append((mg, f"Show{i}", name))
+                    prev = mg
+                    placed += 1
+                    continue
 
                 if role in mouth_shapes:        # 口レイヤー
                     try:
@@ -1300,12 +1316,55 @@ class ResolveConnector:
                 pass
 
             # MediaOut1 へ接続
+            mo = None
             try:
                 mo = comp.FindTool("MediaOut1")
                 if mo is not None and prev is not None:
                     mo.ConnectInput("Input", prev)
             except Exception:
                 pass
+
+            # toggle_mode: 各レイヤーの表示ON/OFFチェックを MediaOut1 に公開
+            if toggle_mode and mo is not None and toggle_merges:
+                try:
+                    uc = {}
+                    for idx, (mg, cname, lname) in enumerate(toggle_merges):
+                        uc[cname] = {
+                            "LINKID_DataType": "Number",
+                            "INPID_InputControl": "CheckboxControl",
+                            "INP_Integer": True,
+                            "INP_Default": 1,
+                            "LINKS_Name": f"表示: {lname[:24]}",
+                            "ICS_ControlPage": "レイヤー表示",
+                            "ICD_Width": 1.0,
+                        }
+                    mo.UserControls = uc
+                    mo = mo.Refresh()
+                    mo_name = mo.Name
+                    # 各 Merge の Blend をチェックボックスに連動（式）
+                    def _expr(tool, inp, expr):
+                        try:
+                            o = getattr(tool, inp)
+                            if hasattr(o, "SetExpression"):
+                                o.SetExpression(expr); return True
+                        except Exception:
+                            pass
+                        try:
+                            if hasattr(tool, "SetExpression"):
+                                tool.SetExpression(inp, expr); return True
+                        except Exception:
+                            pass
+                        return False
+                    for mg, cname, lname in toggle_merges:
+                        _expr(mg, "Blend", f"{mo_name}.{cname}")
+                    # 接続し直し（Refresh で参照が変わる場合に備える）
+                    try:
+                        if prev is not None:
+                            mo.ConnectInput("Input", prev)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
 
             try:
                 comp.Unlock()

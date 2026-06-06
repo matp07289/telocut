@@ -2311,8 +2311,15 @@ class LipSyncDialog(tk.Toplevel):
 
         fxbtn2 = ttk.Frame(fx_lf)
         fxbtn2.pack(fill='x', pady=(4, 0))
-        ttk.Button(fxbtn2, text="⚡ PSD分解 → Fusionクリップを再生ヘッドに自動配置",
+        ttk.Button(fxbtn2, text="⚡ PSD分解 → 口パク立ち絵を自動配置（キーフレーム）",
                    command=self._psd_to_fusion_clip).pack(side='left', padx=2)
+
+        fxbtn2b = ttk.Frame(fx_lf)
+        fxbtn2b.pack(fill='x', pady=(4, 0))
+        ttk.Button(fxbtn2b, text="🎚 PSD分解 → 立ち絵を組む（全レイヤーON/OFF・口パク無し）",
+                   command=lambda: self._psd_to_fusion_clip(toggle=True)).pack(side='left', padx=2)
+        ttk.Label(fxbtn2b, text="各レイヤーをチェックで表示切替",
+                  foreground='gray', font=('', 8)).pack(side='left', padx=4)
 
         fxbtn3 = ttk.Frame(fx_lf)
         fxbtn3.pack(fill='x', pady=(4, 0))
@@ -2640,9 +2647,10 @@ class LipSyncDialog(tk.Toplevel):
             "   口パクキーフレームは焼き込み済み（編集可）",
             parent=self)
 
-    def _psd_to_fusion_clip(self):
-        """PSD を全レイヤー分解 → 各レイヤーを個別ノードで Fusion に展開し、
-        口レイヤーは口パク（Blendキーフレーム）させて再生ヘッドに自動配置。"""
+    def _psd_to_fusion_clip(self, toggle: bool = False):
+        """PSD を全レイヤー分解 → 各レイヤーを個別ノードで Fusion に展開し配置。
+        toggle=False: 口レイヤーは口パク（Blendキーフレーム）/ まばたき
+        toggle=True : キーフレーム無し、各レイヤーをチェックでON/OFFして立ち絵を組む"""
         from pathlib import Path as _P
         out_dir = self._out_dir_var.get().strip()
         if not out_dir:
@@ -2708,7 +2716,7 @@ class LipSyncDialog(tk.Toplevel):
         # ── 口パクタイムライン（任意） ──
         timeline = None
         fps = self._fps_var.get()
-        if self._bake_keys_var.get() and mouth_roles:
+        if not toggle and self._bake_keys_var.get() and mouth_roles:
             try:
                 self._status_var.set("タイミング解析中...")
                 self.update()
@@ -2724,7 +2732,7 @@ class LipSyncDialog(tk.Toplevel):
 
         # ── 目パチ（まばたき）タイムライン（任意） ──
         blink_frames = None
-        if (getattr(self, '_blink_var', None) and self._blink_var.get()
+        if (not toggle and getattr(self, '_blink_var', None) and self._blink_var.get()
                 and "eye_closed" in eye_roles):
             try:
                 import core.lipsync as ls
@@ -2750,21 +2758,34 @@ class LipSyncDialog(tk.Toplevel):
                 return
             ok = rc.place_tatie_full_via_fusion_api(
                 layers_roles, timeline=timeline, fps=fps,
-                blink_frames=blink_frames)
+                blink_frames=blink_frames, toggle_mode=toggle)
             if ok:
                 self._status_var.set(
-                    f"全{len(layers_roles)}レイヤー配置（口{len(mouth_roles)} 目{len(eye_roles)}）")
-                messagebox.showinfo("完了",
-                    "PSDの全レイヤーを個別ノードで Fusion に展開し、\n"
-                    "再生ヘッド位置に配置しました。\n\n"
-                    f"レイヤー数: {len(layers_roles)}\n"
-                    f"口形状: {mouth_roles}\n"
-                    f"目: {eye_roles}"
-                    + ("（自動まばたき）" if blink_frames else "") + "\n"
-                    f"PNG: {out}\n\n"
-                    "口レイヤーは口パク、閉じ目はまばたきのキーフレームを\n"
-                    "焼き込み済みです。Fusionページで編集できます。",
-                    parent=self)
+                    f"全{len(layers_roles)}レイヤー配置")
+                if toggle:
+                    messagebox.showinfo("完了（立ち絵を組む）",
+                        "PSDの全レイヤーを個別ノードで配置しました。\n"
+                        "キーフレームは焼き込んでいません。\n\n"
+                        f"レイヤー数: {len(layers_roles)}\n"
+                        f"PNG: {out}\n\n"
+                        "【表示の切り替え方】\n"
+                        "・EDITページ: クリップ選択 → インスペクタの\n"
+                        "  「レイヤー表示」ページで各チェックをON/OFF\n"
+                        "・Fusionページ: 各 Mrg_◯◯ ノードの Blend を 0/1\n"
+                        "好きなレイヤー構成の立ち絵を作れます。",
+                        parent=self)
+                else:
+                    messagebox.showinfo("完了",
+                        "PSDの全レイヤーを個別ノードで Fusion に展開し、\n"
+                        "再生ヘッド位置に配置しました。\n\n"
+                        f"レイヤー数: {len(layers_roles)}\n"
+                        f"口形状: {mouth_roles}\n"
+                        f"目: {eye_roles}"
+                        + ("（自動まばたき）" if blink_frames else "") + "\n"
+                        f"PNG: {out}\n\n"
+                        "口レイヤーは口パク、閉じ目はまばたきのキーフレームを\n"
+                        "焼き込み済みです。Fusionページで編集できます。",
+                        parent=self)
             else:
                 self._status_var.set("")
                 messagebox.showwarning("配置失敗",
