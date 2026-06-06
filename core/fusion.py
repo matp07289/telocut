@@ -532,11 +532,9 @@ def generate_tatie_generator(
     A("\t\t\tTools = ordered() {")
 
     # カテゴリ選択コントロール（ComboControl を持つ Background）
+    # ComboControl の選択肢は制御テーブル直下に { MBTNC_AddButton="..." } を列挙する
     for cat, opts in cats.items():
         ctrl_node = cat_ctrls[cat]
-        items = "".join(
-            f'\t\t\t\t\t\t\t{{ MBTNC_AddButton = "{_esc(n)}" }},\n'
-            for (n, p) in opts)
         A(f"\t\t\t\t{ctrl_node} = Background {{")
         A("\t\t\t\t\tNameSet = true,")
         A("\t\t\t\t\tUserControls = ordered() {")
@@ -545,14 +543,9 @@ def generate_tatie_generator(
         A('\t\t\t\t\t\t\tINPID_InputControl = "ComboControl",')
         A("\t\t\t\t\t\t\tINP_Integer = true,")
         A("\t\t\t\t\t\t\tINP_Default = 0,")
-        A(f'\t\t\t\t\t\t\tLINKS_Name = "{cat}",')
-        A("\t\t\t\t\t\t\tINP_MinAllowed = 0,")
-        A(f"\t\t\t\t\t\t\tINP_MaxAllowed = {len(opts) - 1},")
-        A("\t\t\t\t\t\t\tComboControl = {")
-        # 選択肢ラベル
+        A(f'\t\t\t\t\t\t\tLINKS_Name = "{_esc(cat)}",')
         for (n, p) in opts:
-            A(f'\t\t\t\t\t\t\t\tComboControl {{ MBTNC_AddButton = "{_esc(n)}" }},')
-        A("\t\t\t\t\t\t\t},")
+            A(f'\t\t\t\t\t\t\t{{ MBTNC_AddButton = "{_esc(n)}" }},')
         A("\t\t\t\t\t\t},")
         A("\t\t\t\t\t},")
         A("\t\t\t\t\tInputs = { Width = Input { Value = 16, }, Height = Input { Value = 16, }, },")

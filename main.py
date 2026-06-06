@@ -2875,16 +2875,25 @@ class LipSyncDialog(tk.Toplevel):
             messagebox.showerror("ジェネレータ生成エラー", str(ex), parent=self)
             return
 
-        # Generators テンプレートフォルダへインストール
+        # Generators テンプレート（サブフォルダ DavinTelop）と Macros にインストール
         installed = ""
         try:
-            from core.fusion import resolve_generators_dir
+            from core.fusion import resolve_generators_dir, resolve_macros_dir
+            import shutil
+            done = []
             gdir = resolve_generators_dir()
             if gdir:
-                _P(gdir).mkdir(parents=True, exist_ok=True)
-                import shutil
-                shutil.copy(setting_path, str(_P(gdir) / f"{gen_name}.setting"))
-                installed = f"\n→ Generators に追加済み（Resolve再起動で反映）"
+                sub = _P(gdir) / "DavinTelop"
+                sub.mkdir(parents=True, exist_ok=True)
+                shutil.copy(setting_path, str(sub / f"{gen_name}.setting"))
+                done.append("Generators › DavinTelop")
+            mdir = resolve_macros_dir()
+            if mdir:
+                _P(mdir).mkdir(parents=True, exist_ok=True)
+                shutil.copy(setting_path, str(_P(mdir) / f"{gen_name}.setting"))
+                done.append("Macros")
+            if done:
+                installed = "\n→ 追加済み: " + " / ".join(done) + "（Resolve再起動で反映）"
         except Exception as ex:
             installed = f"\n（自動追加失敗: {ex}）"
 
@@ -2894,8 +2903,10 @@ class LipSyncDialog(tk.Toplevel):
             f"立ち絵ジェネレータを作成しました:\n{setting_path}{installed}\n\n"
             f"カテゴリ選択:\n{cat_txt}\n\n"
             "【使い方】\n"
-            "1. Resolve を再起動\n"
-            "2. Effects → Generators → " + gen_name + " をタイムラインへ\n"
+            "1. Resolve を必ず再起動（テンプレートは起動時に読込）\n"
+            "2. エフェクト → ジェネレーター → DavinTelop → "
+            + gen_name + " をタイムラインへ\n"
+            "   （または Fusionページで右クリック → Macro → " + gen_name + "）\n"
             "3. インスペクタの「ポーズ」ページで眉/目/口/腕などを選択\n"
             "   位置/サイズは「Settings」ページ",
             parent=self)
