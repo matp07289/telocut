@@ -988,11 +988,29 @@ class ResolveConnector:
             if imp is None:
                 self._error = "ImportFusionComp 非対応のResolveバージョンです。"
                 return False
-            result = imp(comp_path)
-            if not result:
-                self._error = "コンポジションの読み込みに失敗しました。"
-                return False
-            return True
+            # パス形式を複数試す（Resolve API はバックスラッシュ/スラッシュで
+            # 挙動が異なることがある）
+            candidates = []
+            for cp in (os.path.normpath(comp_path),
+                       comp_path.replace("\\", "/"),
+                       os.path.abspath(comp_path)):
+                if cp not in candidates:
+                    candidates.append(cp)
+
+            last = "不明"
+            for cp in candidates:
+                try:
+                    result = imp(cp)
+                except Exception as ie:
+                    last = f"例外({cp}): {ie}"
+                    continue
+                if result:
+                    return True
+                last = f"戻り値なし: {cp}"
+
+            self._error = ("コンポジションの読み込みに失敗しました。\n"
+                           f"詳細: {last}")
+            return False
         except Exception as e:
             self._error = f"Fusionクリップ配置エラー: {e}"
             return False
