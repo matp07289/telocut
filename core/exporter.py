@@ -1042,48 +1042,31 @@ class ResolveConnector:
                 return False
             prev = base_ld
 
-            # 口形状コントロール（Background に Mouth ユーザーコントロール）
-            ctrl = comp.AddTool("Background", -2, -2)
-            ctrl_name = None
-            try:
-                ctrl.UserControls = {
-                    "Mouth": {
-                        "LINKID_DataType": "Number",
-                        "INPID_InputControl": "SliderControl",
-                        "INP_Integer": True,
-                        "INP_MinScale": 0, "INP_MaxScale": 6, "INP_Default": 0,
-                        "LINKS_Name": "Mouth",
-                    }
-                }
-                ctrl = ctrl.Refresh()          # UserControls 反映には Refresh が必要
-                ctrl_name = ctrl.Name           # 実際のツール名を取得（式参照用）
-                ctrl.SetInput("Mouth", 0.0)
-            except Exception:
-                ctrl = None
-
-            def _set_expr(tool, inp, expr) -> bool:
-                """入力に式を設定（複数 API 形を試す）。"""
-                # 1) Input オブジェクト経由
-                try:
-                    obj = getattr(tool, inp)
-                    if hasattr(obj, "SetExpression"):
-                        obj.SetExpression(expr)
-                        return True
-                except Exception:
-                    pass
-                # 2) tool.SetExpression（一部バージョン）
-                try:
-                    if hasattr(tool, "SetExpression"):
-                        tool.SetExpression(inp, expr)
-                        return True
-                except Exception:
-                    pass
-                return False
-
-            # 口ローダー + Merge（Blend を口形状で切替）
+            # 口ローダー + Merge。各口の表示/非表示は Blend を直接キーフレーム
+            # （式やユーザーコントロールに依存しないため確実に1フレーム1口になる）。
             avail = [s for s in ("closed", "a", "i", "u", "e", "o", "N")
                      if mouth_paths.get(s) and os.path.exists(mouth_paths[s])]
-            expr_ok = 0
+
+            def _bake_blend(tool, active_frames, total):
+                """Blend を active_frames で 1、それ以外で 0 にステップ・キーフレーム。
+                SetInput(name, value, time) を変化点で呼び、アニメ化する。"""
+                if not active_frames:
+                    try: tool.SetInput("Blend", 0.0)
+                    except Exception: pass
+                    return
+                aset = set(active_frames)
+                prev_v = None
+                # フレーム0から total まで、状態変化点だけキーを打つ
+                for f in range(0, total + 1):
+                    v = 1.0 if f in aset else 0.0
+                    if v != prev_v:
+                        try:
+                            tool.SetInput("Blend", v, float(f))
+                        except Exception:
+                            pass
+                        prev_v = v
+
+            total = len(timeline) - 1 if timeline else 0
             for i, s in enumerate(avail):
                 m_ld, _ = _add_loader(mouth_paths[s], 1, i + 1)
                 mg = comp.AddTool("Merge", 2, i + 1)
@@ -1092,33 +1075,21 @@ class ResolveConnector:
                     mg.ConnectInput("Foreground", m_ld)
                 except Exception:
                     pass
-                idx = SHAPE_IDX.get(s, 0)
-                # 既定は非表示（式が効かない場合の重なりを防ぐ）
-                try:
-                    mg.SetInput("Blend", 1.0 if idx == 0 else 0.0)
-                except Exception:
-                    pass
-                if ctrl_name:
-                    expr = f"iif({ctrl_name}.Mouth == {idx}, 1, 0)"
-                    if _set_expr(mg, "Blend", expr):
-                        expr_ok += 1
-                    else:
-                        # iif が使えない場合の Lua 形
-                        _set_expr(mg, "Blend",
-                                  f"({ctrl_name}.Mouth == {idx}) and 1 or 0")
-                prev = mg
 
-            # 口パクキーフレームを Mouth に焼き込み（best-effort）
-            if ctrl is not None and ctrl_name and timeline:
+                # まず静的デフォルト（closed のみ表示）。キーフレームが効かない
+                # 環境でも口が重ならないようにするための保険。
                 try:
-                    prev_idx = None
-                    for f, shape in enumerate(timeline):
-                        idx = SHAPE_IDX.get(shape, 0)
-                        if idx != prev_idx:
-                            ctrl.SetInput("Mouth", float(idx), float(f))
-                            prev_idx = idx
+                    mg.SetInput("Blend", 1.0 if s == "closed" else 0.0)
                 except Exception:
                     pass
+
+                if timeline:
+                    active = [f for f, sh in enumerate(timeline) if sh == s]
+                    if s == "closed":
+                        active += [f for f, sh in enumerate(timeline)
+                                   if sh not in avail]
+                    _bake_blend(mg, sorted(active), total)
+                prev = mg
 
             # MediaOut1 に接続
             try:
