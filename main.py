@@ -1524,6 +1524,20 @@ class VoiceVoxPanel(ttk.Frame):
         ttk.Checkbutton(vt_row, text="連続テロップを1クリップに結合",
                         variable=self._tachie_merge_var).pack(side='left', padx=8)
 
+        # 字幕テロップPNGも配置
+        self._sub_send_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(resolve_lf, text="字幕（テロップPNG）もビデオトラックに配置",
+                        variable=self._sub_send_var).grid(
+            row=6, column=0, columnspan=3, sticky='w', padx=6, pady=(6, 2))
+        ttk.Label(resolve_lf, text="ビデオトラック:").grid(row=7, column=0, sticky='e', **pad)
+        svt = ttk.Frame(resolve_lf)
+        svt.grid(row=7, column=1, columnspan=2, sticky='w', **pad)
+        self._sub_vtrack_var = tk.IntVar(value=2)
+        ttk.Spinbox(svt, from_=1, to=20, textvariable=self._sub_vtrack_var,
+                    width=4).pack(side='left')
+        ttk.Label(svt, text="V（字幕PNG。音声・立ち絵と同時に配置）",
+                  foreground='gray', font=('',8)).pack(side='left', padx=4)
+
         # ─ テロップ一覧タブ ─────────────────────
         list_tab = ttk.Frame(nb, padding=8)
         nb.add(list_tab, text=" テロップ ")
@@ -1831,9 +1845,11 @@ class VoiceVoxPanel(ttk.Frame):
                     writer.writeheader()
                     writer.writerows(meta_rows)
 
-            # Resolve 送信（オーディオ / 立ち絵）
+            # Resolve 送信（オーディオ / 字幕PNG / 立ち絵）
             need_resolve = (not self._stop_flag and meta_rows and
-                            (self._resolve_send_var.get() or self._tachie_send_var.get()))
+                            (self._resolve_send_var.get()
+                             or self._tachie_send_var.get()
+                             or self._sub_send_var.get()))
             if need_resolve:
                 self.after(0, lambda: self._prog_var.set("Resolve に送信中..."))
                 try:
@@ -1853,6 +1869,22 @@ class VoiceVoxPanel(ttk.Frame):
                                 sent_entries, wav_paths, fps_tl,
                                 audio_track_index=atrack,
                                 playhead_relative=ph)
+
+                        # 字幕（テロップPNG）をビデオトラックに配置
+                        if self._sub_send_var.get():
+                            try:
+                                from core.exporter import export_png as _exp_png
+                                sub_dir = out / "subtitles"
+                                png_paths = _exp_png(
+                                    sent_entries, self._app._collect_design(),
+                                    str(sub_dir))
+                                rc.import_pngs_to_timeline(
+                                    sent_entries, png_paths, fps_tl,
+                                    track_index=self._sub_vtrack_var.get(),
+                                    playhead_relative=ph)
+                            except Exception as se:
+                                self.after(0, lambda e=str(se):
+                                    self._prog_var.set(f"字幕配置: {e[:40]}"))
 
                         # 立ち絵をビデオトラックに配置
                         if self._tachie_send_var.get():

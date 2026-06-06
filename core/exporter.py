@@ -853,10 +853,12 @@ class ResolveConnector:
         fps: float,
         track_index: int = 2,
         callback: Optional[Callable[[int, int, str], None]] = None,
+        playhead_relative: bool = False,
     ) -> bool:
         """
         PNG画像をメディアプールに一括取り込みし、タイムラインに一括配置する。
         track_index: 配置するビデオトラック (1始まり、2=V2)
+        playhead_relative=True: 現在の再生ヘッド位置を基準に相対配置
         """
         if not self._project or not self._timeline:
             self._error = "Resolveに接続されていません。"
@@ -914,12 +916,21 @@ class ResolveConnector:
             if callback:
                 callback(0, len(valid_items), "インポート完了、配置中...")
 
-            # タイムライン開始フレームオフセット (例: 01:00:00:00 開始 → 216000)
-            tl_start = 0
-            try:
-                tl_start = int(self._timeline.GetStartFrame())
-            except Exception:
-                pass
+            # 配置基準オフセット（絶対TC or 再生ヘッド相対）
+            if playhead_relative:
+                tc = self._timeline.GetCurrentTimecode()
+                if tc:
+                    playhead_frame = seconds_to_frames(parse_timecode(tc, fps), fps)
+                    first_start    = min(it[2] for it in valid_items)
+                    base_offset    = playhead_frame - first_start
+                else:
+                    base_offset = 0
+            else:
+                base_offset = 0
+                try:
+                    base_offset = int(self._timeline.GetStartFrame())
+                except Exception:
+                    pass
 
             # ── 3) 1クリップずつ配置 (一括だと2本目以降が置かれない Resolve バグ回避) ──
             placed = 0
@@ -929,7 +940,7 @@ class ResolveConnector:
                     "mediaPoolItem": mpi,
                     "startFrame":   0,
                     "endFrame":     dur_frames - 1,
-                    "recordFrame":  start_frame + tl_start,
+                    "recordFrame":  start_frame + base_offset,
                     "mediaType":    1,
                     "trackIndex":   track_index,
                 }]
