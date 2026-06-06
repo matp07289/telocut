@@ -1284,6 +1284,7 @@ class VoiceVoxPanel(ttk.Frame):
 
         self._build()
         self._try_connect()
+        self._schedule_auto_refresh()   # テロップ一覧を定期自動更新
 
     # ── UI 構築 ──────────────────────────────────
 
@@ -1442,7 +1443,7 @@ class VoiceVoxPanel(ttk.Frame):
         self._tree.tag_configure('checked',   foreground='black')
         self._tree.tag_configure('unchecked', foreground='#AAAAAA')
         self._checked: set = set()
-        self.refresh_telops()
+        self.refresh_telops(force=True)
 
         # ── 下部コントロール ──────────────────────
         bot = ttk.Frame(self, padding=(8, 0, 8, 8))
@@ -1456,32 +1457,70 @@ class VoiceVoxPanel(ttk.Frame):
         self._prog_bar.pack(side='left', padx=8)
 
         ttk.Button(bot, text="🔄 テロップ更新", width=12,
-                   command=self.refresh_telops).pack(side='right', padx=4)
+                   command=lambda: self.refresh_telops(force=True)).pack(side='right', padx=4)
         self._gen_btn = ttk.Button(bot, text="▶ 全テロップを生成", width=16,
                                     command=self._start_generation)
         self._gen_btn.pack(side='right', padx=4)
         ttk.Button(bot, text="■ 中断", width=8,
                    command=self._stop_generation).pack(side='right', padx=2)
 
-    def refresh_telops(self):
-        """メインアプリの現在のテロップ一覧をツリーに反映する。"""
-        self._telops = [e for e in self._app.telop_list if e.enabled]
+    def refresh_telops(self, force: bool = False):
+        """
+        メインアプリの現在のテロップ一覧をツリーに反映する。
+        - チェック状態は維持（既存ID）。新規IDは初期チェックON
+        - 内容に変化が無ければ何もしない（定期呼び出し時のちらつき防止）
+        - 生成中(force=False)は更新しない
+        """
         if not hasattr(self, '_tree'):
             return
+        if self._running and not force:
+            return
+
+        telops = [e for e in self._app.telop_list if e.enabled]
+        # 変化検出用シグネチャ
+        sig = tuple((e.id, e.start_time, e.end_time, e.text) for e in telops)
+        if not force and sig == getattr(self, '_telop_sig', None):
+            return
+        self._telop_sig = sig
+        self._telops = telops
+
+        prev_checked = getattr(self, '_checked', set())
+        prev_ids     = {self._tree.set(i, 'no') for i in self._tree.get_children()} \
+                       if self._tree.get_children() else set()
+
         for iid in self._tree.get_children():
             self._tree.delete(iid)
-        self._checked = set()
-        for e in self._telops:
+        new_checked = set()
+        for e in telops:
             iid = str(e.id)
+            # 既存IDはチェック状態維持、新規IDはON
+            is_checked = (iid in prev_checked) or (str(e.id) not in prev_ids)
+            mark = '✓' if is_checked else '—'
             self._tree.insert('', 'end', iid=iid,
-                values=('✓', e.id, e.start_time, e.end_time,
-                        e.text.replace('\n', ' ')[:50]))
-            self._checked.add(iid)
+                values=(mark, e.id, e.start_time, e.end_time,
+                        e.text.replace('\n', ' ')[:50]),
+                tags=('checked' if is_checked else 'unchecked',))
+            if is_checked:
+                new_checked.add(iid)
+        self._checked = new_checked
+
         if self._nb is not None and self._list_tab is not None:
             try:
-                self._nb.tab(self._list_tab, text=f" テロップ ({len(self._telops)}) ")
+                self._nb.tab(self._list_tab, text=f" テロップ ({len(telops)}) ")
             except Exception:
                 pass
+
+    def _schedule_auto_refresh(self):
+        """テロップ一覧を定期的に自動更新する（手動「更新」不要にする）。"""
+        try:
+            self.refresh_telops()
+        except Exception:
+            pass
+        # ウィジェットが生きている間のみ継続
+        try:
+            self.after(1500, self._schedule_auto_refresh)
+        except Exception:
+            pass
 
     # ── 接続テスト ────────────────────────────────
 
@@ -1700,11 +1739,8 @@ class VoiceVoxPanel(ttk.Frame):
                 self._running = False
                 self._gen_btn.configure(state='normal')
                 self._prog_var.set(
-                    f"完了: {len(meta_rows)} 件の WAV を生成しました")
-                if not self._stop_flag:
-                    import subprocess, platform
-                    if platform.system() == "Windows":
-                        subprocess.Popen(["explorer", str(out)])
+                    f"完了: {len(meta_rows)} 件の WAV を生成しました → {out}")
+                # フォルダの自動オープンは行わない
 
             self.after(0, _done)
 
@@ -5152,7 +5188,7 @@ class DavinTelopApp(tk.Tk):
         panel = getattr(self, '_voicevox_panel', None)
         nb    = getattr(self, '_main_nb', None)
         if panel is not None and nb is not None:
-            panel.refresh_telops()
+            panel.refresh_telops(force=True)
             try:
                 nb.select(panel.master)   # VoiceVox タブを選択
             except Exception:
