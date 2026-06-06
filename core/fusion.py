@@ -551,7 +551,8 @@ def generate_tatie_generator(
         A("\t\t\t\t\t\t\tINP_Default = 0,")
         A(f'\t\t\t\t\t\t\tLINKS_Name = "{_esc(self_labels.get(cat, cat))}",')
         for (n, p) in opts:
-            A(f'\t\t\t\t\t\t\t{{ MBTNC_AddButton = "{_esc(_disp_label(n))}" }},')
+            # ComboControl の選択肢は CCS_AddString（MBTNC_AddButton は別物）
+            A(f'\t\t\t\t\t\t\t{{ CCS_AddString = "{_esc(_disp_label(n))}" }},')
         A("\t\t\t\t\t\t},")
         A("\t\t\t\t\t},")
         # Sel に具体値(0)を設定。これが無いと選択肢が表示されない
