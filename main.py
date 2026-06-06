@@ -1408,6 +1408,12 @@ class VoiceVoxPanel(ttk.Frame):
         ttk.Label(resolve_lf, text="A (1始まり)",
                   foreground='gray', font=('',8)).grid(row=1, column=2, sticky='w')
 
+        self._resolve_playhead_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(resolve_lf,
+                        text="再生ヘッド位置を基準に配置（先頭を再生ヘッドに合わせ相対配置）",
+                        variable=self._resolve_playhead_var).grid(
+            row=2, column=0, columnspan=3, sticky='w', padx=6, pady=2)
+
         # ─ テロップ一覧タブ ─────────────────────
         list_tab = ttk.Frame(nb, padding=8)
         nb.add(list_tab, text=" テロップ ")
@@ -1684,7 +1690,8 @@ class VoiceVoxPanel(ttk.Frame):
                         atrack = self._resolve_atrack_var.get()
                         rc.import_wavs_to_timeline(
                             sent_entries, wav_paths, fps_tl,
-                            audio_track_index=atrack)
+                            audio_track_index=atrack,
+                            playhead_relative=self._resolve_playhead_var.get())
                 except Exception as ex:
                     self.after(0, lambda e=str(ex):
                         messagebox.showwarning("Resolve送信", f"WAV送信エラー:\n{e}", parent=self))

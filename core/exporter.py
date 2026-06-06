@@ -1040,10 +1040,15 @@ class ResolveConnector:
         fps: float,
         audio_track_index: int = 1,
         callback: Optional[Callable[[int, int, str], None]] = None,
+        playhead_relative: bool = False,
     ) -> bool:
         """
         WAV ファイルをメディアプールに取り込み、タイムラインのオーディオトラックに配置。
         Resolve_Script の voice_dropper を参考に実装。
+
+        playhead_relative=False: 各テロップの絶対TCに配置
+        playhead_relative=True : 現在の再生ヘッド位置を基準に、先頭テロップを
+                                 再生ヘッドに合わせ、相対間隔を保って配置
         """
         if not self._project or not self._timeline:
             self._error = "Resolveに接続されていません。"
@@ -1090,6 +1095,18 @@ class ResolveConnector:
                 self._error = "配置できる音声がありません。"
                 return False
 
+            # 配置基準オフセットを決定
+            if playhead_relative:
+                tc = self._timeline.GetCurrentTimecode()
+                if not tc:
+                    self._error = "再生ヘッド位置を取得できませんでした。"
+                    return False
+                playhead_frame = seconds_to_frames(parse_timecode(tc, fps), fps)
+                first_start    = min(it[2] for it in valid_items)
+                base_offset    = playhead_frame - first_start   # 先頭を再生ヘッドへ
+            else:
+                base_offset    = tl_start
+
             # WAV をインポート
             imported = []
             for _, wav_path, _, _ in valid_items:
@@ -1112,7 +1129,7 @@ class ResolveConnector:
                     "mediaPoolItem": mpi,
                     "startFrame":   0,
                     "endFrame":     dur_frames - 1,
-                    "recordFrame":  start_frame + tl_start,
+                    "recordFrame":  start_frame + base_offset,
                     "mediaType":    2,      # audio
                     "trackIndex":   audio_track_index,
                 }]
