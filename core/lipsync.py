@@ -141,6 +141,39 @@ def extract_psd_layers(psd_path: str) -> dict[str, "Image.Image"]:
 
     psd   = PSDImage.open(psd_path)
     result: dict[str, Image.Image] = {}
+    W, H = psd.width, psd.height
+
+    def _to_canvas(layer):
+        """1レイヤーをキャンバス全面サイズの RGBA で返す（透明なら None）。
+        composite()（クリッピング/描画モード/効果を適用した正しい見た目）を優先し、
+        失敗時は topil() を貼り付けてフォールバックする。"""
+        img = None
+        # 1) composite: 正しい合成結果（クリッピングマスク・乗算等の描画モード対応）
+        try:
+            img = layer.composite(viewport=(0, 0, W, H), force=True)
+        except Exception:
+            img = None
+        if img is not None:
+            img = img.convert("RGBA")
+            if img.getbbox() is None:      # 全面透明 → フォールバックへ
+                img = None
+        # 2) topil フォールバック（生チャンネルを位置合わせして貼り付け）
+        if img is None:
+            try:
+                raw = layer.topil()
+            except Exception:
+                raw = None
+            if raw is not None:
+                raw = raw.convert("RGBA")
+                canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+                try:
+                    canvas.paste(raw, (int(layer.left), int(layer.top)), raw)
+                except Exception:
+                    canvas.paste(raw, (0, 0))
+                img = canvas
+        if img is not None and img.getbbox() is None:
+            img = None                     # 完全に空ならスキップ
+        return img
 
     def _collect(layer, prefix=""):
         name = f"{prefix}{layer.name}" if prefix else layer.name
@@ -149,13 +182,9 @@ def extract_psd_layers(psd_path: str) -> dict[str, "Image.Image"]:
                 _collect(child, prefix=name + "/")
         else:
             try:
-                img = layer.topil()
+                img = _to_canvas(layer)
                 if img is not None:
-                    # キャンバスサイズに配置
-                    canvas = Image.new("RGBA", (psd.width, psd.height), (0, 0, 0, 0))
-                    canvas.paste(img.convert("RGBA"),
-                                 (layer.left, layer.top), img.convert("RGBA"))
-                    result[name] = canvas
+                    result[name] = img
             except Exception:
                 pass
 

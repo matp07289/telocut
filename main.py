@@ -1285,6 +1285,75 @@ class LipSyncGuideDialog(tk.Toplevel):
         self.grab_set()
 
 
+class RizoriputoGuideDialog(tk.Toplevel):
+    """立ち絵リグは りぞりぷと(psd2tatie) で作る運用の案内ダイアログ。"""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("立ち絵リグの作り方（りぞりぷと連携）")
+        self.geometry("640x620")
+        self.resizable(True, True)
+
+        text = tk.Text(self, wrap='word', padx=12, pady=8,
+                       font=('', 10), relief='flat')
+        sb = ttk.Scrollbar(self, command=text.yview)
+        text.configure(yscrollcommand=sb.set)
+        sb.pack(side='right', fill='y')
+        text.pack(fill='both', expand=True)
+
+        guide = (
+            "■ 立ち絵（眉/目/口/腕を切替できるリグ）は りぞりぷと で作るのが確実です\n\n"
+            "DaVinci Resolve の Fusion ジェネレータで、眉/目/口などを\n"
+            "インスペクタから切り替えられる立ち絵リグは、無料ツール\n"
+            "「りぞりぷと（Resolve_Script）」の psd2tatie が定番かつ確実です。\n"
+            "（Fusion 上でノードをライブ生成して保存するため、確実に動作します）\n\n"
+            "DavinTelop は『テロップ』『VoiceVox 音声』『口パク素材』など\n"
+            "周辺を担当し、立ち絵リグ作成は りぞりぷと に任せる構成が安定です。\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "【1】りぞりぷとを導入する\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "・GitHub: nakano000 / Resolve_Script を入手\n"
+            "  https://github.com/nakano000/Resolve_Script\n"
+            "・解説動画（ずんだもん・めたん 目パチ口パク）:\n"
+            "  YouTube『【DaVinci Resolve】ずんだもん・めたん…りぞりぷと』\n"
+            "・同梱の psd2tatie / Tatie / TatieAnim を使います\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "【2】PSD から立ち絵リグを作る（psd2tatie）\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "・PSD はフォルダで分類（!口 / !目 / !眉 / !左腕 …、各オプションは *名前）\n"
+            "・psd2tatie に PSD を読み込み、リグ（マクロ/ジェネレータ）を生成\n"
+            "・Resolve のエフェクト → ジェネレーター に追加されます\n"
+            "・インスペクタの「ポーズ」で 眉/目/口/腕 を選択\n"
+            "・口パク/目パチは りぞりぷとの TatieAnim（Editページ）で付与\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "【3】DavinTelop と組み合わせる（連携）\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "● PSD分解PNG が必要なとき\n"
+            "  「キャラクター」タブの PSD から本アプリでも全レイヤーを\n"
+            "  個別PNGに分解できます（他用途や差し替えに）。\n\n"
+            "● VoiceVox 音声\n"
+            "  「🔊 VoiceVox」タブでセリフ音声を生成し、Resolve の\n"
+            "  現在の再生ヘッド位置へ自動配置。りぞりぷとの口パクと\n"
+            "  タイミングを合わせられます。\n\n"
+            "● テロップ\n"
+            "  通常どおり Text+ / 字幕として配置。立ち絵はりぞりぷと、\n"
+            "  テロップは DavinTelop、と役割を分けると安定します。\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "【補足】DavinTelop 単体の立ち絵機能について\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "・「⚡ PSD分解→口パク立ち絵を自動配置（キーフレーム）」は\n"
+            "  口パク付きの立ち絵を Fusion クリップとして配置します\n"
+            "  （焼き込みキーフレーム方式・単体で完結）。\n"
+            "・眉/目/口をインスペクタで自由に切り替える『リグ』が必要なら\n"
+            "  りぞりぷと(psd2tatie) をご利用ください（本ガイドの方式）。\n"
+        )
+        text.insert('1.0', guide)
+        text.configure(state='disabled')
+
+        ttk.Button(self, text="閉じる", command=self.destroy).pack(pady=8)
+        self.grab_set()
+
+
 class PsGuideDialog(tk.Toplevel):
     """Photoshopファイル監視の設定方法を説明するダイアログ。"""
 
@@ -2355,9 +2424,11 @@ class LipSyncDialog(tk.Toplevel):
 
         fxbtn2c = ttk.Frame(fx_lf)
         fxbtn2c.pack(fill='x', pady=(4, 0))
-        ttk.Button(fxbtn2c, text="🎭 立ち絵ジェネレータを作成（眉/目/口/腕をカテゴリ選択）",
-                   command=self._psd_to_generator).pack(side='left', padx=2)
-        ttk.Label(fxbtn2c, text="りぞりぷと風：ジェネレータとして追加",
+        ttk.Button(fxbtn2c, text="🎭 立ち絵リグの作り方（りぞりぷと連携ガイド）",
+                   command=lambda: RizoriputoGuideDialog(self)).pack(side='left', padx=2)
+        ttk.Button(fxbtn2c, text="📂 PSDを全レイヤーPNGに分解",
+                   command=self._psd_split_only).pack(side='left', padx=2)
+        ttk.Label(fxbtn2c, text="眉/目/口を切替するリグは りぞりぷと(psd2tatie) で作成",
                   foreground='gray', font=('', 8)).pack(side='left', padx=4)
 
         fxbtn3 = ttk.Frame(fx_lf)
@@ -2832,6 +2903,46 @@ class LipSyncDialog(tk.Toplevel):
         except Exception as ex:
             self._status_var.set("")
             messagebox.showerror("Resolve配置エラー", str(ex), parent=self)
+
+    def _psd_split_only(self):
+        """PSD を全レイヤー個別 PNG に分解してフォルダを開く。
+        （立ち絵リグは りぞりぷと(psd2tatie) で作成する運用向け）"""
+        from pathlib import Path as _P
+        psd = self._psd_path_var.get().strip() if hasattr(self, '_psd_path_var') else ""
+        if not psd or not _P(psd).exists():
+            messagebox.showwarning("PSD未選択",
+                "「キャラクター」タブで PSD を指定してください。", parent=self)
+            return
+        from core.lipsync import HAS_PSD_TOOLS
+        if not HAS_PSD_TOOLS:
+            messagebox.showerror("エラー", "psd-tools が必要です。\npip install psd-tools",
+                                 parent=self)
+            return
+        out_dir = self._out_dir_var.get().strip()
+        if not out_dir:
+            messagebox.showwarning("出力先未設定", "出力フォルダを設定してください。", parent=self)
+            return
+        out = _P(out_dir) / "psd_layers" / _P(psd).stem
+        try:
+            self._status_var.set("PSD を全レイヤーに分解中...")
+            self.update()
+            from core.fusion import split_psd_all_layers
+            layers = split_psd_all_layers(psd, str(out))
+        except Exception as ex:
+            self._status_var.set("")
+            messagebox.showerror("PSD分解エラー", str(ex), parent=self)
+            return
+        self._status_var.set(f"PSD分解: {len(layers)}レイヤー → {out}")
+        try:
+            import os
+            os.startfile(str(out))   # フォルダを開く（Windows）
+        except Exception:
+            pass
+        messagebox.showinfo("PSD分解完了",
+            f"{len(layers)} レイヤーを個別PNGに分解しました:\n{out}\n\n"
+            "眉/目/口を切り替えできる立ち絵リグは りぞりぷと(psd2tatie) で\n"
+            "作成してください（「🎭 立ち絵リグの作り方」ボタン参照）。",
+            parent=self)
 
     def _psd_to_generator(self):
         """PSD を全レイヤー分解し、りぞりぷと風の立ち絵ジェネレータ(.setting)を

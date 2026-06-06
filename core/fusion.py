@@ -509,25 +509,58 @@ def generate_tatie_generator(
         used.add(b)
         return b
 
+    # 先頭レイヤー（最背面）を土台に、全レイヤーをネイティブ解像度で重ねる。
+    # 式は Resolve のジェネレータ文脈で評価されないため使わない。各レイヤーの
+    # Merge.Blend を直接インスペクタに公開（スライダー 0/1）。Blend=1 のマージは
+    # 確実に合成される（Fusionページで検証済み）。
+    base_layer = avail[0]
+
+    # ローダー/マージ名・既定表示(Blend)を確定
+    #   ・カテゴリ無し（体/髪/服など）   → 既定 ON(1)
+    #   ・カテゴリ有り（眉/目/口/腕…）   → 先頭オプションだけ ON(1)・他は OFF(0)
+    loader_of, merge_of, default_of = {}, {}, {}
+    seen_cat = set()
+    li = 0
+    loader_of[base_layer] = nodename(f"Ld{li}"); li += 1
+    bcat = _group_key(base_layer[0])
+    if bcat in cats:
+        seen_cat.add(bcat)
+    for (n, p) in avail[1:]:
+        loader_of[(n, p)] = nodename(f"Ld{li}"); li += 1
+        merge_of[(n, p)] = nodename(f"Mg{li}")
+        cat = _group_key(n)
+        if cat in cats:
+            default_of[(n, p)] = 1 if cat not in seen_cat else 0
+            seen_cat.add(cat)
+        else:
+            default_of[(n, p)] = 1
+    others = [(n, p) for (n, p) in avail[1:] if _group_key(n) not in cats]
+
     L = []
     A = L.append
     A("{")
     A("\tTools = ordered() {")
     A(f"\t\t{gen_name} = GroupOperator {{")
     A("\t\t\tCtrlWZoom = false,")
+    # ── 公開コントロール（ポーズページ）: 各レイヤーの表示スライダー(Blend) ──
     A("\t\t\tInputs = ordered() {")
-    # カテゴリ選択を公開（ポーズページ）。コントロールは経路内の RootXF に持たせる
-    cat_sel = {}   # category -> ("RootXF", "Sel_<ci>")
+    iid = 0
     for ci, (cat, opts) in enumerate(cats.items()):
-        sel_name = f"Sel_{ci}"
-        cat_sel[cat] = sel_name
-        A(f'\t\t\t\t{sel_name} = InstanceInput {{')
-        A('\t\t\t\t\tSourceOp = "RootXF",')
-        A(f'\t\t\t\t\tSource = "{sel_name}",')
-        A(f'\t\t\t\t\tName = "{_esc(self_labels.get(cat, cat))}",')
-        A(f'\t\t\t\t\tPage = "ポーズ",')
-        A("\t\t\t\t\tDefault = 0,")
-        A("\t\t\t\t},")
+        A(f'\t\t\t\tLbl{ci} = InstanceInput {{ SourceOp = "RootXF", Source = "Lbl{ci}", Page = "ポーズ", }},')
+        for (nn, pp) in opts:
+            mg = merge_of[(nn, pp)]
+            A(f'\t\t\t\tI{iid} = InstanceInput {{ SourceOp = "{mg}", Source = "Blend", '
+              f'Name = "{_esc(_disp_label(nn))}", Page = "ポーズ", '
+              f'Default = {default_of[(nn, pp)]}, }},')
+            iid += 1
+    if others:
+        A('\t\t\t\tLblO = InstanceInput { SourceOp = "RootXF", Source = "LblO", Page = "ポーズ", },')
+        for (nn, pp) in others:
+            mg = merge_of[(nn, pp)]
+            A(f'\t\t\t\tI{iid} = InstanceInput {{ SourceOp = "{mg}", Source = "Blend", '
+              f'Name = "{_esc(_disp_label(_group_key(nn)) or nn)}", Page = "ポーズ", '
+              f'Default = 1, }},')
+            iid += 1
     A('\t\t\t\tTX = InstanceInput { SourceOp = "RootXF", Source = "Center", Name = "位置", Page = "Settings", },')
     A('\t\t\t\tTS = InstanceInput { SourceOp = "RootXF", Source = "Size", Name = "サイズ", Default = 1.0, Page = "Settings", },')
     A("\t\t\t},")
@@ -537,63 +570,81 @@ def generate_tatie_generator(
     A("\t\t\tViewInfo = GroupInfo { Pos = { 0, 0 } },")
     A("\t\t\tTools = ordered() {")
 
-    # ローダー + マージ
-    prev = None
-    y = 0
-    for n, p in avail:
-        ld = nodename("Ld_" + _safe(n))
+    yref = [0]
+
+    def _emit_loader(ld, p):
         A(f"\t\t\t\t{ld} = Loader {{")
         A("\t\t\t\t\tClips = { Clip {")
         A(f'\t\t\t\t\t\tFilename = "{_lua_path(p)}",')
-        A('\t\t\t\t\t\tFormatID = "PNGFormat", Length = 1, TrimIn = 0,')
+        A('\t\t\t\t\t\tFormatID = "PNGFormat",')
+        A("\t\t\t\t\t\tLength = 1,")
+        A("\t\t\t\t\t\tTrimIn = 0,")
+        A("\t\t\t\t\t\tExtendFirst = 1000000,")
+        A("\t\t\t\t\t\tExtendLast = 1000000,")
         A("\t\t\t\t\t} },")
-        A(f"\t\t\t\t\tViewInfo = OperatorInfo {{ Pos = {{ 0, {y} }} }},")
+        A("\t\t\t\t\tInputs = {")
+        A("\t\t\t\t\t\tLoop = Input { Value = 1, },")
+        A("\t\t\t\t\t\tPostMultiplyByAlpha = Input { Value = 1, },")
+        A("\t\t\t\t\t},")
+        A(f"\t\t\t\t\tViewInfo = OperatorInfo {{ Pos = {{ 0, {yref[0]} }} }},")
         A("\t\t\t\t},")
-        if prev is None:
-            prev = ld
-            y += 33
-            continue
-        mg = nodename("Mg_" + _safe(n))
+        yref[0] += 33
+
+    def _emit_merge(mg, bg, fg, blend_val):
         A(f"\t\t\t\t{mg} = Merge {{")
         A("\t\t\t\t\tInputs = {")
-        A(f'\t\t\t\t\t\tBackground = Input {{ SourceOp = "{prev}", Source = "Output", }},')
-        A(f'\t\t\t\t\t\tForeground = Input {{ SourceOp = "{ld}", Source = "Output", }},')
-        # グループ（選択肢2つ以上）に属すレイヤーは選択式、それ以外は常時表示
-        cat = _group_key(n)
-        if cat in cat_sel:
-            opts = cats[cat]
-            idx = next((k for k, (nn, pp) in enumerate(opts) if nn == n), 0)
-            sel = cat_sel[cat]
-            # RootXF の Sel_x を参照（経路内ツールなので確実に評価される）
-            # Fusion 標準の iif() を使用（Lua の and/or は式エンジンで不可）
-            A(f'\t\t\t\t\t\tBlend = Input {{ Expression = "iif(RootXF.{sel} == {idx}, 1, 0)", }},')
+        A(f'\t\t\t\t\t\tBackground = Input {{ SourceOp = "{bg}", Source = "Output", }},')
+        A(f'\t\t\t\t\t\tForeground = Input {{ SourceOp = "{fg}", Source = "Output", }},')
+        A("\t\t\t\t\t\tPerformDepthMerge = Input { Value = 0, },")
+        A(f'\t\t\t\t\t\tBlend = Input {{ Value = {blend_val}, }},')
         A("\t\t\t\t\t},")
-        A(f"\t\t\t\t\tViewInfo = OperatorInfo {{ Pos = {{ 165, {y} }} }},")
+        A(f"\t\t\t\t\tViewInfo = OperatorInfo {{ Pos = {{ 165, {yref[0]} }} }},")
         A("\t\t\t\t},")
-        prev = mg
-        y += 33
 
-    # ルート Transform（カテゴリ選択コントロールを保持・経路内で評価される）
+    # ── 土台（先頭レイヤー）＝最背面 ──
+    _emit_loader(loader_of[base_layer], base_layer[1])
+    prev = loader_of[base_layer]
+
+    # ── 残りのレイヤー: Loader + Merge（Blend をスライダー公開） ──
+    for (n, p) in avail[1:]:
+        ld = loader_of[(n, p)]
+        mg = merge_of[(n, p)]
+        _emit_loader(ld, p)
+        _emit_merge(mg, prev, ld, default_of[(n, p)])
+        prev = mg
+
+    # ── ルート Transform（位置/サイズ + カテゴリ見出しラベル） ──
     A("\t\t\t\tRootXF = Transform {")
     A("\t\t\t\t\tUserControls = ordered() {")
     for ci, (cat, opts) in enumerate(cats.items()):
-        A(f"\t\t\t\t\t\tSel_{ci} = {{")
+        A(f"\t\t\t\t\t\tLbl{ci} = {{")
         A('\t\t\t\t\t\t\tLINKID_DataType = "Number",')
-        A('\t\t\t\t\t\t\tINPID_InputControl = "ComboControl",')
-        A("\t\t\t\t\t\t\tINP_Integer = true,")
-        A("\t\t\t\t\t\t\tINP_Default = 0,")
+        A('\t\t\t\t\t\t\tINPID_InputControl = "LabelControl",')
+        A("\t\t\t\t\t\t\tLBLC_DropDownButton = true,")
+        A(f"\t\t\t\t\t\t\tLBLC_NumInputs = {len(opts)},")
+        A("\t\t\t\t\t\t\tINP_Default = 1,")
+        A("\t\t\t\t\t\t\tINP_External = false,")
+        A("\t\t\t\t\t\t\tINP_Passive = true,")
         A(f'\t\t\t\t\t\t\tLINKS_Name = "{_esc(self_labels.get(cat, cat))}",')
         A('\t\t\t\t\t\t\tICS_ControlPage = "ポーズ",')
-        for (nn, pp) in opts:
-            A(f'\t\t\t\t\t\t\t{{ CCS_AddString = "{_esc(_disp_label(nn))}" }},')
+        A("\t\t\t\t\t\t},")
+    if others:
+        A("\t\t\t\t\t\tLblO = {")
+        A('\t\t\t\t\t\t\tLINKID_DataType = "Number",')
+        A('\t\t\t\t\t\t\tINPID_InputControl = "LabelControl",')
+        A("\t\t\t\t\t\t\tLBLC_DropDownButton = true,")
+        A(f"\t\t\t\t\t\t\tLBLC_NumInputs = {len(others)},")
+        A("\t\t\t\t\t\t\tINP_Default = 1,")
+        A("\t\t\t\t\t\t\tINP_External = false,")
+        A("\t\t\t\t\t\t\tINP_Passive = true,")
+        A('\t\t\t\t\t\t\tLINKS_Name = "その他",')
+        A('\t\t\t\t\t\t\tICS_ControlPage = "ポーズ",')
         A("\t\t\t\t\t\t},")
     A("\t\t\t\t\t},")
     A("\t\t\t\t\tInputs = {")
     A(f'\t\t\t\t\t\tInput = Input {{ SourceOp = "{prev}", Source = "Output", }},')
-    for ci in range(len(cats)):
-        A(f"\t\t\t\t\t\tSel_{ci} = Input {{ Value = 0, }},")
     A("\t\t\t\t\t},")
-    A(f"\t\t\t\t\tViewInfo = OperatorInfo {{ Pos = {{ 360, 0 }} }},")
+    A("\t\t\t\t\tViewInfo = OperatorInfo { Pos = { 360, 0 } },")
     A("\t\t\t\t},")
 
     A("\t\t\t},")   # Tools
