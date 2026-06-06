@@ -2302,6 +2302,13 @@ class LipSyncDialog(tk.Toplevel):
         ttk.Button(fxbtn2, text="⚡ PSD分解 → Fusionクリップを再生ヘッドに自動配置",
                    command=self._psd_to_fusion_clip).pack(side='left', padx=2)
 
+        fxbtn3 = ttk.Frame(fx_lf)
+        fxbtn3.pack(fill='x', pady=(4, 0))
+        ttk.Button(fxbtn3, text="🧩 PSD全レイヤー → Fusionコンポに展開（Fusionで編集）",
+                   command=self._psd_layers_to_fusion).pack(side='left', padx=2)
+        ttk.Label(fxbtn3, text="各レイヤーを個別ノードで展開。口割当・調整はFusionで",
+                  foreground='gray', font=('', 8)).pack(side='left', padx=4)
+
     # ─── Tab 4: プレビュー ─────────────────────────────────────────────────
 
     def _build_preview_tab(self, nb):
@@ -2731,6 +2738,70 @@ class LipSyncDialog(tk.Toplevel):
         except Exception as ex:
             self._status_var.set("")
             messagebox.showerror("Resolve配置エラー", str(ex), parent=self)
+
+    def _psd_layers_to_fusion(self):
+        """PSD の全レイヤーを個別PNGに分解し、Fusionコンポ(全ノード展開)を生成して
+        Resolve に自動配置する。割り当てや口パクの設定は Fusion 側で行う。"""
+        from pathlib import Path as _P
+        from core.lipsync import HAS_PSD_TOOLS
+        psd = self._psd_path_var.get().strip() if hasattr(self, '_psd_path_var') else ""
+        if not psd or not _P(psd).exists():
+            messagebox.showwarning("PSD未選択",
+                "「キャラクター」タブで PSD を指定してください。", parent=self)
+            return
+        if not HAS_PSD_TOOLS:
+            messagebox.showerror("エラー", "psd-tools が必要です。\npip install psd-tools",
+                                 parent=self)
+            return
+        out_dir = self._out_dir_var.get().strip()
+        if not out_dir:
+            messagebox.showwarning("出力先未設定", "出力フォルダを設定してください。", parent=self)
+            return
+        out = _P(out_dir) / "psd_layers"
+
+        try:
+            self._status_var.set("PSD を全レイヤーに分解中...")
+            self.update()
+            from core.fusion import split_psd_all_layers, generate_layered_comp
+            layers = split_psd_all_layers(psd, str(out))
+            if not layers:
+                messagebox.showwarning("レイヤーなし", "レイヤーを取得できませんでした。",
+                                       parent=self)
+                self._status_var.set("")
+                return
+            comp_path = str(out / "DavinTelop_PSD_Layers.comp")
+            generate_layered_comp(comp_path, layers)
+        except Exception as ex:
+            self._status_var.set("")
+            messagebox.showerror("分解/comp生成エラー", str(ex), parent=self)
+            return
+
+        # Resolve へ自動配置（失敗時は書き出しのみ）
+        self._status_var.set("Resolve に配置中...")
+        self.update()
+        try:
+            from core.exporter import ResolveConnector
+            rc = ResolveConnector()
+            if rc.connect() and rc.place_fusion_comp_at_playhead(comp_path):
+                self._status_var.set(f"全{len(layers)}レイヤーをFusionコンポに展開・配置しました")
+                messagebox.showinfo("完了",
+                    f"PSD の {len(layers)} レイヤーを個別ノードで Fusion コンポに展開し、\n"
+                    f"再生ヘッド位置に配置しました。\n\n"
+                    f"PNG: {out}\n\n"
+                    "【Fusionでの編集】\n"
+                    "・各レイヤーは Loader ノードとして展開済み（Comments にPSD名）\n"
+                    "・口レイヤーを Merge の Blend やキーフレームで切替えて\n"
+                    "  口パクを組めます\n"
+                    "・位置/サイズは Transform を追加して調整", parent=self)
+            else:
+                self._status_var.set("")
+                messagebox.showwarning("配置失敗（書き出しは完了）",
+                    f"{rc.error}\n\n.comp は書き出し済み:\n{comp_path}\n\n"
+                    "Fusionページにドラッグ&ドロップで読み込めます。", parent=self)
+        except Exception as ex:
+            self._status_var.set("")
+            messagebox.showwarning("Resolve配置エラー（書き出しは完了）",
+                f"{ex}\n\n.comp: {comp_path}", parent=self)
 
     # ─── 生成 ──────────────────────────────────────────────────────────────
 

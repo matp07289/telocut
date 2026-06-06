@@ -287,6 +287,106 @@ def generate_lipsync_comp(
         f.write("\n".join(L))
 
 
+def _sanitize_node_name(name: str, used: set) -> str:
+    """Fusion ノード名に使える識別子へ変換（重複回避）。"""
+    import re
+    base = re.sub(r'[^0-9A-Za-z_]', '_', name).strip('_') or "Layer"
+    if base[0].isdigit():
+        base = "L_" + base
+    node = base
+    i = 1
+    while node in used:
+        node = f"{base}_{i}"
+        i += 1
+    used.add(node)
+    return node
+
+
+def generate_layered_comp(
+    out_path: str,
+    layers: list,            # [(layer_name, png_path), ...]  下→上 の順
+) -> None:
+    """
+    PSD の全レイヤーを個別の Loader ノードとして展開した
+    Fusion コンポジション(.comp)を書き出す。
+    各レイヤーは Merge チェーンで下から重ねられ、MediaOut1 へ出力。
+    口の割り当て・キーフレーム等の細かい編集は Fusion 側で行う。
+    """
+    if not layers:
+        raise ValueError("レイヤーがありません。")
+
+    L: list[str] = []
+    A = L.append
+    A("{")
+    A("\tTools = ordered() {")
+
+    used: set = set()
+    nodes: list[str] = []   # (node_name, layer_name)
+    # ローダー生成
+    for i, (lname, lpath) in enumerate(layers):
+        node = _sanitize_node_name(lname, used)
+        nodes.append(node)
+        A(f"\t\t{node} = Loader {{")
+        A("\t\t\tClips = { Clip {")
+        A(f'\t\t\t\tFilename = "{_lua_path(lpath)}",')
+        A('\t\t\t\tFormatID = "PNGFormat", Length = 1, TrimIn = 0,')
+        A("\t\t\t} },")
+        # 元レイヤー名をコメントとして保持（Fusionで識別しやすく）
+        A(f'\t\t\tComments = Input {{ Value = "PSD: {lname}", }},')
+        A(f"\t\t\tViewInfo = OperatorInfo {{ Pos = {{ 0, {i*33}}} }},")
+        A("\t\t},")
+
+    # Merge チェーン（下から上へ）
+    prev = nodes[0]
+    for i, node in enumerate(nodes[1:], start=1):
+        mname = f"Merge{i}"
+        A(f"\t\t{mname} = Merge {{")
+        A("\t\t\tInputs = {")
+        A(f'\t\t\t\tBackground = Input {{ SourceOp = "{prev}", Source = "Output", }},')
+        A(f'\t\t\t\tForeground = Input {{ SourceOp = "{node}", Source = "Output", }},')
+        A("\t\t\t},")
+        A(f"\t\t\tViewInfo = OperatorInfo {{ Pos = {{ 220, {i*33}}} }},")
+        A("\t\t},")
+        prev = mname
+
+    # MediaOut
+    A("\t\tMediaOut1 = MediaOut {")
+    A("\t\t\tInputs = {")
+    A(f'\t\t\t\tInput = Input {{ SourceOp = "{prev}", Source = "Output", }},')
+    A("\t\t\t},")
+    A("\t\t\tViewInfo = OperatorInfo { Pos = { 440, 0 } },")
+    A("\t\t},")
+
+    A("\t},")
+    A('\tActiveTool = "MediaOut1",')
+    A("}")
+
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(L))
+
+
+def split_psd_all_layers(psd_path: str, out_dir: str) -> list:
+    """
+    PSD の全レイヤーを個別 PNG として書き出す。
+    返値: [(layer_name, png_path), ...]（抽出順 = 概ね下→上）
+    """
+    from .lipsync import extract_psd_layers, HAS_PSD_TOOLS
+    if not HAS_PSD_TOOLS:
+        raise RuntimeError("psd-tools が必要です: pip install psd-tools")
+    layers = extract_psd_layers(psd_path)
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    result = []
+    used: set = set()
+    for name, img in layers.items():
+        fn = _sanitize_node_name(name, used)
+        p = str(out / f"{fn}.png")
+        img.save(p, "PNG")
+        result.append((name, p))
+    return result
+
+
 def split_psd_to_pngs(psd_path: str, out_dir: str) -> tuple:
     """
     PSD を分解して基本立ち絵 + 口形状 PNG を out_dir に書き出す。
