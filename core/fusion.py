@@ -204,7 +204,10 @@ def generate_lipsync_comp(
 
     L: list[str] = []
     A = L.append
-    A("{")
+    A("Composition {")
+    A("\tCurrentTime = 0,")
+    A("\tRenderRange = { 0, 100 },")
+    A("\tGlobalRange = { 0, 100 },")
     A("\tTools = ordered() {")
 
     # 口形状コントロール
@@ -317,7 +320,10 @@ def generate_layered_comp(
 
     L: list[str] = []
     A = L.append
-    A("{")
+    A("Composition {")
+    A("\tCurrentTime = 0,")
+    A("\tRenderRange = { 0, 100 },")
+    A("\tGlobalRange = { 0, 100 },")
     A("\tTools = ordered() {")
 
     used: set = set()
