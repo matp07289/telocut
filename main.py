@@ -1892,6 +1892,140 @@ class VoiceVoxPanel(ttk.Frame):
 
 
 # ─────────────────────────────────────────────
+#  PSD レイヤー割り当てダイアログ
+# ─────────────────────────────────────────────
+
+class PsdLayerAssignDialog(tk.Toplevel):
+    """
+    PSD の全レイヤーをサムネイル付きで一覧し、各レイヤーに役割
+    （ベース / あ / い / う / え / お / ん / 閉じ / 無視）を割り当てる。
+    """
+
+    ROLES = [("ignore", "（無視）"), ("base", "ベース"),
+             ("a", "口 あ"), ("i", "口 い"), ("u", "口 う"),
+             ("e", "口 え"), ("o", "口 お"), ("N", "口 ん"),
+             ("closed", "口 閉じ")]
+
+    def __init__(self, parent, layers: dict, shape_labels: dict):
+        super().__init__(parent)
+        self.title("PSD レイヤー割り当て")
+        self.geometry("560x640")
+        self.minsize(460, 480)
+        self.result = None
+        self._layers = layers           # {name: PIL.Image RGBA}
+        self._role_vars: dict = {}      # name -> StringVar(role key)
+        self._thumb_refs: list = []     # ImageTk 参照保持
+        self._build()
+        self.grab_set()
+        self.wait_window()
+
+    def _build(self):
+        top = ttk.Frame(self, padding=8)
+        top.pack(fill='x')
+        ttk.Label(top,
+            text="各レイヤーの役割を選んでください。\n"
+                 "「ベース」は複数選択可（下から重ねて合成）。口形状は各1つ。",
+            justify='left', font=('', 9)).pack(anchor='w')
+
+        # スクロール領域
+        mid = ttk.Frame(self)
+        mid.pack(fill='both', expand=True, padx=8, pady=4)
+        canvas = tk.Canvas(mid, highlightthickness=0)
+        sb = ttk.Scrollbar(mid, orient='vertical', command=canvas.yview)
+        canvas.configure(yscrollcommand=sb.set)
+        sb.pack(side='right', fill='y')
+        canvas.pack(side='left', fill='both', expand=True)
+        inner = ttk.Frame(canvas)
+        win = canvas.create_window((0, 0), window=inner, anchor='nw')
+        inner.bind('<Configure>',
+                   lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.bind('<Configure>', lambda e: canvas.itemconfigure(win, width=e.width))
+        # ホイールスクロール
+        canvas.bind_all('<MouseWheel>',
+                        lambda e: canvas.yview_scroll(int(-e.delta/120), 'units'))
+
+        role_values = [r[1] for r in self.ROLES]
+        role_by_label = {r[1]: r[0] for r in self.ROLES}
+        self._role_by_label = role_by_label
+
+        from PIL import Image as _PIL, ImageTk as _ITk
+        for name, img in self._layers.items():
+            row = ttk.Frame(inner, padding=(2, 3))
+            row.pack(fill='x')
+
+            # サムネイル（透過はチェッカー上）
+            try:
+                thumb = img.copy()
+                thumb.thumbnail((56, 56), _PIL.LANCZOS)
+                bg = _make_checker_bg(max(thumb.width,1), max(thumb.height,1), sq=6)
+                bg = bg.convert("RGBA")
+                bg.alpha_composite(thumb)
+                photo = _ITk.PhotoImage(bg)
+                self._thumb_refs.append(photo)
+                ttk.Label(row, image=photo).pack(side='left', padx=(0, 6))
+            except Exception:
+                ttk.Label(row, text="[img]").pack(side='left', padx=(0, 6))
+
+            ttk.Label(row, text=name[:30], width=26, anchor='w').pack(side='left')
+
+            # 初期役割を名前から推測
+            guess = self._guess_role(name)
+            var = tk.StringVar(value=dict(self.ROLES)[guess])
+            self._role_vars[name] = var
+            ttk.Combobox(row, textvariable=var, values=role_values,
+                         state='readonly', width=10).pack(side='left', padx=4)
+
+        # ボタン
+        bot = ttk.Frame(self, padding=8)
+        bot.pack(fill='x')
+        ttk.Button(bot, text="適用", width=10, command=self._apply).pack(side='right', padx=4)
+        ttk.Button(bot, text="キャンセル", width=10, command=self.destroy).pack(side='right')
+
+    def _guess_role(self, name: str) -> str:
+        low = name.lower()
+        is_mouth = any(k in low for k in ('口', 'mouth', 'lip', 'kuchi'))
+        if is_mouth:
+            for kw, shape in [('あ','a'),('a','a'),('い','i'),('i','i'),
+                              ('う','u'),('u','u'),('え','e'),('e','e'),
+                              ('お','o'),('o','o'),('ん','N'),('n','N'),
+                              ('閉','closed'),('close','closed')]:
+                if kw in low:
+                    return shape
+            return 'a'
+        return 'base'
+
+    def _apply(self):
+        from PIL import Image as _PIL
+        base_layers = []
+        mouth_imgs = {}
+        for name, var in self._role_vars.items():
+            role = self._role_by_label.get(var.get(), 'ignore')
+            img = self._layers.get(name)
+            if img is None:
+                continue
+            if role == 'base':
+                base_layers.append(img)
+            elif role in ('a', 'i', 'u', 'e', 'o', 'N', 'closed'):
+                mouth_imgs[role] = img   # 同役割が複数なら後勝ち
+
+        base_img = None
+        if base_layers:
+            size = base_layers[0].size
+            base_img = _PIL.new("RGBA", size, (0, 0, 0, 0))
+            for im in base_layers:
+                if im.size != size:
+                    im = im.resize(size, _PIL.LANCZOS)
+                base_img = _PIL.alpha_composite(base_img, im.convert("RGBA"))
+
+        if base_img is None and not mouth_imgs:
+            messagebox.showwarning("未割り当て",
+                "ベースまたは口形状を1つ以上割り当ててください。", parent=self)
+            return
+        self.result = (base_img, mouth_imgs)
+        self.destroy()
+
+
+# ─────────────────────────────────────────────
 #  口パク（Lip Sync）ダイアログ
 # ─────────────────────────────────────────────
 
@@ -1969,9 +2103,12 @@ class LipSyncDialog(tk.Toplevel):
             side='left', fill='x', expand=True)
         ttk.Button(psd_row, text="PSD を開く", width=10,
                    command=self._open_psd).pack(side='left', padx=4)
-        ttk.Button(psd_row, text="レイヤー抽出", width=10,
+        ttk.Button(psd_row, text="自動抽出", width=8,
                    command=self._extract_psd).pack(side='left', padx=2)
-        self._psd_info_var = tk.StringVar(value="psd-tools が必要です (pip install psd-tools)")
+        ttk.Button(psd_row, text="レイヤー割り当て...", width=14,
+                   command=self._assign_psd_layers).pack(side='left', padx=2)
+        self._psd_info_var = tk.StringVar(
+            value="自動抽出: レイヤー名(口_あ 等)で判定 / 割り当て: 各レイヤーを手動で指定")
         ttk.Label(psd_lf, textvariable=self._psd_info_var,
                   foreground='gray', font=('', 8)).pack(anchor='w', padx=4, pady=2)
 
@@ -2252,6 +2389,44 @@ class LipSyncDialog(tk.Toplevel):
         except Exception as ex:
             messagebox.showerror("PSD エラー", str(ex), parent=self)
             self._status_var.set("")
+
+    def _assign_psd_layers(self):
+        """PSD の全レイヤーを一覧表示し、各レイヤーに役割を手動割り当てする。"""
+        from core.lipsync import HAS_PSD_TOOLS, extract_psd_layers
+        if not HAS_PSD_TOOLS:
+            messagebox.showerror("エラー",
+                "psd-tools が必要です。\npip install psd-tools", parent=self)
+            return
+        path = self._psd_path_var.get().strip()
+        if not path or not Path(path).exists():
+            messagebox.showwarning("PSD未選択", "PSD ファイルを選択してください。", parent=self)
+            return
+        try:
+            self._status_var.set("PSD レイヤー読み込み中...")
+            self.update()
+            layers = extract_psd_layers(path)
+        except Exception as ex:
+            self._status_var.set("")
+            messagebox.showerror("PSD エラー", str(ex), parent=self)
+            return
+        if not layers:
+            messagebox.showwarning("レイヤーなし", "レイヤーを取得できませんでした。", parent=self)
+            return
+
+        dlg = PsdLayerAssignDialog(self, layers, self.SHAPE_LABELS)
+        if dlg.result is None:
+            self._status_var.set("")
+            return
+        base_img, mouth_imgs = dlg.result
+        if base_img is not None:
+            self._base_img = base_img
+        if mouth_imgs:
+            self._mouth_imgs.update(mouth_imgs)
+        self._psd_layers = layers
+        self._psd_info_var.set(
+            f"割り当て完了  口形状: {[self.SHAPE_LABELS.get(k,k) for k in mouth_imgs]}")
+        self._status_var.set("レイヤー割り当て完了")
+        self._preview_frame()
 
     def _test_vv(self):
         from core.voicevox import VoiceVoxClient
