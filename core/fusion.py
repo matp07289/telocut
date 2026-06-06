@@ -476,21 +476,28 @@ def generate_tatie_generator(
     if not avail:
         raise ValueError("レイヤーがありません。")
 
-    # カテゴリ分類
-    cats: dict = {}            # category -> [(name, path, global_index)]
-    normals: list = []         # [(name, path)]
-    for i, (n, p) in enumerate(avail):
-        c = categorize_layer(n)
-        if c is None:
-            normals.append((n, p))
-        else:
-            cats.setdefault(c, []).append((n, p))
-    # 選択肢が1つだけのカテゴリは通常レイヤー扱い
-    for c in list(cats.keys()):
-        if len(cats[c]) <= 1:
-            normals.extend([(n, p) for (n, p, *_) in
-                            [(x[0], x[1]) for x in cats[c]]])
-            del cats[c]
+    # グループ化キー: PSD のフォルダ階層（"親/子"）を優先。
+    # フォルダが無い(フラット)レイヤーはキーワード分類にフォールバック。
+    def _group_key(name):
+        if "/" in name:
+            return name.rsplit("/", 1)[0]      # 直近の親フォルダパス
+        return categorize_layer(name)          # フラットPSD用
+
+    def _disp_label(key):
+        if key is None:
+            return ""
+        return key.rsplit("/", 1)[-1]          # 表示は末尾セグメント
+
+    # グループ化（同一フォルダ内に複数あれば選択肢、1つなら常時表示）
+    cats: dict = {}            # group_key -> [(name, path)]
+    for (n, p) in avail:
+        k = _group_key(n)
+        if k is None:
+            continue
+        cats.setdefault(k, []).append((n, p))
+    cats = {k: v for k, v in cats.items() if len(v) >= 2}   # 2つ以上のみ選択化
+    # 表示ラベルの重複を避けつつラベル対応を保持
+    self_labels = {k: _disp_label(k) for k in cats}
 
     used = set()
 
@@ -517,7 +524,7 @@ def generate_tatie_generator(
         A(f'\t\t\t\tSel_{ci} = InstanceInput {{')
         A(f'\t\t\t\t\tSourceOp = "{ctrl_node}",')
         A('\t\t\t\t\tSource = "Sel",')
-        A(f'\t\t\t\t\tName = "{_esc(cat)}",')
+        A(f'\t\t\t\t\tName = "{_esc(self_labels.get(cat, cat))}",')
         A(f'\t\t\t\t\tPage = "ポーズ",')
         A("\t\t\t\t\tDefault = 0,")
         A("\t\t\t\t},")
@@ -542,9 +549,9 @@ def generate_tatie_generator(
         A('\t\t\t\t\t\t\tINPID_InputControl = "ComboControl",')
         A("\t\t\t\t\t\t\tINP_Integer = true,")
         A("\t\t\t\t\t\t\tINP_Default = 0,")
-        A(f'\t\t\t\t\t\t\tLINKS_Name = "{_esc(cat)}",')
+        A(f'\t\t\t\t\t\t\tLINKS_Name = "{_esc(self_labels.get(cat, cat))}",')
         for (n, p) in opts:
-            A(f'\t\t\t\t\t\t\t{{ MBTNC_AddButton = "{_esc(n)}" }},')
+            A(f'\t\t\t\t\t\t\t{{ MBTNC_AddButton = "{_esc(_disp_label(n))}" }},')
         A("\t\t\t\t\t\t},")
         A("\t\t\t\t\t},")
         # Sel に具体値(0)を設定。これが無いと選択肢が表示されない
@@ -577,8 +584,8 @@ def generate_tatie_generator(
         A("\t\t\t\t\tInputs = {")
         A(f'\t\t\t\t\t\tBackground = Input {{ SourceOp = "{prev}", Source = "Output", }},')
         A(f'\t\t\t\t\t\tForeground = Input {{ SourceOp = "{ld}", Source = "Output", }},')
-        # カテゴリレイヤーは選択式、それ以外は常時表示
-        cat = categorize_layer(n)
+        # グループ（選択肢2つ以上）に属すレイヤーは選択式、それ以外は常時表示
+        cat = _group_key(n)
         if cat in cat_ctrls:
             opts = cats[cat]
             idx = next((k for k, (nn, pp) in enumerate(opts) if nn == n), 0)
@@ -607,7 +614,8 @@ def generate_tatie_generator(
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(L))
 
-    return {c: [n for (n, p) in opts] for c, opts in cats.items()}
+    return {self_labels.get(c, c): [_disp_label(n) for (n, p) in opts]
+            for c, opts in cats.items()}
 
 
 def _safe(name: str) -> str:
