@@ -2270,6 +2270,7 @@ class DavinTelopApp(tk.Tk):
         "export_srt":            "Control-Shift-S",
         "export_fcpxml":         "Control-Shift-X",
         "export_resolve_script": "Control-Shift-R",
+        "place_at_playhead":     "Control-Shift-Return",
         # テロップ操作
         "new_telop_quick":       "Control-Alt-n",
         "move_left":             "Alt-Left",
@@ -2293,6 +2294,7 @@ class DavinTelopApp(tk.Tk):
         "export_srt":            "SRT 書き出し",
         "export_fcpxml":         "FCPxml 書き出し",
         "export_resolve_script": "🐍 Resolveスクリプト生成",
+        "place_at_playhead":     "📍 選択テロップを再生ヘッドに配置",
         # テロップ移動
         "new_telop_quick":       "新規テロップ（クイック入力）",
         "move_left":             "テロップ 左に移動（ステップ）",
@@ -2337,6 +2339,10 @@ class DavinTelopApp(tk.Tk):
         # PNG ファイル名オプション
         self._include_text_in_filename = tk.BooleanVar(
             value=cfg.get("include_text_in_filename", False))
+
+        # 再生ヘッド配置時にテロップTCを書き戻すか
+        self._playhead_writeback = tk.BooleanVar(
+            value=cfg.get("playhead_writeback", True))
 
         # 右パネル テロッププレビュー state
         self._telop_pv_entry: Optional[TelopEntry] = None
@@ -2525,6 +2531,11 @@ class DavinTelopApp(tk.Tk):
                                  command=self.send_to_resolve)
         resolve_menu.add_command(label="📍 選択テロップを再生ヘッドに配置",
                                  command=self.place_selected_at_playhead)
+        resolve_menu.add_checkbutton(
+            label="配置時にテロップTCを再生ヘッドに更新",
+            variable=self._playhead_writeback,
+            command=self._save_app_config)
+        resolve_menu.add_separator()
         resolve_menu.add_command(label="🐍 Resolveスクリプトを生成...",
                                  command=self.export_resolve_script)
 
@@ -4850,6 +4861,7 @@ class DavinTelopApp(tk.Tk):
             "export_srt":            self.export_srt,
             "export_fcpxml":         self.export_fcpxml,
             "export_resolve_script": self.export_resolve_script,
+            "place_at_playhead":     self.place_selected_at_playhead,
             "new_telop_quick":       self._quick_telop_popup,
             "move_left":             lambda: self._move_telop_step(-1, 0),
             "move_right":            lambda: self._move_telop_step(1,  0),
@@ -5338,15 +5350,29 @@ class DavinTelopApp(tk.Tk):
             self.after(0, lambda e=str(ex): messagebox.showerror("PNG書き出しエラー", e))
             return
 
-        # 再生ヘッド位置を取得（メッセージ用）
-        tc = self._resolve.get_current_timecode() or "?"
+        # 再生ヘッド位置を取得（書き戻し・メッセージ用）
+        tc = self._resolve.get_current_timecode() or ""
 
         ok = self._resolve.place_png_at_playhead(
             png_path, dur_frames, fps, track_index=track_idx)
 
         if ok:
-            self.after(0, lambda: self._progress_var.set(
-                f"✓ 再生ヘッド {tc} に V{track_idx} へ配置しました"))
+            # テロップTCを再生ヘッド位置に書き戻す（オプション）
+            wrote = False
+            if self._playhead_writeback.get() and tc:
+                try:
+                    ph_s   = parse_timecode(tc, fps)
+                    new_end = seconds_to_timecode(ph_s + (end_s - start_s), fps)
+                    entry.start_time = tc
+                    entry.end_time   = new_end
+                    wrote = True
+                    self.after(0, self._refresh_tree)
+                except Exception:
+                    pass
+            msg = f"✓ 再生ヘッド {tc or '?'} に V{track_idx} へ配置"
+            if wrote:
+                msg += "（TC更新済み）"
+            self.after(0, lambda m=msg: self._progress_var.set(m))
         else:
             err = self._resolve.error
             self.after(0, lambda: messagebox.showerror("エラー", err))
@@ -5417,6 +5443,7 @@ class DavinTelopApp(tk.Tk):
                 "shortcuts":                 self._shortcuts,
                 "include_text_in_filename":  self._include_text_in_filename.get(),
                 "dark_mode":                 self._is_dark.get(),
+                "playhead_writeback":        self._playhead_writeback.get(),
             }
             with open(self._CONFIG_PATH, 'w', encoding='utf-8') as f:
                 json.dump(cfg, f, ensure_ascii=False, indent=2)
