@@ -1111,6 +1111,133 @@ class ResolveConnector:
             self._error = f"Fusion API 配置エラー: {e}"
             return False
 
+    def place_tatie_full_via_fusion_api(
+        self,
+        layers: list,                  # [(name, png_path, role)] 下→上の順。role: 口形状キー or None
+        timeline: Optional[list] = None,
+        fps: float = 30.0,
+    ) -> bool:
+        """
+        PSD の全レイヤーを個別 Loader として Fusion comp に展開する。
+        通常レイヤーは常時表示、口レイヤー(role指定)は Blend キーフレームで
+        口パクさせる。レイヤーは渡された順（下→上）に Merge で重ねる。
+        """
+        if not self._project or not self._timeline:
+            self._error = "Resolveに接続されていません。"
+            return False
+        valid = [(n, p, r) for (n, p, r) in layers if p and os.path.exists(p)]
+        if not valid:
+            self._error = "配置できるレイヤーがありません。"
+            return False
+
+        try:
+            insert = getattr(self._timeline,
+                             "InsertFusionCompositionIntoTimeline", None)
+            if insert is None:
+                self._error = "Resolve 18 以降が必要です。"
+                return False
+            item = insert()
+            if not item:
+                self._error = "Fusionクリップの挿入に失敗しました。"
+                return False
+            comp = item.GetFusionCompByIndex(1)
+            if comp is None:
+                self._error = "Fusionコンポジションを取得できませんでした。"
+                return False
+
+            try:
+                comp.Lock()
+            except Exception:
+                pass
+
+            def _add_loader(path, x, y):
+                ld = comp.AddTool("Loader", x, y)
+                p = str(path)
+                for setter in (lambda: ld.Clip.__setitem__(1, p),
+                               lambda: setattr(ld, "Clip", p),
+                               lambda: ld.SetInput("Clip", p)):
+                    try:
+                        setter(); break
+                    except Exception:
+                        continue
+                try:
+                    ld.Loop.__setitem__(1, 1)
+                except Exception:
+                    pass
+                try:
+                    ld.GlobalIn = 0
+                    ld.GlobalOut = 100000
+                except Exception:
+                    pass
+                return ld
+
+            total = len(timeline) - 1 if timeline else 0
+
+            def _bake_blend(tool, active_set):
+                prev_v = None
+                for f in range(0, total + 1):
+                    v = 1.0 if f in active_set else 0.0
+                    if v != prev_v:
+                        try:
+                            tool.SetInput("Blend", v, float(f))
+                        except Exception:
+                            pass
+                        prev_v = v
+
+            prev = None
+            placed = 0
+            for i, (name, path, role) in enumerate(valid):
+                ld = _add_loader(path, 0, i)
+                if prev is None:
+                    # 最下層はそのまま土台に
+                    prev = ld
+                    placed += 1
+                    continue
+                mg = comp.AddTool("Merge", 2, i)
+                try:
+                    mg.ConnectInput("Background", prev)
+                    mg.ConnectInput("Foreground", ld)
+                except Exception:
+                    pass
+
+                if role:   # 口レイヤー
+                    # デフォルトは closed のみ表示
+                    try:
+                        mg.SetInput("Blend", 1.0 if role == "closed" else 0.0)
+                    except Exception:
+                        pass
+                    if timeline:
+                        active = {f for f, sh in enumerate(timeline) if sh == role}
+                        if role == "closed":
+                            shapes_present = {r for _, _, r in valid if r}
+                            active |= {f for f, sh in enumerate(timeline)
+                                       if sh not in shapes_present}
+                        _bake_blend(mg, active)
+                else:      # 通常レイヤー: 常時表示
+                    try:
+                        mg.SetInput("Blend", 1.0)
+                    except Exception:
+                        pass
+                prev = mg
+                placed += 1
+
+            # MediaOut1 へ接続
+            try:
+                mo = comp.FindTool("MediaOut1")
+                if mo is not None and prev is not None:
+                    mo.ConnectInput("Input", prev)
+            except Exception:
+                pass
+
+            try:
+                comp.Unlock()
+            except Exception:
+                pass
+            return placed > 0
+        except Exception as e:
+            self._error = f"Fusion API 全レイヤー配置エラー: {e}"
+            return False
+
     def place_fusion_comp_at_playhead(self, comp_path: str) -> bool:
         """
         Fusion コンポジション(.comp)を再生ヘッド位置に Fusion クリップとして配置する。

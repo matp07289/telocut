@@ -59,6 +59,39 @@ PSD_NAME_MAP = {
     '閉': 'closed', 'close': 'closed', 'shut': 'closed',
 }
 
+_MOUTH_KEYWORDS = ('口', 'mouth', 'lip', 'kuchi')
+
+
+def classify_layer_role(name: str):
+    """
+    レイヤー名から口形状キー (a/i/u/e/o/N/closed) を返す。
+    口レイヤーでなければ None（=通常レイヤー、常時表示）。
+
+    注意: 'mouth' や 'kuchi' という語自体に母音字が含まれるため、
+    口キーワードを除去してから母音をトークン単位で判定する。
+    """
+    low = name.lower()
+    if not any(k in low for k in _MOUTH_KEYWORDS):
+        return None
+    # 日本語かな（最も確実）
+    for kana, shape in (('あ', 'a'), ('い', 'i'), ('う', 'u'),
+                        ('え', 'e'), ('お', 'o'), ('ん', 'N'), ('閉', 'closed')):
+        if kana in name:
+            return shape
+    if 'close' in low or 'shut' in low:
+        return 'closed'
+    # ローマ字: 口キーワードを除去してから孤立した母音トークンを探す
+    import re
+    rem = low
+    for k in _MOUTH_KEYWORDS:
+        rem = rem.replace(k, ' ')
+    for t in re.split(r'[^a-z]+', rem):
+        if t in ('a', 'i', 'u', 'e', 'o'):
+            return t
+        if t == 'n':
+            return 'N'
+    return 'a'   # 口レイヤーだが母音不明 → あ扱い
+
 
 # ── PSD からレイヤーを抽出 ──────────────────────────────────────────────────
 

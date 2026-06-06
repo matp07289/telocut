@@ -2629,9 +2629,9 @@ class LipSyncDialog(tk.Toplevel):
             parent=self)
 
     def _psd_to_fusion_clip(self):
-        """PSD を分解 → base+あいうえお生成 → Fusionクリップとして再生ヘッドに自動配置。"""
+        """PSD を全レイヤー分解 → 各レイヤーを個別ノードで Fusion に展開し、
+        口レイヤーは口パク（Blendキーフレーム）させて再生ヘッドに自動配置。"""
         from pathlib import Path as _P
-        # 出力先
         out_dir = self._out_dir_var.get().strip()
         if not out_dir:
             messagebox.showwarning("出力先未設定", "出力フォルダを設定してください。", parent=self)
@@ -2639,23 +2639,25 @@ class LipSyncDialog(tk.Toplevel):
         out = _P(out_dir) / "lipsync_fusion"
         out.mkdir(parents=True, exist_ok=True)
 
-        # ── 画像の用意（PSD分解 優先、なければ現在の指定画像） ──
-        base_path = None
-        mouth_paths = {}
+        # ── 全レイヤーを書き出し、役割（口形状/通常）を分類 ──
+        # layers_roles: [(name, png_path, role)]  role=口形状キー or None（下→上の順）
+        layers_roles = []
         psd = self._psd_path_var.get().strip() if hasattr(self, '_psd_path_var') else ""
         try:
             if psd and _P(psd).exists():
-                self._status_var.set("PSD を分解中...")
+                self._status_var.set("PSD を全レイヤー分解中...")
                 self.update()
-                from core.lipsync import HAS_PSD_TOOLS
+                from core.lipsync import HAS_PSD_TOOLS, classify_layer_role
                 if not HAS_PSD_TOOLS:
                     messagebox.showerror("エラー",
                         "psd-tools が必要です。\npip install psd-tools", parent=self)
                     return
-                from core.fusion import split_psd_to_pngs
-                base_path, mouth_paths = split_psd_to_pngs(psd, str(out))
+                from core.fusion import split_psd_all_layers
+                all_layers = split_psd_all_layers(psd, str(out))   # [(name, path)]
+                for name, path in all_layers:
+                    layers_roles.append((name, path, classify_layer_role(name)))
             else:
-                # PSD未指定 → 現在の画像（PNG指定/抽出済み）を保存
+                # PSD未指定 → キャラクタータブの画像（base + 口）を使用
                 if not self._load_images() or self._base_img is None:
                     messagebox.showwarning("画像未設定",
                         "PSD を指定するか、キャラクタータブで画像を設定してください。",
@@ -2663,30 +2665,31 @@ class LipSyncDialog(tk.Toplevel):
                     return
                 base_path = str(out / "base.png")
                 self._base_img.save(base_path, "PNG")
+                layers_roles.append(("base", base_path, None))
                 for key, var in self._mouth_vars.items():
                     img = self._mouth_imgs.get(key)
                     p = var.get().strip()
                     if p and _P(p).exists():
-                        mouth_paths[key] = p
+                        layers_roles.append((f"mouth_{key}", p, key))
                     elif img is not None:
                         dest = str(out / f"mouth_{key}.png")
                         img.save(dest, "PNG")
-                        mouth_paths[key] = dest
+                        layers_roles.append((f"mouth_{key}", dest, key))
         except Exception as ex:
             self._status_var.set("")
             messagebox.showerror("PSD分解エラー", str(ex), parent=self)
             return
 
-        if base_path is None or not mouth_paths:
-            messagebox.showwarning("分解結果なし",
-                "基本立ち絵または口形状が取得できませんでした。\n"
-                "PSDの口レイヤー名（口_あ 等）を確認してください。", parent=self)
+        if not layers_roles:
+            messagebox.showwarning("分解結果なし", "レイヤーが取得できませんでした。", parent=self)
             return
+
+        mouth_roles = sorted({r for _, _, r in layers_roles if r})
 
         # ── 口パクタイムライン（任意） ──
         timeline = None
         fps = self._fps_var.get()
-        if self._bake_keys_var.get():
+        if self._bake_keys_var.get() and mouth_roles:
             try:
                 self._status_var.set("タイミング解析中...")
                 self.update()
@@ -2700,18 +2703,7 @@ class LipSyncDialog(tk.Toplevel):
             except Exception:
                 timeline = None
 
-        # ── .comp 生成 ──
-        try:
-            from core.fusion import generate_lipsync_comp
-            comp_path = str(out / "DavinTelop_LipSync.comp")
-            generate_lipsync_comp(comp_path, base_path, mouth_paths,
-                                  timeline=timeline, fps=fps)
-        except Exception as ex:
-            self._status_var.set("")
-            messagebox.showerror("comp生成エラー", str(ex), parent=self)
-            return
-
-        # ── Resolve に自動配置 ──
+        # ── Resolve に全レイヤー配置 ──
         self._status_var.set("Resolve に配置中...")
         self.update()
         try:
@@ -2720,26 +2712,26 @@ class LipSyncDialog(tk.Toplevel):
             if not rc.connect():
                 self._status_var.set("")
                 messagebox.showwarning("Resolve未接続",
-                    rc.error + f"\n\n.comp は書き出し済み:\n{comp_path}", parent=self)
+                    rc.error + f"\n\nレイヤーPNGは書き出し済み:\n{out}", parent=self)
                 return
-            # psd2tatie 方式: Fusion comp API で直接ノード生成（確実）
-            ok = rc.place_lipsync_via_fusion_api(
-                base_path, mouth_paths, timeline=timeline, fps=fps)
-            if not ok:
-                # フォールバック: .comp テキストの ImportFusionComp
-                ok = rc.place_fusion_comp_at_playhead(comp_path)
+            ok = rc.place_tatie_full_via_fusion_api(
+                layers_roles, timeline=timeline, fps=fps)
             if ok:
-                self._status_var.set("Fusionクリップを再生ヘッドに配置しました")
+                self._status_var.set(
+                    f"全{len(layers_roles)}レイヤーを配置（口{len(mouth_roles)}種）")
                 messagebox.showinfo("完了",
-                    "PSDを分解し、Fusionクリップとして再生ヘッド位置に配置しました。\n\n"
-                    f"画像: {out}\n"
-                    f"口形状: {[k for k in mouth_paths]}\n\n"
-                    "Resolveのタイムラインで確認してください。", parent=self)
+                    "PSDの全レイヤーを個別ノードで Fusion に展開し、\n"
+                    "再生ヘッド位置に配置しました。\n\n"
+                    f"レイヤー数: {len(layers_roles)}\n"
+                    f"口形状: {mouth_roles}\n"
+                    f"PNG: {out}\n\n"
+                    "口レイヤーは Blend キーフレームで口パクします。\n"
+                    "Fusionページで各ノード・キーフレームを編集できます。",
+                    parent=self)
             else:
                 self._status_var.set("")
                 messagebox.showwarning("配置失敗",
-                    rc.error + f"\n\n.comp は書き出し済み:\n{comp_path}\n\n"
-                    "Fusionページで手動読み込みも可能です。", parent=self)
+                    rc.error + f"\n\nレイヤーPNGは書き出し済み:\n{out}", parent=self)
         except Exception as ex:
             self._status_var.set("")
             messagebox.showerror("Resolve配置エラー", str(ex), parent=self)
