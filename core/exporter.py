@@ -960,6 +960,157 @@ class ResolveConnector:
         except Exception:
             return None
 
+    def place_lipsync_via_fusion_api(
+        self,
+        base_path: str,
+        mouth_paths: dict,
+        timeline: Optional[list] = None,
+        fps: float = 30.0,
+    ) -> bool:
+        """
+        立ち絵+口パクを Fusion comp API で直接構築する（psd2tatie 方式）。
+        .comp テキストの ImportFusionComp ではなく、comp.AddTool で
+        Loader / Merge / Transform を生成して MediaOut1 に接続する。
+        ノードを直接作るため確実に配置できる。
+        """
+        if not self._project or not self._timeline:
+            self._error = "Resolveに接続されていません。"
+            return False
+        if not os.path.exists(base_path):
+            self._error = f"ベース画像が見つかりません: {Path(base_path).name}"
+            return False
+
+        SHAPE_IDX = {"a": 1, "i": 2, "u": 3, "e": 4, "o": 5, "N": 6, "closed": 0}
+
+        try:
+            insert = getattr(self._timeline,
+                             "InsertFusionCompositionIntoTimeline", None)
+            if insert is None:
+                self._error = ("InsertFusionCompositionIntoTimeline 非対応です。\n"
+                               "Resolve 18 以降が必要です。")
+                return False
+            item = insert()
+            if not item:
+                self._error = "Fusionクリップの挿入に失敗しました。"
+                return False
+            getcomp = getattr(item, "GetFusionCompByIndex", None)
+            comp = getcomp(1) if getcomp else None
+            if comp is None:
+                self._error = "Fusionコンポジションを取得できませんでした。"
+                return False
+
+            try:
+                comp.Lock()
+            except Exception:
+                pass
+
+            def _add_loader(path, x, y):
+                ld = comp.AddTool("Loader", x, y)
+                # ファイル名設定（複数の方法を試す）
+                p = str(path)
+                set_ok = False
+                for setter in (
+                    lambda: ld.Clip.__setitem__(1, p),   # ld.Clip[1] = p
+                    lambda: setattr(ld, "Clip", p),
+                    lambda: ld.SetInput("Clip", p),
+                ):
+                    try:
+                        setter()
+                        set_ok = True
+                        break
+                    except Exception:
+                        continue
+                # 静止画を全域に伸ばす
+                for attr, val in (("Loop", 1),):
+                    try:
+                        getattr(ld, attr).__setitem__(1, val)
+                    except Exception:
+                        pass
+                try:
+                    ld.GlobalIn = 0
+                    ld.GlobalOut = 100000
+                except Exception:
+                    pass
+                return ld, set_ok
+
+            # ベース
+            base_ld, ok = _add_loader(base_path, 0, 0)
+            if not ok:
+                try: comp.Unlock()
+                except Exception: pass
+                self._error = "Loader のファイル名設定に失敗しました（API非対応）。"
+                return False
+            prev = base_ld
+
+            # 口形状コントロール（Transform に Mouth ユーザーコントロール）
+            ctrl = comp.AddTool("Transform", -2, -2)
+            try:
+                ctrl.SetAttrs({"TOOLS_Name": "MouthCtrl"})
+                ctrl.UserControls = {
+                    "Mouth": {
+                        "LINKID_DataType": "Number",
+                        "INPID_InputControl": "SliderControl",
+                        "INP_Integer": True,
+                        "INP_MinScale": 0, "INP_MaxScale": 6, "INP_Default": 0,
+                        "LINKS_Name": "Mouth",
+                    }
+                }
+                ctrl = ctrl.Refresh()
+            except Exception:
+                ctrl = None
+
+            # 口ローダー + Merge（Blend を口形状で切替）
+            avail = [s for s in ("a", "i", "u", "e", "o", "N", "closed")
+                     if mouth_paths.get(s) and os.path.exists(mouth_paths[s])]
+            for i, s in enumerate(avail):
+                m_ld, _ = _add_loader(mouth_paths[s], 1, i)
+                mg = comp.AddTool("Merge", 2, i)
+                try:
+                    mg.ConnectInput("Background", prev)
+                    mg.ConnectInput("Foreground", m_ld)
+                except Exception:
+                    pass
+                # Blend: 口形状一致時のみ表示
+                idx = SHAPE_IDX.get(s, 0)
+                if ctrl is not None:
+                    try:
+                        mg.Blend.SetExpression(f"MouthCtrl.Mouth == {idx} and 1 or 0")
+                    except Exception:
+                        pass
+                prev = mg
+
+            # 口パクキーフレームを Mouth に焼き込み（best-effort）
+            if ctrl is not None and timeline:
+                try:
+                    prev_idx = None
+                    for f, shape in enumerate(timeline):
+                        idx = SHAPE_IDX.get(shape, 0)
+                        if idx != prev_idx:
+                            ctrl.SetInput("Mouth", float(idx), float(f))
+                            prev_idx = idx
+                except Exception:
+                    pass
+
+            # MediaOut1 に接続
+            try:
+                mo = comp.FindTool("MediaOut1")
+                if mo is None:
+                    # 名前違い対策
+                    mo = comp.FindToolByID("MediaOut") if hasattr(comp, "FindToolByID") else None
+                if mo is not None:
+                    mo.ConnectInput("Input", prev)
+            except Exception:
+                pass
+
+            try:
+                comp.Unlock()
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            self._error = f"Fusion API 配置エラー: {e}"
+            return False
+
     def place_fusion_comp_at_playhead(self, comp_path: str) -> bool:
         """
         Fusion コンポジション(.comp)を再生ヘッド位置に Fusion クリップとして配置する。

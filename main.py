@@ -2722,7 +2722,12 @@ class LipSyncDialog(tk.Toplevel):
                 messagebox.showwarning("Resolve未接続",
                     rc.error + f"\n\n.comp は書き出し済み:\n{comp_path}", parent=self)
                 return
-            ok = rc.place_fusion_comp_at_playhead(comp_path)
+            # psd2tatie 方式: Fusion comp API で直接ノード生成（確実）
+            ok = rc.place_lipsync_via_fusion_api(
+                base_path, mouth_paths, timeline=timeline, fps=fps)
+            if not ok:
+                # フォールバック: .comp テキストの ImportFusionComp
+                ok = rc.place_fusion_comp_at_playhead(comp_path)
             if ok:
                 self._status_var.set("Fusionクリップを再生ヘッドに配置しました")
                 messagebox.showinfo("完了",
