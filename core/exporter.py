@@ -960,6 +960,43 @@ class ResolveConnector:
         except Exception:
             return None
 
+    def place_fusion_comp_at_playhead(self, comp_path: str) -> bool:
+        """
+        Fusion コンポジション(.comp)を再生ヘッド位置に Fusion クリップとして配置する。
+        InsertFusionCompositionIntoTimeline で空の Fusion クリップを挿入し、
+        ImportFusionComp で立ち絵+口パクのコンポジションを読み込む。
+        """
+        if not self._project or not self._timeline:
+            self._error = "Resolveに接続されていません。"
+            return False
+        if not os.path.exists(comp_path):
+            self._error = f"コンポジションが見つかりません: {Path(comp_path).name}"
+            return False
+        try:
+            insert = getattr(self._timeline,
+                             "InsertFusionCompositionIntoTimeline", None)
+            if insert is None:
+                self._error = ("このResolveバージョンは "
+                               "InsertFusionCompositionIntoTimeline 非対応です。\n"
+                               "Resolve 18 以降が必要です。")
+                return False
+            item = insert()
+            if not item:
+                self._error = "Fusionクリップの挿入に失敗しました。"
+                return False
+            imp = getattr(item, "ImportFusionComp", None)
+            if imp is None:
+                self._error = "ImportFusionComp 非対応のResolveバージョンです。"
+                return False
+            result = imp(comp_path)
+            if not result:
+                self._error = "コンポジションの読み込みに失敗しました。"
+                return False
+            return True
+        except Exception as e:
+            self._error = f"Fusionクリップ配置エラー: {e}"
+            return False
+
     def place_png_at_playhead(
         self,
         png_path: str,

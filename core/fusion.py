@@ -186,6 +186,136 @@ def generate_lipsync_macro(
         f.write("\n".join(lines))
 
 
+def generate_lipsync_comp(
+    out_path: str,
+    base_path: str,
+    mouth_paths: dict,
+    timeline: Optional[list] = None,
+    fps: float = 30.0,
+) -> None:
+    """
+    立ち絵 + 口パクの Fusion フルコンポジション (.comp) を書き出す。
+    MediaOut1 を持つため Resolve の Fusion クリップとして読み込める
+    （TimelineItem.ImportFusionComp で自動配置可能）。
+    口パクのキーフレームを焼き込む（timeline 指定時）。
+    """
+    avail = [s for s in SHAPE_ORDER if s != "closed" and mouth_paths.get(s)]
+    keys  = _timeline_to_keys(list(timeline), fps) if timeline else None
+
+    L: list[str] = []
+    A = L.append
+    A("{")
+    A("\tTools = ordered() {")
+
+    # 口形状コントロール
+    A("\t\tMouthCtrl = Background {")
+    A("\t\t\tNameSet = true,")
+    A("\t\t\tUserControls = ordered() {")
+    A("\t\t\t\tMouth = {")
+    A('\t\t\t\t\tLINKID_DataType = "Number",')
+    A('\t\t\t\t\tINPID_InputControl = "SliderControl",')
+    A("\t\t\t\t\tINP_Integer = true,")
+    A("\t\t\t\t\tINP_MinScale = 0, INP_MaxScale = 6, INP_Default = 0,")
+    A('\t\t\t\t\tLINKS_Name = "Mouth",')
+    A("\t\t\t\t},")
+    A("\t\t\t},")
+    A("\t\t\tInputs = {")
+    A("\t\t\t\tWidth = Input { Value = 16, },")
+    A("\t\t\t\tHeight = Input { Value = 16, },")
+    if keys:
+        A('\t\t\t\tMouth = Input { SourceOp = "MouthSpline", Source = "Value", },')
+    A("\t\t\t},")
+    A("\t\t\tViewInfo = OperatorInfo { Pos = { -110, 0 } },")
+    A("\t\t},")
+
+    if keys:
+        A("\t\tMouthSpline = BezierSpline {")
+        A("\t\t\tKeyFrames = {")
+        for frame, idx in keys:
+            A(f"\t\t\t\t[{frame}] = {{ {idx}, Flags = {{ StepIn = true, StepOut = true }} }},")
+        A("\t\t\t},")
+        A("\t\t},")
+
+    # ベースローダー
+    A("\t\tBaseLoader = Loader {")
+    A("\t\t\tClips = { Clip {")
+    A(f'\t\t\t\tFilename = "{_lua_path(base_path)}",')
+    A('\t\t\t\tFormatID = "PNGFormat", Length = 1, TrimIn = 0,')
+    A("\t\t\t} },")
+    A("\t\t\tViewInfo = OperatorInfo { Pos = { 0, 0 } },")
+    A("\t\t},")
+
+    # 口ローダー
+    for s in avail:
+        A(f"\t\tMouth_{s} = Loader {{")
+        A("\t\t\tClips = { Clip {")
+        A(f'\t\t\t\tFilename = "{_lua_path(mouth_paths[s])}",')
+        A('\t\t\t\tFormatID = "PNGFormat", Length = 1, TrimIn = 0,')
+        A("\t\t\t} },")
+        A(f"\t\t\tViewInfo = OperatorInfo {{ Pos = {{ 0, {SHAPE_INDEX[s]*33}}} }},")
+        A("\t\t},")
+
+    # 口マージ
+    prev = "BaseLoader"
+    for s in avail:
+        idx = SHAPE_INDEX[s]
+        node = f"Merge_{s}"
+        A(f"\t\t{node} = Merge {{")
+        A("\t\t\tInputs = {")
+        A(f'\t\t\t\tBackground = Input {{ SourceOp = "{prev}", Source = "Output", }},')
+        A(f'\t\t\t\tForeground = Input {{ SourceOp = "Mouth_{s}", Source = "Output", }},')
+        A(f'\t\t\t\tBlend = Input {{ Expression = "(MouthCtrl.Mouth == {idx}) and 1 or 0", }},')
+        A("\t\t\t},")
+        A(f"\t\t\tViewInfo = OperatorInfo {{ Pos = {{ 165, {idx*33}}} }},")
+        A("\t\t},")
+        prev = node
+
+    # MediaOut（Fusion クリップの出力）
+    A("\t\tMediaOut1 = MediaOut {")
+    A("\t\t\tInputs = {")
+    A(f'\t\t\t\tInput = Input {{ SourceOp = "{prev}", Source = "Output", }},')
+    A("\t\t\t},")
+    A("\t\t\tViewInfo = OperatorInfo { Pos = { 360, 0 } },")
+    A("\t\t},")
+
+    A("\t},")
+    A('\tActiveTool = "MediaOut1",')
+    A("}")
+
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(L))
+
+
+def split_psd_to_pngs(psd_path: str, out_dir: str) -> tuple:
+    """
+    PSD を分解して基本立ち絵 + 口形状 PNG を out_dir に書き出す。
+    返値: (base_png_path | None, {shape_key: png_path})
+    """
+    from .lipsync import extract_psd_layers, auto_map_psd_layers, HAS_PSD_TOOLS
+    if not HAS_PSD_TOOLS:
+        raise RuntimeError("psd-tools が必要です: pip install psd-tools")
+
+    layers = extract_psd_layers(psd_path)
+    base, mouth = auto_map_psd_layers(layers)
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    base_path = None
+    if base is not None:
+        base_path = str(out / "base.png")
+        base.save(base_path, "PNG")
+
+    mouth_paths: dict = {}
+    for key, img in mouth.items():
+        p = str(out / f"mouth_{key}.png")
+        img.save(p, "PNG")
+        mouth_paths[key] = p
+
+    return base_path, mouth_paths
+
+
 def resolve_macros_dir() -> Optional[str]:
     """Resolve の Fusion Macros フォルダ（存在すれば）を返す。"""
     import os

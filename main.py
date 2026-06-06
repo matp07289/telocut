@@ -2160,6 +2160,11 @@ class LipSyncDialog(tk.Toplevel):
         ttk.Button(fxbtn, text="❓ 口パクの作り方",
                    command=lambda: LipSyncGuideDialog(self)).pack(side='left', padx=8)
 
+        fxbtn2 = ttk.Frame(fx_lf)
+        fxbtn2.pack(fill='x', pady=(4, 0))
+        ttk.Button(fxbtn2, text="⚡ PSD分解 → Fusionクリップを再生ヘッドに自動配置",
+                   command=self._psd_to_fusion_clip).pack(side='left', padx=2)
+
     # ─── Tab 4: プレビュー ─────────────────────────────────────────────────
 
     def _build_preview_tab(self, nb):
@@ -2440,6 +2445,117 @@ class LipSyncDialog(tk.Toplevel):
             "3. Inspector で 口形状 / 位置 / サイズ / 不透明度 を調整\n"
             "   口パクキーフレームは焼き込み済み（編集可）",
             parent=self)
+
+    def _psd_to_fusion_clip(self):
+        """PSD を分解 → base+あいうえお生成 → Fusionクリップとして再生ヘッドに自動配置。"""
+        from pathlib import Path as _P
+        # 出力先
+        out_dir = self._out_dir_var.get().strip()
+        if not out_dir:
+            messagebox.showwarning("出力先未設定", "出力フォルダを設定してください。", parent=self)
+            return
+        out = _P(out_dir) / "lipsync_fusion"
+        out.mkdir(parents=True, exist_ok=True)
+
+        # ── 画像の用意（PSD分解 優先、なければ現在の指定画像） ──
+        base_path = None
+        mouth_paths = {}
+        psd = self._psd_path_var.get().strip() if hasattr(self, '_psd_path_var') else ""
+        try:
+            if psd and _P(psd).exists():
+                self._status_var.set("PSD を分解中...")
+                self.update()
+                from core.lipsync import HAS_PSD_TOOLS
+                if not HAS_PSD_TOOLS:
+                    messagebox.showerror("エラー",
+                        "psd-tools が必要です。\npip install psd-tools", parent=self)
+                    return
+                from core.fusion import split_psd_to_pngs
+                base_path, mouth_paths = split_psd_to_pngs(psd, str(out))
+            else:
+                # PSD未指定 → 現在の画像（PNG指定/抽出済み）を保存
+                if not self._load_images() or self._base_img is None:
+                    messagebox.showwarning("画像未設定",
+                        "PSD を指定するか、キャラクタータブで画像を設定してください。",
+                        parent=self)
+                    return
+                base_path = str(out / "base.png")
+                self._base_img.save(base_path, "PNG")
+                for key, var in self._mouth_vars.items():
+                    img = self._mouth_imgs.get(key)
+                    p = var.get().strip()
+                    if p and _P(p).exists():
+                        mouth_paths[key] = p
+                    elif img is not None:
+                        dest = str(out / f"mouth_{key}.png")
+                        img.save(dest, "PNG")
+                        mouth_paths[key] = dest
+        except Exception as ex:
+            self._status_var.set("")
+            messagebox.showerror("PSD分解エラー", str(ex), parent=self)
+            return
+
+        if base_path is None or not mouth_paths:
+            messagebox.showwarning("分解結果なし",
+                "基本立ち絵または口形状が取得できませんでした。\n"
+                "PSDの口レイヤー名（口_あ 等）を確認してください。", parent=self)
+            return
+
+        # ── 口パクタイムライン（任意） ──
+        timeline = None
+        fps = self._fps_var.get()
+        if self._bake_keys_var.get():
+            try:
+                self._status_var.set("タイミング解析中...")
+                self.update()
+                if self._timing_mode.get() == "voicevox":
+                    timeline = self._build_vv_timeline(fps)
+                else:
+                    import core.lipsync as ls
+                    wav = self._wav_path_var.get().strip()
+                    if wav and _P(wav).exists():
+                        timeline = ls.analyze_wav_timeline(wav, fps, self._threshold_var.get())
+            except Exception:
+                timeline = None
+
+        # ── .comp 生成 ──
+        try:
+            from core.fusion import generate_lipsync_comp
+            comp_path = str(out / "DavinTelop_LipSync.comp")
+            generate_lipsync_comp(comp_path, base_path, mouth_paths,
+                                  timeline=timeline, fps=fps)
+        except Exception as ex:
+            self._status_var.set("")
+            messagebox.showerror("comp生成エラー", str(ex), parent=self)
+            return
+
+        # ── Resolve に自動配置 ──
+        self._status_var.set("Resolve に配置中...")
+        self.update()
+        try:
+            from core.exporter import ResolveConnector
+            rc = ResolveConnector()
+            if not rc.connect():
+                self._status_var.set("")
+                messagebox.showwarning("Resolve未接続",
+                    rc.error + f"\n\n.comp は書き出し済み:\n{comp_path}", parent=self)
+                return
+            ok = rc.place_fusion_comp_at_playhead(comp_path)
+            if ok:
+                self._status_var.set("Fusionクリップを再生ヘッドに配置しました")
+                messagebox.showinfo("完了",
+                    "PSDを分解し、Fusionクリップとして再生ヘッド位置に配置しました。\n\n"
+                    f"画像: {out}\n"
+                    f"口形状: {[k for k in mouth_paths]}\n\n"
+                    "Resolveのタイムラインで確認してください。", parent=self)
+            else:
+                self._status_var.set("")
+                messagebox.showwarning("配置失敗",
+                    rc.error + f"\n\n.comp は書き出し済み:\n{comp_path}\n\n"
+                    "Fusionページで手動読み込みも可能です。", parent=self)
+        except Exception as ex:
+            self._status_var.set("")
+            messagebox.showerror("Resolve配置エラー", str(ex), parent=self)
 
     # ─── 生成 ──────────────────────────────────────────────────────────────
 
