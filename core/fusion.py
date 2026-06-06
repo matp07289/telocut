@@ -565,8 +565,8 @@ def generate_tatie_generator(
             idx = next((k for k, (nn, pp) in enumerate(opts) if nn == n), 0)
             sel = cat_sel[cat]
             # RootXF の Sel_x を参照（経路内ツールなので確実に評価される）
-            A(f'\t\t\t\t\t\tBlend = Input {{ Value = {1 if idx == 0 else 0}, '
-              f'Expression = "(RootXF.{sel} == {idx}) and 1 or 0", }},')
+            # Fusion 標準の iif() を使用（Lua の and/or は式エンジンで不可）
+            A(f'\t\t\t\t\t\tBlend = Input {{ Expression = "iif(RootXF.{sel} == {idx}, 1, 0)", }},')
         A("\t\t\t\t\t},")
         A(f"\t\t\t\t\tViewInfo = OperatorInfo {{ Pos = {{ 165, {y} }} }},")
         A("\t\t\t\t},")
