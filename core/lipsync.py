@@ -60,6 +60,40 @@ PSD_NAME_MAP = {
 }
 
 _MOUTH_KEYWORDS = ('口', 'mouth', 'lip', 'kuchi')
+_EYE_KEYWORDS   = ('目', 'eye', '瞳', 'まぶた', 'eyelid', 'me_')
+
+
+def classify_eye_role(name: str):
+    """
+    目レイヤーを 'eye_open' / 'eye_closed' に分類。目でなければ None。
+    """
+    low = name.lower()
+    if not any(k in low for k in _EYE_KEYWORDS):
+        return None
+    if (any(k in name for k in ('閉', 'つぶ', '瞑'))
+            or any(k in low for k in ('close', 'blink', 'shut'))):
+        return 'eye_closed'
+    return 'eye_open'
+
+
+def build_blink_timeline(total_frames: int, fps: float,
+                         interval_sec: float = 4.0,
+                         blink_frames: int = 3) -> set:
+    """
+    まばたきで「目を閉じる」フレーム集合を返す。
+    interval_sec ごと（±ジッタ）に blink_frames 分だけ目を閉じる。
+    """
+    import random
+    closed: set = set()
+    if total_frames <= 0:
+        return closed
+    t = interval_sec
+    while int(t * fps) < total_frames:
+        start = int(t * fps)
+        for f in range(start, min(start + max(1, blink_frames), total_frames)):
+            closed.add(f)
+        t += interval_sec * (0.7 + random.random() * 0.6)
+    return closed
 
 
 def classify_layer_role(name: str):

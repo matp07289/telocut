@@ -1113,14 +1113,19 @@ class ResolveConnector:
 
     def place_tatie_full_via_fusion_api(
         self,
-        layers: list,                  # [(name, png_path, role)] 下→上の順。role: 口形状キー or None
-        timeline: Optional[list] = None,
+        layers: list,                  # [(name, png_path, role)] 下→上の順
+        timeline: Optional[list] = None,    # 口パク用 mora タイムライン
         fps: float = 30.0,
+        blink_frames: Optional[set] = None,  # 目を閉じるフレーム集合（まばたき）
     ) -> bool:
         """
         PSD の全レイヤーを個別 Loader として Fusion comp に展開する。
-        通常レイヤーは常時表示、口レイヤー(role指定)は Blend キーフレームで
-        口パクさせる。レイヤーは渡された順（下→上）に Merge で重ねる。
+        role 別の挙動:
+          口形状キー(a/i/u/e/o/N/closed): 口パク（Blendキーフレーム）
+          'eye_closed' : まばたきで閉じるフレームのみ表示
+          'eye_open'   : 常時表示（閉じ目の下）
+          None         : 通常レイヤー、常時表示
+        レイヤーは渡された順（下→上）に Merge で重ねる。
         """
         if not self._project or not self._timeline:
             self._error = "Resolveに接続されていません。"
@@ -1171,7 +1176,13 @@ class ResolveConnector:
                     pass
                 return ld
 
-            total = len(timeline) - 1 if timeline else 0
+            # キーフレーム焼き込みの総フレーム数（口/まばたきの最大）
+            total = 0
+            if timeline:
+                total = max(total, len(timeline) - 1)
+            if blink_frames:
+                total = max(total, max(blink_frames))
+            mouth_shapes = {"a", "i", "u", "e", "o", "N", "closed"}
 
             def _bake_blend(tool, active_set):
                 prev_v = None
@@ -1200,8 +1211,7 @@ class ResolveConnector:
                 except Exception:
                     pass
 
-                if role:   # 口レイヤー
-                    # デフォルトは closed のみ表示
+                if role in mouth_shapes:        # 口レイヤー
                     try:
                         mg.SetInput("Blend", 1.0 if role == "closed" else 0.0)
                     except Exception:
@@ -1209,11 +1219,24 @@ class ResolveConnector:
                     if timeline:
                         active = {f for f, sh in enumerate(timeline) if sh == role}
                         if role == "closed":
-                            shapes_present = {r for _, _, r in valid if r}
+                            shapes_present = {r for _, _, r in valid
+                                             if r in mouth_shapes}
                             active |= {f for f, sh in enumerate(timeline)
                                        if sh not in shapes_present}
                         _bake_blend(mg, active)
-                else:      # 通常レイヤー: 常時表示
+                elif role == "eye_closed":      # まばたき: 閉じ目
+                    try:
+                        mg.SetInput("Blend", 0.0)
+                    except Exception:
+                        pass
+                    if blink_frames:
+                        _bake_blend(mg, set(blink_frames))
+                elif role == "eye_open":        # 開き目: 常時表示（閉じ目の下）
+                    try:
+                        mg.SetInput("Blend", 1.0)
+                    except Exception:
+                        pass
+                else:                           # 通常レイヤー: 常時表示
                     try:
                         mg.SetInput("Blend", 1.0)
                     except Exception:

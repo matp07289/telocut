@@ -2289,7 +2289,19 @@ class LipSyncDialog(tk.Toplevel):
             foreground='gray', font=('', 8), justify='left').pack(anchor='w')
         self._bake_keys_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(fx_lf, text="口パクのキーフレームを焼き込む（音声・タイミングタブの設定を使用）",
-                        variable=self._bake_keys_var).pack(anchor='w', pady=(4, 4))
+                        variable=self._bake_keys_var).pack(anchor='w', pady=(4, 2))
+        # 目パチ（まばたき）
+        blink_row = ttk.Frame(fx_lf)
+        blink_row.pack(anchor='w', pady=(0, 4))
+        self._blink_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(blink_row, text="目パチ（自動まばたき）",
+                        variable=self._blink_var).pack(side='left')
+        ttk.Label(blink_row, text="間隔:").pack(side='left', padx=(8, 2))
+        self._blink_interval_var = tk.DoubleVar(value=4.0)
+        ttk.Spinbox(blink_row, from_=1.0, to=15.0, increment=0.5,
+                    textvariable=self._blink_interval_var, width=5,
+                    format="%.1f").pack(side='left')
+        ttk.Label(blink_row, text="秒", foreground='gray').pack(side='left', padx=(1, 0))
         fxbtn = ttk.Frame(fx_lf)
         fxbtn.pack(fill='x')
         ttk.Button(fxbtn, text="🎬 Resolveエフェクト(.setting)を書き出し",
@@ -2647,7 +2659,8 @@ class LipSyncDialog(tk.Toplevel):
             if psd and _P(psd).exists():
                 self._status_var.set("PSD を全レイヤー分解中...")
                 self.update()
-                from core.lipsync import HAS_PSD_TOOLS, classify_layer_role
+                from core.lipsync import (HAS_PSD_TOOLS, classify_layer_role,
+                                          classify_eye_role)
                 if not HAS_PSD_TOOLS:
                     messagebox.showerror("エラー",
                         "psd-tools が必要です。\npip install psd-tools", parent=self)
@@ -2655,7 +2668,10 @@ class LipSyncDialog(tk.Toplevel):
                 from core.fusion import split_psd_all_layers
                 all_layers = split_psd_all_layers(psd, str(out))   # [(name, path)]
                 for name, path in all_layers:
-                    layers_roles.append((name, path, classify_layer_role(name)))
+                    role = classify_layer_role(name)        # 口形状 or None
+                    if role is None:
+                        role = classify_eye_role(name)      # 目 or None
+                    layers_roles.append((name, path, role))
             else:
                 # PSD未指定 → キャラクタータブの画像（base + 口）を使用
                 if not self._load_images() or self._base_img is None:
@@ -2684,7 +2700,10 @@ class LipSyncDialog(tk.Toplevel):
             messagebox.showwarning("分解結果なし", "レイヤーが取得できませんでした。", parent=self)
             return
 
-        mouth_roles = sorted({r for _, _, r in layers_roles if r})
+        _MOUTH = {"a", "i", "u", "e", "o", "N", "closed"}
+        mouth_roles = sorted({r for _, _, r in layers_roles if r in _MOUTH})
+        eye_roles   = sorted({r for _, _, r in layers_roles
+                              if r in ("eye_open", "eye_closed")})
 
         # ── 口パクタイムライン（任意） ──
         timeline = None
@@ -2703,6 +2722,21 @@ class LipSyncDialog(tk.Toplevel):
             except Exception:
                 timeline = None
 
+        # ── 目パチ（まばたき）タイムライン（任意） ──
+        blink_frames = None
+        if (getattr(self, '_blink_var', None) and self._blink_var.get()
+                and "eye_closed" in eye_roles):
+            try:
+                import core.lipsync as ls
+                total = (len(timeline) if timeline
+                         else int(fps * 10))   # タイミング無しは10秒分
+                blink_frames = ls.build_blink_timeline(
+                    total, fps,
+                    interval_sec=self._blink_interval_var.get(),
+                    blink_frames=max(2, int(fps * 0.1)))
+            except Exception:
+                blink_frames = None
+
         # ── Resolve に全レイヤー配置 ──
         self._status_var.set("Resolve に配置中...")
         self.update()
@@ -2715,18 +2749,21 @@ class LipSyncDialog(tk.Toplevel):
                     rc.error + f"\n\nレイヤーPNGは書き出し済み:\n{out}", parent=self)
                 return
             ok = rc.place_tatie_full_via_fusion_api(
-                layers_roles, timeline=timeline, fps=fps)
+                layers_roles, timeline=timeline, fps=fps,
+                blink_frames=blink_frames)
             if ok:
                 self._status_var.set(
-                    f"全{len(layers_roles)}レイヤーを配置（口{len(mouth_roles)}種）")
+                    f"全{len(layers_roles)}レイヤー配置（口{len(mouth_roles)} 目{len(eye_roles)}）")
                 messagebox.showinfo("完了",
                     "PSDの全レイヤーを個別ノードで Fusion に展開し、\n"
                     "再生ヘッド位置に配置しました。\n\n"
                     f"レイヤー数: {len(layers_roles)}\n"
                     f"口形状: {mouth_roles}\n"
+                    f"目: {eye_roles}"
+                    + ("（自動まばたき）" if blink_frames else "") + "\n"
                     f"PNG: {out}\n\n"
-                    "口レイヤーは Blend キーフレームで口パクします。\n"
-                    "Fusionページで各ノード・キーフレームを編集できます。",
+                    "口レイヤーは口パク、閉じ目はまばたきのキーフレームを\n"
+                    "焼き込み済みです。Fusionページで編集できます。",
                     parent=self)
             else:
                 self._status_var.set("")
