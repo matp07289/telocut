@@ -516,14 +516,14 @@ def generate_tatie_generator(
     A(f"\t\t{gen_name} = GroupOperator {{")
     A("\t\t\tCtrlWZoom = false,")
     A("\t\t\tInputs = ordered() {")
-    # カテゴリ選択を公開（ポーズページ）
-    cat_ctrls = {}   # category -> controller node name
+    # カテゴリ選択を公開（ポーズページ）。コントロールは経路内の RootXF に持たせる
+    cat_sel = {}   # category -> ("RootXF", "Sel_<ci>")
     for ci, (cat, opts) in enumerate(cats.items()):
-        ctrl_node = nodename(f"Ctrl_{ci}")
-        cat_ctrls[cat] = ctrl_node
-        A(f'\t\t\t\tSel_{ci} = InstanceInput {{')
-        A(f'\t\t\t\t\tSourceOp = "{ctrl_node}",')
-        A('\t\t\t\t\tSource = "Sel",')
+        sel_name = f"Sel_{ci}"
+        cat_sel[cat] = sel_name
+        A(f'\t\t\t\t{sel_name} = InstanceInput {{')
+        A('\t\t\t\t\tSourceOp = "RootXF",')
+        A(f'\t\t\t\t\tSource = "{sel_name}",')
         A(f'\t\t\t\t\tName = "{_esc(self_labels.get(cat, cat))}",')
         A(f'\t\t\t\t\tPage = "ポーズ",')
         A("\t\t\t\t\tDefault = 0,")
@@ -537,36 +537,9 @@ def generate_tatie_generator(
     A("\t\t\tViewInfo = GroupInfo { Pos = { 0, 0 } },")
     A("\t\t\tTools = ordered() {")
 
-    # カテゴリ選択コントロール（ComboControl を持つ Background）
-    # ComboControl の選択肢は制御テーブル直下に { MBTNC_AddButton="..." } を列挙する
-    for cat, opts in cats.items():
-        ctrl_node = cat_ctrls[cat]
-        A(f"\t\t\t\t{ctrl_node} = Background {{")
-        A("\t\t\t\t\tNameSet = true,")
-        A("\t\t\t\t\tUserControls = ordered() {")
-        A("\t\t\t\t\t\tSel = {")
-        A('\t\t\t\t\t\t\tLINKID_DataType = "Number",')
-        A('\t\t\t\t\t\t\tINPID_InputControl = "ComboControl",')
-        A("\t\t\t\t\t\t\tINP_Integer = true,")
-        A("\t\t\t\t\t\t\tINP_Default = 0,")
-        A(f'\t\t\t\t\t\t\tLINKS_Name = "{_esc(self_labels.get(cat, cat))}",')
-        for (n, p) in opts:
-            # ComboControl の選択肢は CCS_AddString（MBTNC_AddButton は別物）
-            A(f'\t\t\t\t\t\t\t{{ CCS_AddString = "{_esc(_disp_label(n))}" }},')
-        A("\t\t\t\t\t\t},")
-        A("\t\t\t\t\t},")
-        # Sel に具体値(0)を設定。これが無いと選択肢が表示されない
-        A("\t\t\t\t\tInputs = {")
-        A("\t\t\t\t\t\tSel = Input { Value = 0, },")
-        A("\t\t\t\t\t\tWidth = Input { Value = 16, },")
-        A("\t\t\t\t\t\tHeight = Input { Value = 16, },")
-        A("\t\t\t\t\t},")
-        A("\t\t\t\t},")
-
     # ローダー + マージ
     prev = None
     y = 0
-    # まず通常レイヤー（常時表示）と各カテゴリのレイヤーを元の順序で重ねる
     for n, p in avail:
         ld = nodename("Ld_" + _safe(n))
         A(f"\t\t\t\t{ld} = Loader {{")
@@ -587,20 +560,38 @@ def generate_tatie_generator(
         A(f'\t\t\t\t\t\tForeground = Input {{ SourceOp = "{ld}", Source = "Output", }},')
         # グループ（選択肢2つ以上）に属すレイヤーは選択式、それ以外は常時表示
         cat = _group_key(n)
-        if cat in cat_ctrls:
+        if cat in cat_sel:
             opts = cats[cat]
             idx = next((k for k, (nn, pp) in enumerate(opts) if nn == n), 0)
-            A(f'\t\t\t\t\t\tBlend = Input {{ Expression = "iif({cat_ctrls[cat]}.Sel == {idx}, 1, 0)", }},')
+            sel = cat_sel[cat]
+            # RootXF の Sel_x を参照（経路内ツールなので確実に評価される）
+            A(f'\t\t\t\t\t\tBlend = Input {{ Value = {1 if idx == 0 else 0}, '
+              f'Expression = "(RootXF.{sel} == {idx}) and 1 or 0", }},')
         A("\t\t\t\t\t},")
         A(f"\t\t\t\t\tViewInfo = OperatorInfo {{ Pos = {{ 165, {y} }} }},")
         A("\t\t\t\t},")
         prev = mg
         y += 33
 
-    # ルート Transform
+    # ルート Transform（カテゴリ選択コントロールを保持・経路内で評価される）
     A("\t\t\t\tRootXF = Transform {")
+    A("\t\t\t\t\tUserControls = ordered() {")
+    for ci, (cat, opts) in enumerate(cats.items()):
+        A(f"\t\t\t\t\t\tSel_{ci} = {{")
+        A('\t\t\t\t\t\t\tLINKID_DataType = "Number",')
+        A('\t\t\t\t\t\t\tINPID_InputControl = "ComboControl",')
+        A("\t\t\t\t\t\t\tINP_Integer = true,")
+        A("\t\t\t\t\t\t\tINP_Default = 0,")
+        A(f'\t\t\t\t\t\t\tLINKS_Name = "{_esc(self_labels.get(cat, cat))}",')
+        A('\t\t\t\t\t\t\tICS_ControlPage = "ポーズ",')
+        for (nn, pp) in opts:
+            A(f'\t\t\t\t\t\t\t{{ CCS_AddString = "{_esc(_disp_label(nn))}" }},')
+        A("\t\t\t\t\t\t},")
+    A("\t\t\t\t\t},")
     A("\t\t\t\t\tInputs = {")
     A(f'\t\t\t\t\t\tInput = Input {{ SourceOp = "{prev}", Source = "Output", }},')
+    for ci in range(len(cats)):
+        A(f"\t\t\t\t\t\tSel_{ci} = Input {{ Value = 0, }},")
     A("\t\t\t\t\t},")
     A(f"\t\t\t\t\tViewInfo = OperatorInfo {{ Pos = {{ 360, 0 }} }},")
     A("\t\t\t\t},")
