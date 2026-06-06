@@ -1042,10 +1042,10 @@ class ResolveConnector:
                 return False
             prev = base_ld
 
-            # 口形状コントロール（Transform に Mouth ユーザーコントロール）
-            ctrl = comp.AddTool("Transform", -2, -2)
+            # 口形状コントロール（Background に Mouth ユーザーコントロール）
+            ctrl = comp.AddTool("Background", -2, -2)
+            ctrl_name = None
             try:
-                ctrl.SetAttrs({"TOOLS_Name": "MouthCtrl"})
                 ctrl.UserControls = {
                     "Mouth": {
                         "LINKID_DataType": "Number",
@@ -1055,32 +1055,61 @@ class ResolveConnector:
                         "LINKS_Name": "Mouth",
                     }
                 }
-                ctrl = ctrl.Refresh()
+                ctrl = ctrl.Refresh()          # UserControls 反映には Refresh が必要
+                ctrl_name = ctrl.Name           # 実際のツール名を取得（式参照用）
+                ctrl.SetInput("Mouth", 0.0)
             except Exception:
                 ctrl = None
 
+            def _set_expr(tool, inp, expr) -> bool:
+                """入力に式を設定（複数 API 形を試す）。"""
+                # 1) Input オブジェクト経由
+                try:
+                    obj = getattr(tool, inp)
+                    if hasattr(obj, "SetExpression"):
+                        obj.SetExpression(expr)
+                        return True
+                except Exception:
+                    pass
+                # 2) tool.SetExpression（一部バージョン）
+                try:
+                    if hasattr(tool, "SetExpression"):
+                        tool.SetExpression(inp, expr)
+                        return True
+                except Exception:
+                    pass
+                return False
+
             # 口ローダー + Merge（Blend を口形状で切替）
-            avail = [s for s in ("a", "i", "u", "e", "o", "N", "closed")
+            avail = [s for s in ("closed", "a", "i", "u", "e", "o", "N")
                      if mouth_paths.get(s) and os.path.exists(mouth_paths[s])]
+            expr_ok = 0
             for i, s in enumerate(avail):
-                m_ld, _ = _add_loader(mouth_paths[s], 1, i)
-                mg = comp.AddTool("Merge", 2, i)
+                m_ld, _ = _add_loader(mouth_paths[s], 1, i + 1)
+                mg = comp.AddTool("Merge", 2, i + 1)
                 try:
                     mg.ConnectInput("Background", prev)
                     mg.ConnectInput("Foreground", m_ld)
                 except Exception:
                     pass
-                # Blend: 口形状一致時のみ表示
                 idx = SHAPE_IDX.get(s, 0)
-                if ctrl is not None:
-                    try:
-                        mg.Blend.SetExpression(f"MouthCtrl.Mouth == {idx} and 1 or 0")
-                    except Exception:
-                        pass
+                # 既定は非表示（式が効かない場合の重なりを防ぐ）
+                try:
+                    mg.SetInput("Blend", 1.0 if idx == 0 else 0.0)
+                except Exception:
+                    pass
+                if ctrl_name:
+                    expr = f"iif({ctrl_name}.Mouth == {idx}, 1, 0)"
+                    if _set_expr(mg, "Blend", expr):
+                        expr_ok += 1
+                    else:
+                        # iif が使えない場合の Lua 形
+                        _set_expr(mg, "Blend",
+                                  f"({ctrl_name}.Mouth == {idx}) and 1 or 0")
                 prev = mg
 
             # 口パクキーフレームを Mouth に焼き込み（best-effort）
-            if ctrl is not None and timeline:
+            if ctrl is not None and ctrl_name and timeline:
                 try:
                     prev_idx = None
                     for f, shape in enumerate(timeline):
