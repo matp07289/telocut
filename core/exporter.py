@@ -1155,7 +1155,40 @@ class ResolveConnector:
             except Exception:
                 pass
 
-            def _add_loader(path, x, y):
+            import re as _re
+            _used_names: set = set()
+
+            def _safe_name(n):
+                b = _re.sub(r'[^0-9A-Za-z_]', '_', n).strip('_') or "Layer"
+                if b[0].isdigit():
+                    b = "L_" + b
+                nm = b
+                k = 1
+                while nm in _used_names:
+                    nm = f"{b}_{k}"; k += 1
+                _used_names.add(nm)
+                return nm
+
+            def _set_name(tool, n):
+                try:
+                    tool.SetAttrs({"TOOLS_Name": _safe_name(n)})
+                except Exception:
+                    pass
+
+            def _set_color(tool, role):
+                # Resolve_Script 風に役割で色分け
+                col = None
+                if role in ("a", "i", "u", "e", "o", "N", "closed"):
+                    col = {"R": 0.92, "G": 0.43, "B": 0.0}     # 口=オレンジ
+                elif role in ("eye_open", "eye_closed"):
+                    col = {"R": 0.26, "G": 0.53, "B": 0.96}    # 目=青
+                if col:
+                    try:
+                        tool.TileColor = col
+                    except Exception:
+                        pass
+
+            def _add_loader(path, x, y, name=None):
                 ld = comp.AddTool("Loader", x, y)
                 p = str(path)
                 for setter in (lambda: ld.Clip.__setitem__(1, p),
@@ -1174,7 +1207,17 @@ class ResolveConnector:
                     ld.GlobalOut = 100000
                 except Exception:
                     pass
-                return ld
+                if name:
+                    _set_name(ld, name)
+                # SetDomain で DoD を画像範囲に最適化（psd2tatie 同様）
+                sd = None
+                try:
+                    sd = comp.AddTool("SetDomain", x, y)
+                    sd.SetInput("Mode", 1)   # 1 = Set To Input (画像のDoD)
+                    sd.ConnectInput("Input", ld)
+                except Exception:
+                    sd = None
+                return sd if sd is not None else ld
 
             # キーフレーム焼き込みの総フレーム数（口/まばたきの最大）
             total = 0
@@ -1198,13 +1241,16 @@ class ResolveConnector:
             prev = None
             placed = 0
             for i, (name, path, role) in enumerate(valid):
-                ld = _add_loader(path, 0, i)
+                ld = _add_loader(path, 0, i, name=name)
+                _set_color(ld, role)
                 if prev is None:
                     # 最下層はそのまま土台に
                     prev = ld
                     placed += 1
                     continue
                 mg = comp.AddTool("Merge", 2, i)
+                _set_name(mg, "Mrg_" + name)
+                _set_color(mg, role)
                 try:
                     mg.ConnectInput("Background", prev)
                     mg.ConnectInput("Foreground", ld)
@@ -1243,6 +1289,15 @@ class ResolveConnector:
                         pass
                 prev = mg
                 placed += 1
+
+            # ルート Transform（キャラ全体を1ノードで移動/拡縮/回転）
+            try:
+                root_xf = comp.AddTool("Transform", 4, 0)
+                _set_name(root_xf, "CharaTransform")
+                root_xf.ConnectInput("Input", prev)
+                prev = root_xf
+            except Exception:
+                pass
 
             # MediaOut1 へ接続
             try:
