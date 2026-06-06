@@ -1267,34 +1267,31 @@ class PsGuideDialog(tk.Toplevel):
 #  VoiceVox 音声生成ダイアログ
 # ─────────────────────────────────────────────
 
-class VoiceVoxDialog(tk.Toplevel):
-    """VoiceVox を使ってテロップの音声を一括生成するダイアログ。"""
+class VoiceVoxPanel(ttk.Frame):
+    """VoiceVox を使ってテロップの音声を一括生成するパネル（ウィンドウ埋め込み可）。"""
 
-    def __init__(self, parent, telop_list: list, design: "DesignSettings",
-                 default_out_dir: str = ""):
+    def __init__(self, parent, app):
         super().__init__(parent)
-        self.title("VoiceVox 音声生成")
-        self.geometry("700x700")
-        self.minsize(600, 580)
-        self.resizable(True, True)
-
-        self._telops    = [e for e in telop_list if e.enabled]
-        self._design    = design
+        self._app       = app
+        self._telops    = [e for e in app.telop_list if e.enabled]
         self._client    = None
         self._styles:   list[tuple[str, int]] = []   # (表示名, style_id)
         self._wav_refs: dict = {}   # iid -> wav bytes (preview用)
         self._running   = False
         self._stop_flag = False
+        self._nb        = None
+        self._list_tab  = None
 
-        self._build(default_out_dir)
+        self._build()
         self._try_connect()
-        self.grab_set()
 
     # ── UI 構築 ──────────────────────────────────
 
-    def _build(self, default_out_dir: str):
+    def _build(self):
+        default_out_dir = self._app._resolve_out_dir.get()
         nb = ttk.Notebook(self)
         nb.pack(fill='both', expand=True, padx=8, pady=6)
+        self._nb = nb
 
         # ─ 設定タブ ─────────────────────────────
         cfg_tab = ttk.Frame(nb, padding=10)
@@ -1413,7 +1410,8 @@ class VoiceVoxDialog(tk.Toplevel):
 
         # ─ テロップ一覧タブ ─────────────────────
         list_tab = ttk.Frame(nb, padding=8)
-        nb.add(list_tab, text=f" テロップ ({len(self._telops)} 件) ")
+        nb.add(list_tab, text=" テロップ ")
+        self._list_tab = list_tab
 
         cols = ("sel", "no", "start", "end", "text")
         self._tree = ttk.Treeview(list_tab, columns=cols, show='headings',
@@ -1435,15 +1433,10 @@ class VoiceVoxDialog(tk.Toplevel):
         vsb.pack(side='left', fill='y')
 
         self._tree.bind('<Button-1>', self._on_tree_click)
+        self._tree.tag_configure('checked',   foreground='black')
+        self._tree.tag_configure('unchecked', foreground='#AAAAAA')
         self._checked: set = set()
-        for e in self._telops:
-            iid = str(e.id)
-            self._tree.insert('', 'end', iid=iid,
-                values=('✓', e.id, e.start_time, e.end_time,
-                        e.text.replace('\n', ' ')[:50]))
-            self._checked.add(iid)
-            self._tree.tag_configure('checked',   foreground='black')
-            self._tree.tag_configure('unchecked', foreground='#AAAAAA')
+        self.refresh_telops()
 
         # ── 下部コントロール ──────────────────────
         bot = ttk.Frame(self, padding=(8, 0, 8, 8))
@@ -1453,16 +1446,36 @@ class VoiceVoxDialog(tk.Toplevel):
         ttk.Label(bot, textvariable=self._prog_var,
                   foreground='#0078D7', font=('', 9)).pack(side='left')
 
-        self._prog_bar = ttk.Progressbar(bot, length=200, mode='determinate')
+        self._prog_bar = ttk.Progressbar(bot, length=160, mode='determinate')
         self._prog_bar.pack(side='left', padx=8)
 
-        ttk.Button(bot, text="キャンセル", width=10,
-                   command=self.destroy).pack(side='right', padx=4)
+        ttk.Button(bot, text="🔄 テロップ更新", width=12,
+                   command=self.refresh_telops).pack(side='right', padx=4)
         self._gen_btn = ttk.Button(bot, text="▶ 全テロップを生成", width=16,
                                     command=self._start_generation)
         self._gen_btn.pack(side='right', padx=4)
         ttk.Button(bot, text="■ 中断", width=8,
                    command=self._stop_generation).pack(side='right', padx=2)
+
+    def refresh_telops(self):
+        """メインアプリの現在のテロップ一覧をツリーに反映する。"""
+        self._telops = [e for e in self._app.telop_list if e.enabled]
+        if not hasattr(self, '_tree'):
+            return
+        for iid in self._tree.get_children():
+            self._tree.delete(iid)
+        self._checked = set()
+        for e in self._telops:
+            iid = str(e.id)
+            self._tree.insert('', 'end', iid=iid,
+                values=('✓', e.id, e.start_time, e.end_time,
+                        e.text.replace('\n', ' ')[:50]))
+            self._checked.add(iid)
+        if self._nb is not None and self._list_tab is not None:
+            try:
+                self._nb.tab(self._list_tab, text=f" テロップ ({len(self._telops)}) ")
+            except Exception:
+                pass
 
     # ── 接続テスト ────────────────────────────────
 
@@ -2767,14 +2780,21 @@ class DavinTelopApp(tk.Tk):
             pass
 
     def _setup_right2_panel(self, parent):
-        """右2パネル: 合成プレビューのみ全面表示。
+        """右2パネル: 合成プレビュー + VoiceVox をタブ表示。
         テロッププレビュー・テンプレートは独立ウィンドウとして呼び出す。"""
-        self._main_nb = None   # TearableNotebook 不使用
+        nb = TearableNotebook(parent)
+        nb.pack(fill='both', expand=True, padx=2, pady=2)
+        self._main_nb = nb
 
-        # 合成プレビューを全面に配置
-        comp_frame = ttk.Frame(parent)
-        comp_frame.pack(fill='both', expand=True)
+        comp_frame = ttk.Frame(nb)
+        nb.add_tab(comp_frame, "合成プレビュー", weight=2)
         self._build_composite_pane(comp_frame)
+
+        # VoiceVox パネルをウィンドウ内に埋め込み
+        vv_frame = ttk.Frame(nb)
+        nb.add_tab(vv_frame, "🔊 VoiceVox", weight=2)
+        self._voicevox_panel = VoiceVoxPanel(vv_frame, self)
+        self._voicevox_panel.pack(fill='both', expand=True)
 
         # テロッププレビュー・テンプレートのウィンドウ参照
         self._telop_pv_win:   Optional[tk.Toplevel] = None
@@ -4145,6 +4165,8 @@ class DavinTelopApp(tk.Tk):
                    command=self.export_resolve_script).pack(side='left', padx=4)
         ttk.Button(bar, text="⚡ Resolve API送信",
                    command=self.send_to_resolve).pack(side='left', padx=4)
+        ttk.Button(bar, text="📍 再生ヘッド配置",
+                   command=self.place_selected_at_playhead).pack(side='left', padx=4)
 
         ttk.Separator(bar, orient='vertical').pack(side='left', fill='y', padx=8)
 
@@ -5119,15 +5141,25 @@ class DavinTelopApp(tk.Tk):
         )
 
     def export_voicevox(self):
-        if not self.telop_list:
-            messagebox.showwarning("VoiceVox", "テロップがありません。")
-            return
-        VoiceVoxDialog(
-            self,
-            telop_list=self.telop_list,
-            design=self._collect_design(),
-            default_out_dir=self._resolve_out_dir.get(),
-        )
+        # 埋め込み VoiceVox パネルのタブへ切替えてテロップ一覧を更新
+        panel = getattr(self, '_voicevox_panel', None)
+        nb    = getattr(self, '_main_nb', None)
+        if panel is not None and nb is not None:
+            panel.refresh_telops()
+            try:
+                nb.select(panel.master)   # VoiceVox タブを選択
+            except Exception:
+                pass
+            # タブが切り離されている場合は前面に
+            try:
+                if hasattr(nb, '_floated'):
+                    for idx, win in nb._floated.items():
+                        if win.winfo_exists():
+                            win.lift()
+            except Exception:
+                pass
+        else:
+            messagebox.showinfo("VoiceVox", "VoiceVox パネルが利用できません。")
 
     # ─── DaVinci Resolve 連携 ───────────────────
 
