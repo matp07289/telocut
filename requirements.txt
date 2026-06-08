@@ -8,3 +8,7 @@ ndi-python
 pyaaf2>=1.7
 opencv-python>=4.5
 pygrabber==0.1
+
+# 自動字幕起こし (faster-whisper / ローカル音声認識)
+faster-whisper
+tokenizers==0.13.3

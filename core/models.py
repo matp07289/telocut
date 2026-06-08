@@ -70,6 +70,16 @@ class TelopEntry:
     text: str
     enabled: bool = True
     note: str = ""
+    speaker: str = ""        # 話者名（話者別色分け用）
+    track: int = 0           # 配置ビデオトラック（0=既定を使用）
+    color: str = ""          # Resolve クリップカラー（""=既定）
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TelopEntry":
+        """未知キーを無視して生成（後方互換）。"""
+        import inspect
+        keys = set(inspect.signature(cls).parameters)
+        return cls(**{k: v for k, v in d.items() if k in keys})

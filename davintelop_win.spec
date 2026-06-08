@@ -2,6 +2,10 @@
 # DavinTelop Windows PyInstaller spec (PyInstaller 6.x 対応)
 # 生成物: dist\DavinTelop.exe (onefile)
 
+# 注: 自動字幕起こし(faster-whisper)は依存が巨大(1GB級)のため EXE には同梱しない。
+# ソース版(python main.py)で `pip install faster-whisper` すると利用可能。
+# EXE ではダイアログがインストール手順を案内する。
+
 a = Analysis(
     ['main.py'],
     pathex=['.'],
@@ -77,6 +81,8 @@ a = Analysis(
         'pygrabber.dshow_graph',
         'comtypes',
         'comtypes.client',
+        # 自動字幕起こし（faster-whisper本体は同梱せず、core.transcribe のみ）
+        'core.transcribe',
     ],
     excludes=[
         'DaVinciResolveScript',
@@ -92,6 +98,15 @@ a = Analysis(
         'PySide6',
         'wx',
         'gi',
+        # 文字起こし依存はソース版専用（EXEには含めない＝肥大化回避）
+        'faster_whisper',
+        'ctranslate2',
+        'av',
+        'onnxruntime',
+        'tokenizers',
+        'huggingface_hub',
+        'torch',
+        'sympy',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

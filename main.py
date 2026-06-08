@@ -1418,6 +1418,453 @@ class PsGuideDialog(tk.Toplevel):
 #  VoiceVox 音声生成ダイアログ
 # ─────────────────────────────────────────────
 
+class TranscribeDialog(tk.Toplevel):
+    """タイムライン/動画の音声を faster-whisper で自動字幕起こしするダイアログ。"""
+
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self._app = app
+        self.title("自動字幕起こし (Whisper)")
+        self.geometry("560x520")
+        self.resizable(True, True)
+        self._running = False
+        self._segments = []
+        self._build()
+
+    def _build(self):
+        import core.transcribe as tr
+        pad = dict(padx=8, pady=4)
+
+        if not tr.HAS_FASTER_WHISPER:
+            warn = ttk.LabelFrame(self, text="音声認識エンジンについて", padding=10)
+            warn.pack(fill='x', padx=10, pady=10)
+            ttk.Label(warn, foreground='orange', justify='left',
+                text="このEXEには faster-whisper は同梱されていません（容量大のため）。\n"
+                     "PC にインストール済みの faster-whisper を自動で呼び出して実行します。\n\n"
+                     "未インストールの場合はコマンドプロンプトで:\n"
+                     "    pip install faster-whisper\n"
+                     "を実行してください（初回はモデルの自動DLあり）。"
+                ).pack(anchor='w')
+
+        # 音声ソース
+        src_lf = ttk.LabelFrame(self, text="音声ソース", padding=8)
+        src_lf.pack(fill='x', padx=10, pady=(10, 4))
+        self._src_mode = tk.StringVar(value="timeline")
+        ttk.Radiobutton(src_lf, text="現在のタイムラインの音声をレンダーして使う",
+                        variable=self._src_mode, value="timeline",
+                        command=self._on_src).pack(anchor='w')
+        ttk.Radiobutton(src_lf, text="動画・音声ファイルを指定",
+                        variable=self._src_mode, value="file",
+                        command=self._on_src).pack(anchor='w')
+        self._file_row = ttk.Frame(src_lf)
+        self._file_row.pack(fill='x', pady=(2, 0))
+        self._file_var = tk.StringVar()
+        ttk.Entry(self._file_row, textvariable=self._file_var).pack(
+            side='left', fill='x', expand=True, padx=(20, 4))
+        ttk.Button(self._file_row, text="参照", width=6,
+                   command=self._pick_file).pack(side='left')
+
+        # 認識設定
+        cfg = ttk.LabelFrame(self, text="認識設定", padding=8)
+        cfg.pack(fill='x', padx=10, pady=4)
+        ttk.Label(cfg, text="モデル:").grid(row=0, column=0, sticky='e', **pad)
+        self._model_var = tk.StringVar(value="small")
+        mc = ttk.Combobox(cfg, textvariable=self._model_var, state='readonly',
+                          values=tr.MODELS, width=12)
+        mc.grid(row=0, column=1, sticky='w', **pad)
+        self._model_note = ttk.Label(cfg, text=tr.MODEL_NOTE.get("small", ""),
+                                     foreground='gray', font=('', 8))
+        self._model_note.grid(row=0, column=2, sticky='w', **pad)
+        mc.bind('<<ComboboxSelected>>', lambda e: self._model_note.configure(
+            text=tr.MODEL_NOTE.get(self._model_var.get(), "")))
+
+        ttk.Label(cfg, text="言語:").grid(row=1, column=0, sticky='e', **pad)
+        self._lang_var = tk.StringVar(value="ja")
+        ttk.Combobox(cfg, textvariable=self._lang_var, state='readonly',
+                     values=["ja", "auto", "en"], width=8
+                     ).grid(row=1, column=1, sticky='w', **pad)
+        self._gpu_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(cfg, text="GPU(CUDA)を使う", variable=self._gpu_var
+                        ).grid(row=1, column=2, sticky='w', **pad)
+
+        # 出力先
+        out_lf = ttk.LabelFrame(self, text="出力", padding=8)
+        out_lf.pack(fill='x', padx=10, pady=4)
+        self._o_telop = tk.BooleanVar(value=True)
+        self._o_srt = tk.BooleanVar(value=True)
+        self._o_resolve = tk.BooleanVar(value=True)
+        ttk.Checkbutton(out_lf, text="DavinTelop のテロップ一覧に読み込む",
+                        variable=self._o_telop).pack(anchor='w')
+        ttk.Checkbutton(out_lf, text="SRT ファイルとして書き出し",
+                        variable=self._o_srt).pack(anchor='w')
+        ttk.Checkbutton(out_lf, text="Resolve のタイムラインに字幕(Text+)を配置",
+                        variable=self._o_resolve).pack(anchor='w')
+        orow = ttk.Frame(out_lf)
+        orow.pack(fill='x', pady=(4, 0))
+        ttk.Label(orow, text="出力先:").pack(side='left')
+        self._out_dir_var = tk.StringVar(
+            value=self._app._resolve_out_dir.get()
+            if hasattr(self._app, "_resolve_out_dir") else "")
+        ttk.Entry(orow, textvariable=self._out_dir_var).pack(
+            side='left', fill='x', expand=True, padx=4)
+        ttk.Button(orow, text="参照", width=6,
+                   command=self._pick_out).pack(side='left')
+
+        # 実行・進捗
+        self._prog = tk.StringVar(value="")
+        ttk.Label(self, textvariable=self._prog, foreground='gray').pack(
+            anchor='w', padx=12, pady=(6, 0))
+        self._bar = ttk.Progressbar(self, mode='indeterminate')
+        self._bar.pack(fill='x', padx=12, pady=4)
+
+        # プレビュー
+        prev = ttk.LabelFrame(self, text="結果プレビュー", padding=4)
+        prev.pack(fill='both', expand=True, padx=10, pady=4)
+        self._txt = tk.Text(prev, height=6, wrap='word')
+        self._txt.pack(fill='both', expand=True)
+
+        bot = ttk.Frame(self)
+        bot.pack(fill='x', padx=10, pady=8)
+        ttk.Button(bot, text="閉じる", command=self.destroy).pack(side='right', padx=4)
+        self._run_btn = ttk.Button(bot, text="▶ 文字起こし開始",
+                                   command=self._start)
+        self._run_btn.pack(side='right', padx=4)
+
+        self._on_src()
+
+    def _on_src(self):
+        state = 'normal' if self._src_mode.get() == "file" else 'disabled'
+        for w in self._file_row.winfo_children():
+            try: w.configure(state=state)
+            except Exception: pass
+
+    def _pick_file(self):
+        p = filedialog.askopenfilename(
+            title="動画/音声ファイル",
+            filetypes=[("動画/音声", "*.mp4 *.mov *.mkv *.wav *.mp3 *.m4a *.aac *.flac"),
+                       ("すべて", "*.*")], parent=self)
+        if p:
+            self._file_var.set(p)
+
+    def _pick_out(self):
+        p = filedialog.askdirectory(title="出力フォルダ", parent=self)
+        if p:
+            self._out_dir_var.set(p)
+
+    def _start(self):
+        if self._running:
+            return
+        out_dir = self._out_dir_var.get().strip()
+        if not out_dir:
+            messagebox.showwarning("出力先未設定", "出力フォルダを指定してください。",
+                                   parent=self)
+            return
+        self._running = True
+        self._run_btn.configure(state='disabled')
+        self._bar.start(12)
+        self._prog.set("準備中...")
+        self._txt.delete('1.0', 'end')
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        import os
+        from pathlib import Path
+        import core.transcribe as tr
+        try:
+            out_dir = self._out_dir_var.get().strip()
+            os.makedirs(out_dir, exist_ok=True)
+            fps = 30.0
+            rc = None
+
+            # ── 音声取得 ──
+            if self._src_mode.get() == "timeline":
+                self._set_prog("Resolve 接続中...")
+                from core.exporter import ResolveConnector
+                rc = ResolveConnector()
+                if not rc.connect():
+                    return self._fail(rc.error)
+                try:
+                    fps = float(rc.get_timeline_info().get("fps", 30.0)) or 30.0
+                except Exception:
+                    fps = 30.0
+                self._set_prog("タイムライン音声をレンダリング中...（時間がかかります）")
+                audio = rc.render_timeline_audio(out_dir)
+                if not audio:
+                    return self._fail(rc.error or "音声レンダリングに失敗しました。")
+            else:
+                audio = self._file_var.get().strip()
+                if not audio or not Path(audio).exists():
+                    return self._fail("音声/動画ファイルを指定してください。")
+
+            # ── 文字起こし ──
+            self._set_prog("文字起こし中...（モデル初回はDL待ちあり）")
+
+            def _pcb(done, total, text):
+                if total > 0:
+                    self._set_prog(f"文字起こし中 {done:.0f}/{total:.0f}秒")
+                self.after(0, lambda t=text: (self._txt.insert('end', t + "\n"),
+                                              self._txt.see('end')))
+
+            segs = tr.transcribe(
+                audio,
+                model_size=self._model_var.get(),
+                language=self._lang_var.get(),
+                use_gpu=self._gpu_var.get(),
+                progress_cb=_pcb,
+            )
+            self._segments = segs
+            if not segs:
+                return self._fail("認識結果が空でした（音声が小さい/無音の可能性）。")
+
+            # ── 出力 ──
+            done_msgs = []
+            base = Path(out_dir)
+
+            if self._o_srt.get():
+                srt = tr.segments_to_srt(segs)
+                srt_path = base / "transcribe.srt"
+                srt_path.write_text(srt, encoding="utf-8")
+                done_msgs.append(f"SRT: {srt_path}")
+
+            telops = tr.segments_to_telops(
+                segs, fps, start_id=getattr(self._app, "_next_id", 1))
+
+            if self._o_telop.get():
+                def _add():
+                    self._app.telop_list.extend(telops)
+                    if telops:
+                        self._app._next_id = max(
+                            e.id for e in self._app.telop_list) + 1
+                    self._app._refresh_tree()
+                self.after(0, _add)
+                done_msgs.append(f"テロップ一覧に {len(telops)} 件追加")
+
+            if self._o_resolve.get():
+                self._set_prog("Resolve に字幕(Text+)を配置中...")
+                if rc is None:
+                    from core.exporter import ResolveConnector
+                    rc = ResolveConnector()
+                    rc.connect()
+                try:
+                    okr = rc.create_text_plus_srt(telops, fps, video_track_index=1)
+                    done_msgs.append("Resolveに字幕配置: "
+                                     + ("OK" if okr else f"失敗({rc.error})"))
+                except Exception as e:
+                    done_msgs.append(f"Resolve配置エラー: {e}")
+
+            self._finish("完了: " + " / ".join(done_msgs))
+        except Exception as ex:
+            self._fail(str(ex))
+
+    def _set_prog(self, msg):
+        self.after(0, lambda: self._prog.set(msg))
+
+    def _fail(self, msg):
+        def _f():
+            self._running = False
+            self._bar.stop()
+            self._run_btn.configure(state='normal')
+            self._prog.set("エラー")
+            messagebox.showerror("自動字幕起こし", msg, parent=self)
+        self.after(0, _f)
+
+    def _finish(self, msg):
+        def _f():
+            self._running = False
+            self._bar.stop()
+            self._run_btn.configure(state='normal')
+            self._prog.set(msg)
+            messagebox.showinfo("自動字幕起こし完了",
+                f"{len(self._segments)} 件の字幕を生成しました。\n\n{msg}",
+                parent=self)
+        self.after(0, _f)
+
+
+class WavExportDialog(tk.Toplevel):
+    """テロップの VoiceVox 音声を WAV ファイルとして一括書き出しするダイアログ。"""
+
+    def __init__(self, parent, app, entries, title="VoiceVox WAV 書き出し"):
+        super().__init__(parent)
+        self._app = app
+        self._entries = [e for e in entries if e.enabled] if entries else []
+        self._client = None
+        self._styles = []          # (表示名, style_id)
+        self._running = False
+        self.title(title)
+        self.geometry("460x420")
+        self.resizable(True, True)
+        self._build()
+        self._try_connect()
+
+    def _build(self):
+        pad = dict(padx=8, pady=4)
+        info = ttk.Label(self,
+            text=f"対象テロップ: {len(self._entries)} 件",
+            font=('', 10, 'bold'))
+        info.pack(anchor='w', padx=12, pady=(10, 2))
+
+        conn = ttk.LabelFrame(self, text="VoiceVox 接続", padding=8)
+        conn.pack(fill='x', padx=10, pady=4)
+        ttk.Label(conn, text="ホスト:").grid(row=0, column=0, sticky='e', **pad)
+        self._host = tk.StringVar(value="127.0.0.1")
+        ttk.Entry(conn, textvariable=self._host, width=16).grid(row=0, column=1, sticky='w', **pad)
+        ttk.Label(conn, text="ポート:").grid(row=0, column=2, sticky='e', **pad)
+        self._port = tk.IntVar(value=50021)
+        ttk.Spinbox(conn, from_=1024, to=65535, textvariable=self._port,
+                    width=7).grid(row=0, column=3, sticky='w', **pad)
+        ttk.Button(conn, text="接続", width=8,
+                   command=self._try_connect).grid(row=0, column=4, padx=6)
+        self._conn_lbl = tk.StringVar(value="未接続")
+        ttk.Label(conn, textvariable=self._conn_lbl, foreground='gray'
+                  ).grid(row=1, column=0, columnspan=5, sticky='w', padx=6)
+
+        spk = ttk.LabelFrame(self, text="話者・調整", padding=8)
+        spk.pack(fill='x', padx=10, pady=4)
+        ttk.Label(spk, text="話者:").grid(row=0, column=0, sticky='e', **pad)
+        self._spk = tk.StringVar()
+        self._spk_combo = ttk.Combobox(spk, textvariable=self._spk,
+                                       state='readonly', width=34)
+        self._spk_combo.grid(row=0, column=1, columnspan=3, sticky='w', **pad)
+        ttk.Label(spk, text="速度:").grid(row=1, column=0, sticky='e', **pad)
+        self._speed = tk.DoubleVar(value=1.0)
+        ttk.Spinbox(spk, from_=0.5, to=2.0, increment=0.05, width=6,
+                    textvariable=self._speed).grid(row=1, column=1, sticky='w', **pad)
+        ttk.Label(spk, text="音高:").grid(row=1, column=2, sticky='e', **pad)
+        self._pitch = tk.DoubleVar(value=0.0)
+        ttk.Spinbox(spk, from_=-0.15, to=0.15, increment=0.01, width=6,
+                    textvariable=self._pitch).grid(row=1, column=3, sticky='w', **pad)
+
+        out = ttk.LabelFrame(self, text="出力", padding=8)
+        out.pack(fill='x', padx=10, pady=4)
+        orow = ttk.Frame(out); orow.pack(fill='x')
+        ttk.Label(orow, text="出力先:").pack(side='left')
+        self._out = tk.StringVar(
+            value=self._app._resolve_out_dir.get()
+            if hasattr(self._app, "_resolve_out_dir") else "")
+        ttk.Entry(orow, textvariable=self._out).pack(side='left', fill='x',
+                                                     expand=True, padx=4)
+        ttk.Button(orow, text="参照", width=6, command=self._pick_out).pack(side='left')
+        self._meta = tk.BooleanVar(value=True)
+        ttk.Checkbutton(out, text="メタCSV(voicevox_meta.csv)も書き出す",
+                        variable=self._meta).pack(anchor='w', pady=(4, 0))
+        self._fname_text = tk.BooleanVar(value=False)
+        ttk.Checkbutton(out, text="ファイル名にテキストを含める",
+                        variable=self._fname_text).pack(anchor='w')
+
+        self._prog = tk.StringVar(value="")
+        ttk.Label(self, textvariable=self._prog, foreground='gray').pack(
+            anchor='w', padx=12, pady=(6, 0))
+        self._bar = ttk.Progressbar(self, mode='determinate')
+        self._bar.pack(fill='x', padx=12, pady=4)
+
+        bot = ttk.Frame(self); bot.pack(fill='x', padx=10, pady=8)
+        ttk.Button(bot, text="閉じる", command=self.destroy).pack(side='right', padx=4)
+        self._run_btn = ttk.Button(bot, text="▶ WAV 書き出し", command=self._start)
+        self._run_btn.pack(side='right', padx=4)
+
+    def _pick_out(self):
+        p = filedialog.askdirectory(title="出力フォルダ", parent=self)
+        if p:
+            self._out.set(p)
+
+    def _try_connect(self):
+        from core.voicevox import VoiceVoxClient
+        try:
+            self._client = VoiceVoxClient(host=self._host.get().strip() or "127.0.0.1",
+                                          port=int(self._port.get()))
+            ver = self._client.get_version()
+            if not ver:
+                raise RuntimeError("応答なし")
+            self._styles = self._client.flat_styles()
+            self._spk_combo["values"] = [s[0] for s in self._styles]
+            if self._styles and not self._spk.get():
+                self._spk_combo.current(0)
+            self._conn_lbl.set(f"接続OK (VoiceVox {ver}) / 話者 {len(self._styles)}")
+        except Exception as ex:
+            self._client = None
+            self._conn_lbl.set(f"未接続: {ex}")
+
+    def _speaker_id(self):
+        name = self._spk.get()
+        for n, sid in self._styles:
+            if n == name:
+                return sid
+        return self._styles[0][1] if self._styles else 0
+
+    def _start(self):
+        if self._running:
+            return
+        if not self._entries:
+            messagebox.showwarning("WAV書き出し", "対象テロップがありません。", parent=self)
+            return
+        if not self._client:
+            self._try_connect()
+        if not self._client:
+            messagebox.showwarning("WAV書き出し", "VoiceVox に接続してください。", parent=self)
+            return
+        out_dir = self._out.get().strip()
+        if not out_dir:
+            messagebox.showwarning("WAV書き出し", "出力先を指定してください。", parent=self)
+            return
+        self._running = True
+        self._run_btn.configure(state='disabled')
+        self._bar.configure(maximum=len(self._entries), value=0)
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        import csv as _csv
+        from pathlib import Path
+        try:
+            out = Path(self._out.get().strip())
+            out.mkdir(parents=True, exist_ok=True)
+            sid = self._speaker_id()
+            rows = []
+            seq = 0
+            for i, e in enumerate(self._entries):
+                self.after(0, lambda i=i, t=e.text[:16]:
+                           self._prog.set(f"生成中 {i+1}/{len(self._entries)}: {t}"))
+                try:
+                    wav, _q = self._client.synthesize(
+                        e.text.replace('\n', '　'), sid,
+                        speed=self._speed.get(), pitch=self._pitch.get())
+                except Exception as ex:
+                    self.after(0, lambda x=str(ex): self._prog.set(f"エラー: {x}"))
+                    continue
+                seq += 1
+                if self._fname_text.get():
+                    import re as _re
+                    safe = _re.sub(r'[\\/:*?"<>|]', '_', e.text.replace('\n', ' '))[:20]
+                    fname = f"telop_{seq:04d}_{safe}.wav"
+                else:
+                    fname = f"telop_{seq:04d}.wav"
+                (out / fname).write_bytes(wav)
+                rows.append({"filename": fname, "no": e.id,
+                             "start_time": e.start_time, "end_time": e.end_time,
+                             "text": e.text})
+                self.after(0, lambda v=i+1: self._bar.configure(value=v))
+            if self._meta.get() and rows:
+                with open(out / "voicevox_meta.csv", 'w', encoding='utf-8-sig',
+                          newline='') as f:
+                    w = _csv.DictWriter(f, fieldnames=rows[0].keys())
+                    w.writeheader(); w.writerows(rows)
+            self.after(0, lambda n=len(rows): self._done(n, str(out)))
+        except Exception as ex:
+            self.after(0, lambda x=str(ex): self._fail(x))
+
+    def _done(self, n, out):
+        self._running = False
+        self._run_btn.configure(state='normal')
+        self._prog.set(f"完了: {n} 件の WAV を書き出しました")
+        messagebox.showinfo("WAV書き出し完了",
+                            f"{n} 件の WAV を書き出しました。\n{out}", parent=self)
+
+    def _fail(self, msg):
+        self._running = False
+        self._run_btn.configure(state='normal')
+        self._prog.set("エラー")
+        messagebox.showerror("WAV書き出し", msg, parent=self)
+
+
 class VoiceVoxPanel(ttk.Frame):
     """VoiceVox を使ってテロップの音声を一括生成するパネル（ウィンドウ埋め込み可）。"""
 
@@ -1655,6 +2102,8 @@ class VoiceVoxPanel(ttk.Frame):
         self._gen_btn.pack(side='right', padx=4)
         ttk.Button(bot, text="■ 中断", width=8,
                    command=self._stop_generation).pack(side='right', padx=2)
+        ttk.Button(bot, text="🎙 立ち絵に口パク一括", width=16,
+                   command=self._apply_lipsync_all).pack(side='right', padx=4)
 
     def refresh_telops(self, force: bool = False):
         """
@@ -1990,6 +2439,107 @@ class VoiceVoxPanel(ttk.Frame):
 
     def _stop_generation(self):
         self._stop_flag = True
+
+    def _apply_lipsync_all(self):
+        """全テロップのしゃべりに合わせて、選択中の りぞりぷと立ち絵の口を一括キーフレーム。"""
+        if self._running:
+            return
+        targets = [e for e in self._telops if e.enabled]
+        if not targets:
+            messagebox.showwarning("口パク一括", "有効なテロップがありません。",
+                                   parent=self)
+            return
+        if not self._client:
+            self._try_connect()
+        if not self._client:
+            messagebox.showwarning("口パク一括",
+                "VoiceVox に接続してください（設定タブ）。", parent=self)
+            return
+        sid = self._get_speaker_id()
+        if sid is None:
+            messagebox.showwarning("口パク一括", "話者を選択してください。", parent=self)
+            return
+
+        # Resolve 接続 & 立ち絵マクロの口入力を選択
+        try:
+            from core.exporter import ResolveConnector
+        except Exception as ex:
+            messagebox.showerror("口パク一括", str(ex), parent=self)
+            return
+        rc = ResolveConnector()
+        if not rc.connect():
+            messagebox.showwarning("口パク一括", rc.error, parent=self)
+            return
+        fps = float(rc.get_timeline_info().get("fps", 30.0)) or 30.0
+        # 口入力は適用時に自動検出（MouthAnim）。無ければ後でピッカー。
+        macro_name = None
+        input_id = None
+
+        self._running = True
+        self._prog_var.set("口パク用タイミング解析中...")
+
+        def _run():
+            try:
+                from core.lipsync import parse_mora_timeline
+                from core.voicevox import AnimType
+                from core.timecode import parse_timecode, seconds_to_frames
+                combined = []
+                for i, e in enumerate(targets):
+                    if self._stop_flag:
+                        break
+                    self.after(0, lambda i=i: self._prog_var.set(
+                        f"解析中 {i+1}/{len(targets)}"))
+                    text = e.text.replace('\n', '　')
+                    try:
+                        aq = self._client.audio_query(text, sid)
+                        shapes = parse_mora_timeline(aq, fps, AnimType.AIUEO2)
+                    except Exception:
+                        continue
+                    try:
+                        startf = seconds_to_frames(
+                            parse_timecode(e.start_time, fps), fps)
+                    except Exception:
+                        startf = 0
+                    endf = startf + len(shapes)
+                    if len(combined) < endf:
+                        combined += ["closed"] * (endf - len(combined))
+                    for j, sh in enumerate(shapes):
+                        combined[startf + j] = sh
+                if not combined:
+                    self.after(0, lambda: self._prog_var.set(
+                        "口パク: タイミングを取得できませんでした"))
+                    return
+                self.after(0, lambda: self._prog_var.set("立ち絵に適用中..."))
+                # まず最新方式(MouthAnim)を自動検出して適用
+                ok = rc.apply_lipsync_to_tatie(combined, fps=fps)
+                if not ok and getattr(rc, "_need_mouth_pick", False):
+                    # 旧式立ち絵 → メインスレッドで口セレクタを選ばせる
+                    box = {}
+                    ev = threading.Event()
+                    def _ask():
+                        inputs = rc.get_tatie_inputs()
+                        box["sel"] = (self._app._pick_mouth_param(inputs)
+                                      if inputs else (None, None))
+                        ev.set()
+                    self.after(0, _ask)
+                    ev.wait(120)
+                    mn, iid = box.get("sel", (None, None))
+                    if iid:
+                        ok = rc.apply_lipsync_to_tatie(
+                            combined, fps=fps, input_id=iid, macro_name=mn)
+                if ok:
+                    self.after(0, lambda: self._prog_var.set(
+                        f"口パクを適用しました（{len(targets)}セリフ）"))
+                else:
+                    self.after(0, lambda m=rc.error: messagebox.showerror(
+                        "口パク一括", m, parent=self))
+            except Exception as ex:
+                self.after(0, lambda e=str(ex): messagebox.showerror(
+                    "口パク一括", e, parent=self))
+            finally:
+                self._running = False
+
+        threading.Thread(target=_run, daemon=True).start()
 
 
 # ─────────────────────────────────────────────
@@ -2438,6 +2988,13 @@ class LipSyncDialog(tk.Toplevel):
         ttk.Label(fxbtn3, text="各レイヤーを個別ノードで展開。口割当・調整はFusionで",
                   foreground='gray', font=('', 8)).pack(side='left', padx=4)
 
+        fxbtn4 = ttk.Frame(fx_lf)
+        fxbtn4.pack(fill='x', pady=(8, 0))
+        ttk.Button(fxbtn4, text="🎙 りぞりぷと立ち絵に口パクを適用（しゃべりに同期）",
+                   command=self._apply_lipsync_to_rizoripute).pack(side='left', padx=2)
+        ttk.Label(fxbtn4, text="現在のクリップの立ち絵マクロの口を、音声に合わせてキーフレーム",
+                  foreground='gray', font=('', 8)).pack(side='left', padx=4)
+
     # ─── Tab 4: プレビュー ─────────────────────────────────────────────────
 
     def _build_preview_tab(self, nb):
@@ -2644,6 +3201,133 @@ class LipSyncDialog(tk.Toplevel):
                 text=f"エラー: {ex}", fill='red', justify='center')
 
     # ─── Resolve エフェクト (Fusion マクロ) 書き出し ───────────────────────
+
+    def _pick_mouth_param(self, inputs):
+        """立ち絵マクロの公開入力から口セレクタを選ばせる。
+        inputs: [(macro_name, input_name, input_id), ...]
+        返値: (macro_name, input_id) or (None, None)。"""
+        if not inputs:
+            return (None, None)
+        # 候補（口/Mouth/N000等）を上に
+        kws = ("口", "mouth", "Mouth", "くち", "クチ", "lip", "Lip",
+               "MultiMerge", "N000")
+        def score(item):
+            blob = " ".join(item)
+            return 0 if any(k in blob for k in kws) else 1
+        ordered = sorted(inputs, key=score)
+        labels = [f"{mn} ▸ {nm}    [{iid}]" for mn, nm, iid in ordered]
+
+        dlg = tk.Toplevel(self)
+        dlg.title("口セレクタを選択")
+        dlg.geometry("560x230")
+        dlg.transient(self)
+        ttk.Label(dlg, text="口パクで動かす『口セレクタ』の入力を選んでください",
+                  font=('', 10, 'bold')).pack(anchor='w', padx=12, pady=(12, 2))
+        ttk.Label(dlg, text="（0=閉じ/1=あ/2=い/3=う/4=え/5=お/6=ん の順で切替されます）\n"
+                            "口に関係する入力（口 / Mouth / N000 等）を選びます。",
+                  foreground='gray').pack(anchor='w', padx=12)
+        var = tk.StringVar(value=labels[0])
+        cb = ttk.Combobox(dlg, textvariable=var, values=labels,
+                          state='readonly', width=64)
+        cb.pack(padx=12, pady=10)
+        result = {"mn": None, "iid": None}
+
+        def ok():
+            i = labels.index(var.get()) if var.get() in labels else 0
+            result["mn"] = ordered[i][0]
+            result["iid"] = ordered[i][2]
+            dlg.destroy()
+
+        btn = ttk.Frame(dlg)
+        btn.pack(pady=8)
+        ttk.Button(btn, text="この入力に口パクを適用", command=ok).pack(side='left', padx=4)
+        ttk.Button(btn, text="キャンセル", command=dlg.destroy).pack(side='left', padx=4)
+        dlg.grab_set()
+        self.wait_window(dlg)
+        return (result["mn"], result["iid"])
+
+    def _apply_lipsync_to_rizoripute(self):
+        """りぞりぷと VoiceBin と同方式で、現在のクリップにある立ち絵マクロの
+        口パラメータに、しゃべり（VoiceVox/WAV）の口形状キーフレームを適用する。"""
+        from tkinter import simpledialog
+        # ── 口パクタイムライン生成（VoiceVox or WAV） ──
+        fps = self._fps_var.get()
+        timeline = None
+        try:
+            self._status_var.set("タイミング解析中...")
+            self.update()
+            if self._timing_mode.get() == "voicevox":
+                timeline = self._build_vv_timeline(fps)
+            else:
+                import core.lipsync as ls
+                wav = self._wav_path_var.get().strip()
+                from pathlib import Path as _P
+                if wav and _P(wav).exists():
+                    timeline = ls.analyze_wav_timeline(
+                        wav, fps, self._threshold_var.get())
+        except Exception as ex:
+            self._status_var.set("")
+            messagebox.showerror("タイミング解析エラー", str(ex), parent=self)
+            return
+        if not timeline:
+            self._status_var.set("")
+            messagebox.showwarning("タイミングなし",
+                "「音声・タイミング」タブで VoiceVox かWAVを設定してください。",
+                parent=self)
+            return
+
+        # ── Resolve 接続 ──
+        try:
+            from core.exporter import ResolveConnector
+            rc = ResolveConnector()
+            if not rc.connect():
+                self._status_var.set("")
+                messagebox.showwarning("Resolve未接続", rc.error, parent=self)
+                return
+        except Exception as ex:
+            self._status_var.set("")
+            messagebox.showerror("Resolve接続エラー", str(ex), parent=self)
+            return
+
+        # ── 適用（まず最新方式 MouthAnim を自動検出） ──
+        self._status_var.set("立ち絵に口パクを適用中...")
+        self.update()
+        macro_name = None
+        ok = rc.apply_lipsync_to_tatie(timeline, fps=fps)
+        if not ok and getattr(rc, "_need_mouth_pick", False):
+            # 旧式立ち絵 → 口セレクタを選ばせる
+            inputs = rc.get_tatie_inputs()
+            if not inputs:
+                self._status_var.set("")
+                messagebox.showerror("立ち絵マクロ未検出", rc.error, parent=self)
+                return
+            macro_name, input_id = self._pick_mouth_param(inputs)
+            if not input_id:
+                self._status_var.set("")
+                return
+            ok = rc.apply_lipsync_to_tatie(
+                timeline, fps=fps, input_id=input_id, macro_name=macro_name)
+        if ok:
+            used = getattr(rc, "_mouth_param_used", "")
+            self._status_var.set("口パク適用完了")
+            messagebox.showinfo("完了",
+                "現在のクリップの立ち絵マクロにしゃべりの口パクを\n"
+                "適用しました（りぞりぷと VoiceBin と同方式）。\n\n"
+                f"対象マクロ: {macro_name or '(先頭のマクロ)'}\n"
+                f"口パラメータ: {used}\n"
+                f"フレーム数: {len(timeline)}（{fps}fps）\n\n"
+                "※ 口形状の対応 0=閉じ /1=あ/2=い/3=う/4=え/5=お/6=ん\n"
+                "　立ち絵の口セレクタの並びがこの順なら自然に動きます。\n"
+                "　ずれる場合は口セレクタの選択肢順を合わせてください。",
+                parent=self)
+        else:
+            self._status_var.set("")
+            messagebox.showerror("口パク適用エラー",
+                rc.error + "\n\n"
+                "・立ち絵（りぞりぷと製）クリップを選択 or 再生ヘッドを合わせる\n"
+                "・そのクリップが Fusion マクロを含むことを確認\n"
+                "・口パラメータ名が正しいか確認してください。",
+                parent=self)
 
     def _export_fusion_macro(self):
         if not self._load_images():
@@ -3318,6 +4002,20 @@ class DavinTelopApp(tk.Tk):
         self._playhead_writeback = tk.BooleanVar(
             value=cfg.get("playhead_writeback", True))
 
+        # りぞりぷと(Resolve_Script) のパス（りぞりぷと.exe）
+        self._rizoripute_path = tk.StringVar(value=cfg.get("rizoripute_path", ""))
+
+        # プロジェクトファイル（.dtproj）の状態
+        self._current_project_path: Optional[str] = None
+        self._project_dirty = False
+        self._suppress_dirty = True   # 起動・読込中は変更マークを抑制
+        self.after(800, self._enable_dirty_tracking)
+        # オートセーブ／復元
+        self.after(900, self._check_autosave_restore)
+        self.after(self._AUTOSAVE_INTERVAL_MS, self._autosave_tick)
+        # 話者ルール（name -> {track, color}）
+        self._speaker_rules: dict = cfg.get("speaker_rules", {})
+
         # 右パネル テロッププレビュー state
         self._telop_pv_entry: Optional[TelopEntry] = None
         self._telop_pv_pending = False
@@ -3464,16 +4162,27 @@ class DavinTelopApp(tk.Tk):
         # ファイルメニュー
         file_menu = tk.Menu(mb, tearoff=0)
         mb.add_cascade(label="ファイル", menu=file_menu)
-        file_menu.add_command(label="CSVを開く...", accelerator="⌘O", command=self.import_csv)
-        file_menu.add_command(label="プロジェクトを保存...", accelerator="⌘S", command=self.save_project)
-        file_menu.add_command(label="プロジェクトを開く...", command=self.load_project)
+        file_menu.add_command(label="新規プロジェクト",
+                              command=self.new_project)
+        file_menu.add_command(label="プロジェクトを開く...", accelerator="Ctrl+O",
+                              command=self.load_project)
+        file_menu.add_command(label="上書き保存", accelerator="Ctrl+S",
+                              command=self.save_project)
+        file_menu.add_command(label="名前を付けて保存...", accelerator="Ctrl+Shift+S",
+                              command=self.save_project_as)
+        self._add_recent_menu(file_menu)
+        file_menu.add_separator()
+        file_menu.add_command(label="CSVをインポート...", command=self.import_csv)
         file_menu.add_separator()
         file_menu.add_command(label="キーボードショートカット設定...", command=self._open_shortcut_settings)
         file_menu.add_separator()
-        file_menu.add_command(label="終了", accelerator="⌘Q", command=self.quit)
-        self.bind("<Command-o>", lambda e: self.import_csv())
-        self.bind("<Command-s>", lambda e: self.save_project())
-        self.bind("<Command-q>", lambda e: self.quit())
+        file_menu.add_command(label="終了", accelerator="Ctrl+Q", command=self.quit)
+        # ショートカット（Win: Control / Mac: Command）
+        for mod in ("Control", "Command"):
+            self.bind(f"<{mod}-o>", lambda e: self.load_project())
+            self.bind(f"<{mod}-s>", lambda e: self.save_project())
+            self.bind(f"<{mod}-Shift-S>", lambda e: self.save_project_as())
+            self.bind(f"<{mod}-q>", lambda e: self.quit())
 
         # 編集メニュー
         edit_menu = tk.Menu(mb, tearoff=0)
@@ -3485,6 +4194,11 @@ class DavinTelopApp(tk.Tk):
         edit_menu.add_separator()
         edit_menu.add_command(label="全選択", accelerator="⌘A", command=self.select_all)
         edit_menu.add_command(label="有効/無効を切り替え", command=self.toggle_enabled)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="🧹 字幕を自動整形（改行・フィラー除去）...",
+                              command=self.open_autoformat)
+        edit_menu.add_command(label="🎨 話者の色分け・トラック振り分け...",
+                              command=self.open_speaker_rules)
         self.bind("<Command-n>", lambda e: self.add_entry())
 
         # 書き出しメニュー
@@ -3496,6 +4210,10 @@ class DavinTelopApp(tk.Tk):
         export_menu.add_command(label="AAF を書き出し (Avid)...", command=self.export_aaf)
         export_menu.add_separator()
         export_menu.add_command(label="🔊 VoiceVox 音声生成...", command=self.export_voicevox)
+        export_menu.add_command(label="🎵 全テロップを WAV 書き出し...",
+                                command=self.export_wav_all)
+        export_menu.add_command(label="🎵 選択テロップを WAV 書き出し...",
+                                command=self.export_wav_selected)
         export_menu.add_command(label="🎭 口パク生成...",          command=self.export_lipsync)
 
         # Resolveメニュー
@@ -3510,8 +4228,15 @@ class DavinTelopApp(tk.Tk):
             variable=self._playhead_writeback,
             command=self._save_app_config)
         resolve_menu.add_separator()
+        resolve_menu.add_command(label="🎤 タイムライン音声を自動字幕起こし...",
+                                 command=self.open_transcribe)
         resolve_menu.add_command(label="🐍 Resolveスクリプトを生成...",
                                  command=self.export_resolve_script)
+        resolve_menu.add_separator()
+        resolve_menu.add_command(label="🧩 りぞりぷとを起動",
+                                 command=self.launch_rizoripute)
+        resolve_menu.add_command(label="📁 りぞりぷとの場所を設定...",
+                                 command=self.set_rizoripute_path)
 
         # プリセットメニュー
         self._preset_menu = tk.Menu(mb, tearoff=0)
@@ -5376,6 +6101,7 @@ class DavinTelopApp(tk.Tk):
         count = len(self.telop_list)
         enabled = sum(1 for e in self.telop_list if e.enabled)
         self._status_var.set(f"テロップ: {count} 件  (有効: {enabled} 件)")
+        self._mark_dirty()
 
     def _select_last(self):
         children = self._tree.get_children()
@@ -6093,6 +6819,251 @@ class DavinTelopApp(tk.Tk):
 
     # ─── VoiceVox 音声生成 ──────────────────────
 
+    def open_transcribe(self):
+        """タイムライン/動画の音声を自動字幕起こしするダイアログを開く。"""
+        TranscribeDialog(self, self)
+
+    def export_wav_all(self):
+        """全テロップの VoiceVox 音声を WAV 一括書き出し。"""
+        entries = [e for e in self.telop_list if e.enabled]
+        if not entries:
+            messagebox.showinfo("WAV書き出し", "有効なテロップがありません。", parent=self)
+            return
+        WavExportDialog(self, self, entries,
+                        title=f"VoiceVox WAV 書き出し（全{len(entries)}件）")
+
+    def export_wav_selected(self):
+        """選択テロップの VoiceVox 音声を WAV 書き出し。"""
+        entries = self._get_selected_entries()
+        if not entries:
+            messagebox.showinfo("WAV書き出し", "テロップを選択してください。", parent=self)
+            return
+        WavExportDialog(self, self, entries,
+                        title=f"VoiceVox WAV 書き出し（選択{len(entries)}件）")
+
+    # ─── 字幕の自動整形 ───────────────────────────
+
+    def open_autoformat(self):
+        """字幕（テロップ）の自動整形ダイアログ。"""
+        if not self.telop_list:
+            messagebox.showinfo("自動整形", "テロップがありません。", parent=self)
+            return
+        dlg = tk.Toplevel(self)
+        dlg.title("字幕の自動整形")
+        dlg.geometry("420x340")
+        dlg.transient(self)
+        pad = dict(padx=10, pady=4)
+
+        tgt = tk.StringVar(value="all")
+        f0 = ttk.LabelFrame(dlg, text="対象", padding=8); f0.pack(fill='x', **pad)
+        ttk.Radiobutton(f0, text="すべてのテロップ", variable=tgt, value="all").pack(anchor='w')
+        ttk.Radiobutton(f0, text="選択中のテロップのみ", variable=tgt, value="sel").pack(anchor='w')
+
+        f1 = ttk.LabelFrame(dlg, text="整形オプション", padding=8); f1.pack(fill='x', **pad)
+        v_filler = tk.BooleanVar(value=True)
+        v_wrap = tk.BooleanVar(value=True)
+        v_strip = tk.BooleanVar(value=False)
+        ttk.Checkbutton(f1, text="フィラー（えー/あの/まあ 等）を除去",
+                        variable=v_filler).pack(anchor='w')
+        ttk.Checkbutton(f1, text="話者名プレフィックス（「名前:」）を除去",
+                        variable=v_strip).pack(anchor='w')
+        wrow = ttk.Frame(f1); wrow.pack(fill='x', pady=(4, 0))
+        ttk.Checkbutton(wrow, text="自動改行", variable=v_wrap).pack(side='left')
+        ttk.Label(wrow, text="1行最大").pack(side='left', padx=(10, 2))
+        v_max = tk.IntVar(value=20)
+        ttk.Spinbox(wrow, from_=8, to=40, textvariable=v_max, width=4).pack(side='left')
+        ttk.Label(wrow, text="文字 / 最大").pack(side='left', padx=2)
+        v_lines = tk.IntVar(value=2)
+        ttk.Spinbox(wrow, from_=1, to=4, textvariable=v_lines, width=3).pack(side='left')
+        ttk.Label(wrow, text="行").pack(side='left', padx=2)
+
+        def apply():
+            import core.textfmt as tf
+            targets = (self._get_selected_entries() if tgt.get() == "sel"
+                       else self.telop_list)
+            if not targets:
+                messagebox.showinfo("自動整形", "対象がありません。", parent=dlg)
+                return
+            n = 0
+            for e in targets:
+                new = tf.format_text(
+                    e.text, remove_filler=v_filler.get(), wrap=v_wrap.get(),
+                    max_chars=v_max.get(), max_lines=v_lines.get(),
+                    strip_speaker=v_strip.get())
+                if new != e.text:
+                    e.text = new
+                    n += 1
+            self._refresh_tree()
+            self._schedule_preview_update()
+            self._progress_var.set(f"自動整形: {n} 件を更新")
+            dlg.destroy()
+
+        bot = ttk.Frame(dlg); bot.pack(fill='x', pady=10)
+        ttk.Button(bot, text="整形を適用", command=apply).pack(side='right', padx=8)
+        ttk.Button(bot, text="キャンセル", command=dlg.destroy).pack(side='right')
+        dlg.grab_set()
+
+    # ─── 話者の色分け・トラック振り分け ───────────────
+
+    _RESOLVE_COLORS = ["", "Orange", "Apricot", "Yellow", "Lime", "Olive",
+                       "Green", "Teal", "Navy", "Blue", "Purple", "Violet",
+                       "Pink", "Tan", "Beige", "Brown", "Chocolate"]
+
+    def open_speaker_rules(self):
+        """話者ごとの色・配置トラックを設定し、テロップに割り当てる。"""
+        import core.textfmt as tf
+        # 台本から話者を検出
+        detected = {}
+        for e in self.telop_list:
+            spk, _ = tf.split_speaker(e.text)
+            if spk:
+                detected[spk] = detected.get(spk, 0) + 1
+        speakers = list(detected.keys())
+        for s in self._speaker_rules:
+            if s not in speakers:
+                speakers.append(s)
+        if not speakers:
+            messagebox.showinfo("話者の色分け",
+                "話者が検出できませんでした。\n"
+                "テロップを「名前: セリフ」の形式にすると検出できます。",
+                parent=self)
+            return
+
+        dlg = tk.Toplevel(self)
+        dlg.title("話者の色分け・トラック振り分け")
+        dlg.geometry("480x420")
+        dlg.transient(self)
+        ttk.Label(dlg, text="話者ごとに 配置トラック と クリップ色 を設定",
+                  font=('', 10, 'bold')).pack(anchor='w', padx=12, pady=(10, 2))
+        ttk.Label(dlg, text="（トラック 0 = 既定トラック / 色は Resolve のクリップカラー）",
+                  foreground='gray').pack(anchor='w', padx=12)
+
+        body = ttk.Frame(dlg, padding=8); body.pack(fill='both', expand=True)
+        ttk.Label(body, text="話者", width=16).grid(row=0, column=0, sticky='w')
+        ttk.Label(body, text="トラック").grid(row=0, column=1, padx=6)
+        ttk.Label(body, text="色").grid(row=0, column=2, padx=6)
+        ttk.Label(body, text="件数").grid(row=0, column=3, padx=6)
+
+        rows = {}
+        for i, spk in enumerate(speakers, start=1):
+            rule = self._speaker_rules.get(spk, {})
+            ttk.Label(body, text=spk, width=16).grid(row=i, column=0, sticky='w', pady=2)
+            tv = tk.IntVar(value=int(rule.get("track", 0)))
+            ttk.Spinbox(body, from_=0, to=20, textvariable=tv, width=4
+                        ).grid(row=i, column=1, padx=6)
+            cv = tk.StringVar(value=rule.get("color", ""))
+            ttk.Combobox(body, textvariable=cv, values=self._RESOLVE_COLORS,
+                         state='readonly', width=12).grid(row=i, column=2, padx=6)
+            ttk.Label(body, text=str(detected.get(spk, "-"))).grid(row=i, column=3, padx=6)
+            rows[spk] = (tv, cv)
+
+        v_strip = tk.BooleanVar(value=True)
+        ttk.Checkbutton(dlg, text="割り当て時にテキストから話者名プレフィックスを除去",
+                        variable=v_strip).pack(anchor='w', padx=12, pady=(4, 0))
+
+        def apply():
+            # ルール保存
+            for spk, (tv, cv) in rows.items():
+                self._speaker_rules[spk] = {"track": int(tv.get()),
+                                            "color": cv.get()}
+            self._save_app_config()
+            # テロップへ割り当て
+            n = 0
+            for e in self.telop_list:
+                spk, body_text = tf.split_speaker(e.text)
+                if spk and spk in self._speaker_rules:
+                    r = self._speaker_rules[spk]
+                    e.speaker = spk
+                    e.track = int(r.get("track", 0))
+                    e.color = r.get("color", "")
+                    if v_strip.get():
+                        e.text = body_text
+                    n += 1
+            self._refresh_tree()
+            self._schedule_preview_update()
+            self._progress_var.set(f"話者割り当て: {n} 件")
+            messagebox.showinfo("話者の色分け",
+                f"{n} 件のテロップに話者設定を割り当てました。\n"
+                "Resolve送信時に、指定トラックへ配置・クリップ色が付きます。",
+                parent=self)
+            dlg.destroy()
+
+        bot = ttk.Frame(dlg); bot.pack(fill='x', pady=10)
+        ttk.Button(bot, text="保存して割り当て", command=apply).pack(side='right', padx=8)
+        ttk.Button(bot, text="キャンセル", command=dlg.destroy).pack(side='right')
+        dlg.grab_set()
+
+    # ─── りぞりぷと (Resolve_Script) 連携 ───────────────
+
+    @staticmethod
+    def _find_rizoripute_exe() -> str:
+        """りぞりぷと.exe をよくある場所から自動探索。見つからなければ ""。"""
+        import glob
+        roots = []
+        for drive in ("C:", "D:", "E:", "F:", "G:"):
+            roots += [drive + "\\", drive + "\\tool", drive + "\\tools",
+                      drive + "\\app", drive + "\\apps"]
+        roots.append(str(Path.home()))
+        roots.append(str(Path.home() / "Downloads"))
+        roots.append(str(Path.home() / "Desktop"))
+        for root in roots:
+            try:
+                for pat in ("りぞりぷと.exe", "Resolve_Script*/りぞりぷと.exe",
+                            "*/りぞりぷと.exe", "*/*/りぞりぷと.exe"):
+                    hits = glob.glob(str(Path(root) / pat))
+                    if hits:
+                        return hits[0]
+            except Exception:
+                continue
+        return ""
+
+    def set_rizoripute_path(self) -> str:
+        """りぞりぷと.exe（またはランチャー）の場所を設定して返す。"""
+        init = self._rizoripute_path.get().strip()
+        p = filedialog.askopenfilename(
+            title="りぞりぷと.exe を選択（Resolve_Script フォルダ内）",
+            initialdir=str(Path(init).parent) if init else "",
+            filetypes=[("りぞりぷと/実行ファイル", "*.exe"), ("すべて", "*.*")],
+            parent=self)
+        if p:
+            self._rizoripute_path.set(p)
+            self._save_app_config()
+        return p
+
+    def launch_rizoripute(self):
+        """りぞりぷと(Resolve_Script) のランチャーを起動する。"""
+        import subprocess
+        path = self._rizoripute_path.get().strip()
+        if not path or not Path(path).exists():
+            # 自動探索 → だめなら手動選択
+            auto = self._find_rizoripute_exe()
+            if auto:
+                path = auto
+                self._rizoripute_path.set(path)
+                self._save_app_config()
+            else:
+                if not messagebox.askyesno(
+                    "りぞりぷとが見つかりません",
+                    "りぞりぷと.exe の場所が未設定です。\n"
+                    "今すぐ場所を指定しますか？\n\n"
+                    "（GitHub: nakano000/Resolve_Script から入手し、\n"
+                    "　半角英数のフォルダに解凍してください）",
+                        parent=self):
+                    return
+                path = self.set_rizoripute_path()
+                if not path:
+                    return
+        if not Path(path).exists():
+            messagebox.showerror("起動エラー",
+                f"ファイルが見つかりません:\n{path}", parent=self)
+            return
+        try:
+            subprocess.Popen([path], cwd=str(Path(path).parent))
+            self._progress_var.set(f"りぞりぷとを起動: {Path(path).name}")
+        except Exception as ex:
+            messagebox.showerror("起動エラー",
+                f"りぞりぷとの起動に失敗しました:\n{ex}", parent=self)
+
     def export_lipsync(self):
         LipSyncDialog(
             self,
@@ -6372,45 +7343,251 @@ class DavinTelopApp(tk.Tk):
 
     # ─── プロジェクト保存/読み込み ────────────────
 
+    # ─── プロジェクトファイル (.dtproj) ───────────────
+
+    _PROJECT_EXT = ".dtproj"
+    _PROJECT_FILETYPES = [("DavinTelop プロジェクト", "*.dtproj"),
+                          ("旧形式 (JSON)", "*.json"), ("すべて", "*.*")]
+
+    def _serialize_project(self) -> dict:
+        """現在の編集状態を完全に保存するための辞書を返す。"""
+        return {
+            "app": "DavinTelop",
+            "version": 2,
+            "design": self._collect_design().to_dict(),
+            "telops": [e.to_dict() for e in self.telop_list],
+            "next_id": self._next_id,
+            "settings": {
+                "resolve_out_dir": self._resolve_out_dir.get(),
+                "resolve_track": self._resolve_track.get(),
+                "include_text_in_filename": self._include_text_in_filename.get(),
+                "playhead_writeback": self._playhead_writeback.get(),
+            },
+        }
+
+    def _apply_project_data(self, data: dict):
+        """保存辞書から編集状態を復元する。"""
+        s = DesignSettings.from_dict(data.get("design", {}))
+        self.design = s
+        self._apply_design_to_ui(s)
+        self.telop_list = []
+        for td in data.get("telops", []):
+            try:
+                self.telop_list.append(TelopEntry.from_dict(td))
+            except Exception:
+                pass
+        self._next_id = data.get(
+            "next_id", max((e.id for e in self.telop_list), default=0) + 1)
+        st = data.get("settings", {})
+        try:
+            if "resolve_out_dir" in st:
+                self._resolve_out_dir.set(st["resolve_out_dir"])
+            if "resolve_track" in st:
+                self._resolve_track.set(st["resolve_track"])
+            if "include_text_in_filename" in st:
+                self._include_text_in_filename.set(st["include_text_in_filename"])
+            if "playhead_writeback" in st:
+                self._playhead_writeback.set(st["playhead_writeback"])
+        except Exception:
+            pass
+        self._refresh_tree()
+        self._schedule_preview_update()
+
+    def _write_project(self, path: str) -> bool:
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(self._serialize_project(), f,
+                          ensure_ascii=False, indent=2)
+            self._current_project_path = path
+            self._project_dirty = False
+            self._add_recent_project(path)
+            self._clear_autosave()
+            self._update_title()
+            self._progress_var.set(f"保存しました: {Path(path).name}")
+            return True
+        except Exception as ex:
+            messagebox.showerror("保存エラー",
+                                 f"プロジェクトの保存に失敗しました:\n{ex}", parent=self)
+            return False
+
     def save_project(self):
+        """上書き保存（パス未確定なら名前を付けて保存）。"""
+        if self._current_project_path:
+            self._write_project(self._current_project_path)
+        else:
+            self.save_project_as()
+
+    def save_project_as(self):
         path = filedialog.asksaveasfilename(
-            title="プロジェクトを保存",
-            defaultextension=".json",
-            filetypes=[("DavinTelop プロジェクト", "*.json")],
+            title="名前を付けて保存",
+            defaultextension=self._PROJECT_EXT,
+            initialfile=(Path(self._current_project_path).name
+                         if self._current_project_path else "project.dtproj"),
+            filetypes=self._PROJECT_FILETYPES,
         )
         if not path:
             return
-        data = {
-            "version": 1,
-            "design": self._collect_design().to_dict(),
-            "telops": [e.to_dict() for e in self.telop_list],
-        }
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        self._progress_var.set(f"保存: {Path(path).name}")
+        self._write_project(path)
 
-    def load_project(self):
-        path = filedialog.askopenfilename(
-            title="プロジェクトを開く",
-            filetypes=[("DavinTelop プロジェクト", "*.json")],
-        )
+    def load_project(self, path: str = None):
+        if not path:
+            if not self._confirm_discard():
+                return
+            path = filedialog.askopenfilename(
+                title="プロジェクトを開く",
+                filetypes=self._PROJECT_FILETYPES,
+            )
         if not path:
             return
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            s = DesignSettings.from_dict(data.get("design", {}))
-            self.design = s
-            self._apply_design_to_ui(s)
-            self.telop_list = []
-            for td in data.get("telops", []):
-                self.telop_list.append(TelopEntry(**td))
-            self._next_id = max((e.id for e in self.telop_list), default=0) + 1
-            self._refresh_tree()
-            self._schedule_preview_update()
+            self._apply_project_data(data)
+            self._current_project_path = path
+            self._project_dirty = False
+            self._add_recent_project(path)
+            self._update_title()
             self._progress_var.set(f"読み込み: {Path(path).name}")
         except Exception as ex:
-            messagebox.showerror("エラー", f"プロジェクトの読み込みに失敗しました:\n{ex}")
+            messagebox.showerror("エラー",
+                                 f"プロジェクトの読み込みに失敗しました:\n{ex}", parent=self)
+
+    def new_project(self):
+        if not self._confirm_discard():
+            return
+        self.telop_list = []
+        self._next_id = 1
+        self._current_project_path = None
+        self._refresh_tree()
+        self._schedule_preview_update()
+        self._project_dirty = False
+        self._update_title()
+        self._progress_var.set("新規プロジェクト")
+
+    def _confirm_discard(self) -> bool:
+        """未保存変更があれば確認。続行可なら True。"""
+        if not self._project_dirty:
+            return True
+        r = messagebox.askyesnocancel(
+            "未保存の変更",
+            "保存していない変更があります。保存しますか？", parent=self)
+        if r is None:
+            return False
+        if r:
+            self.save_project()
+            return not self._project_dirty
+        return True
+
+    def _mark_dirty(self, *_):
+        if getattr(self, "_suppress_dirty", False):
+            return
+        if not self._project_dirty:
+            self._project_dirty = True
+            self._update_title()
+
+    def _enable_dirty_tracking(self):
+        """起動直後の初期化が落ち着いたら変更追跡を有効化。"""
+        self._suppress_dirty = False
+        self._project_dirty = False
+        self._update_title()
+
+    def _update_title(self):
+        name = (Path(self._current_project_path).name
+                if self._current_project_path else "無題")
+        mark = "*" if self._project_dirty else ""
+        self.title(f"DavinTelop — {mark}{name}  (テロップ作成 for DaVinci Resolve)")
+
+    # 最近使ったプロジェクト
+    def _recent_projects(self) -> list:
+        cfg = self._load_app_config()
+        return [p for p in cfg.get("recent_projects", []) if Path(p).exists()]
+
+    def _add_recent_project(self, path: str):
+        try:
+            cfg = self._load_app_config()
+            lst = [p for p in cfg.get("recent_projects", []) if p != path]
+            lst.insert(0, path)
+            cfg["recent_projects"] = lst[:8]
+            self._CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._CONFIG_PATH, 'w', encoding='utf-8') as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+            if getattr(self, "_recent_menu", None):
+                self._rebuild_recent_menu()
+        except Exception:
+            pass
+
+    def _add_recent_menu(self, parent_menu):
+        self._recent_menu = tk.Menu(parent_menu, tearoff=0)
+        parent_menu.add_cascade(label="最近使ったプロジェクト", menu=self._recent_menu)
+        self._rebuild_recent_menu()
+
+    def _rebuild_recent_menu(self):
+        m = self._recent_menu
+        m.delete(0, 'end')
+        recents = self._recent_projects()
+        if not recents:
+            m.add_command(label="(なし)", state='disabled')
+            return
+        for p in recents:
+            m.add_command(label=Path(p).name,
+                          command=lambda pp=p: self.load_project(pp))
+
+    # ─── オートセーブ／クラッシュ復元 ───────────────
+
+    _AUTOSAVE_PATH = Path.home() / ".davintelop" / "autosave.dtproj"
+    _AUTOSAVE_INTERVAL_MS = 120000   # 2分
+
+    def _autosave_tick(self):
+        """一定間隔で、変更があれば自動保存（サイレント）。"""
+        try:
+            if getattr(self, "_project_dirty", False) and self.telop_list:
+                self._AUTOSAVE_PATH.parent.mkdir(parents=True, exist_ok=True)
+                data = self._serialize_project()
+                data["_autosave_of"] = self._current_project_path or ""
+                with open(self._AUTOSAVE_PATH, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+        finally:
+            self.after(self._AUTOSAVE_INTERVAL_MS, self._autosave_tick)
+
+    def _clear_autosave(self):
+        try:
+            if self._AUTOSAVE_PATH.exists():
+                self._AUTOSAVE_PATH.unlink()
+        except Exception:
+            pass
+
+    def _check_autosave_restore(self):
+        """起動時、前回の自動保存があれば復元を提案。"""
+        try:
+            if not self._AUTOSAVE_PATH.exists():
+                return
+            if self.telop_list:   # 既に何か読み込まれていれば何もしない
+                return
+            with open(self._AUTOSAVE_PATH, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            n = len(data.get("telops", []))
+            if n == 0:
+                self._clear_autosave()
+                return
+            orig = data.get("_autosave_of", "")
+            extra = f"\n元ファイル: {Path(orig).name}" if orig else ""
+            if messagebox.askyesno(
+                "自動保存データの復元",
+                f"前回終了時に保存されていない自動保存データがあります。\n"
+                f"テロップ {n} 件{extra}\n\n復元しますか？", parent=self):
+                self._suppress_dirty = True
+                self._apply_project_data(data)
+                self._current_project_path = orig or None
+                self._suppress_dirty = False
+                self._project_dirty = True   # 復元直後は未保存扱い
+                self._update_title()
+                self._progress_var.set("自動保存データを復元しました")
+            else:
+                self._clear_autosave()
+        except Exception:
+            pass
 
     # ─── ユーティリティ ───────────────────────────
 
@@ -6430,14 +7607,17 @@ class DavinTelopApp(tk.Tk):
     def _save_app_config(self):
         try:
             self._CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-            cfg = {
+            cfg = self._load_app_config()   # 既存値(recent_projects等)を保持
+            cfg.update({
                 "resolve_out_dir":           self._resolve_out_dir.get(),
                 "resolve_track":             self._resolve_track.get(),
                 "shortcuts":                 self._shortcuts,
                 "include_text_in_filename":  self._include_text_in_filename.get(),
                 "dark_mode":                 self._is_dark.get(),
                 "playhead_writeback":        self._playhead_writeback.get(),
-            }
+                "rizoripute_path":           self._rizoripute_path.get(),
+                "speaker_rules":             getattr(self, "_speaker_rules", {}),
+            })
             with open(self._CONFIG_PATH, 'w', encoding='utf-8') as f:
                 json.dump(cfg, f, ensure_ascii=False, indent=2)
         except Exception:
@@ -6470,6 +7650,9 @@ class DavinTelopApp(tk.Tk):
 
     def _on_close(self):
         """ウィンドウを閉じる際にバックグラウンドスレッドを停止する。"""
+        if not self._confirm_discard():
+            return
+        self._clear_autosave()   # 正常終了時は自動保存を消す
         self._stop_bg_capture()
         self._stop_fg_source()
         sender = getattr(self, '_ndi_sender', None)

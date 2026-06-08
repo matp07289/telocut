@@ -812,6 +812,85 @@ class ResolveConnector:
             self._error = f"接続エラー: {e}"
             return False
 
+    def render_timeline_audio(self, out_dir: str,
+                              name: str = "davintelop_transcribe",
+                              timeout_sec: int = 1800) -> Optional[str]:
+        """現在のタイムラインの音声を WAV にレンダリングしてパスを返す。失敗時 None。"""
+        import time as _time
+        if not self._project or not self._timeline:
+            self._error = "Resolveに接続されていません。"
+            return None
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            proj = self._project
+
+            # 既存のレンダージョブをクリア（自分のジョブだけ走らせる）
+            try:
+                proj.DeleteAllRenderJobs()
+            except Exception:
+                pass
+
+            # WAV / リニアPCM・音声のみ
+            fmt_ok = False
+            try:
+                fmt_ok = bool(proj.SetCurrentRenderFormatAndCodec("wav", "LinearPCM"))
+            except Exception:
+                fmt_ok = False
+
+            settings = {
+                "TargetDir": out_dir,
+                "CustomName": name,
+                "SelectAllFrames": True,
+                "ExportVideo": False,
+                "ExportAudio": True,
+            }
+            try:
+                proj.SetRenderSettings(settings)
+            except Exception as e:
+                self._error = f"レンダー設定に失敗: {e}"
+                return None
+
+            jid = proj.AddRenderJob()
+            if not jid:
+                self._error = ("レンダージョブを追加できませんでした。\n"
+                               + ("（WAV/LinearPCM 形式の設定に失敗）" if not fmt_ok else ""))
+                return None
+
+            proj.StartRendering(jid)
+            waited = 0.0
+            while True:
+                try:
+                    inprog = proj.IsRenderingInProgress()
+                except Exception:
+                    inprog = False
+                if not inprog:
+                    break
+                _time.sleep(0.5)
+                waited += 0.5
+                if waited > timeout_sec:
+                    try: proj.StopRendering()
+                    except Exception: pass
+                    self._error = "レンダリングがタイムアウトしました。"
+                    return None
+
+            # 出力ファイルを探す（Resolve は拡張子やフレーム番号を付ける場合がある）
+            from pathlib import Path as _P
+            cand = []
+            for p in _P(out_dir).glob(name + "*"):
+                if p.suffix.lower() in (".wav", ".aif", ".aiff"):
+                    cand.append(p)
+            if not cand:
+                for p in _P(out_dir).glob("*.wav"):
+                    cand.append(p)
+            if not cand:
+                self._error = "レンダリングした音声ファイルが見つかりません。"
+                return None
+            cand.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            return str(cand[0])
+        except Exception as e:
+            self._error = f"音声レンダリングエラー: {e}"
+            return None
+
     def get_timeline_info(self) -> dict:
         """現在のタイムライン情報を取得。"""
         if not self._timeline:
@@ -867,13 +946,17 @@ class ResolveConnector:
         try:
             media_pool = self._project.GetMediaPool()
 
-            # ビデオトラックが足りなければ追加
+            enabled = [e for e in entries if e.enabled]
+
+            # ビデオトラックが足りなければ追加（話者別トラック指定も考慮）
+            need_track = track_index
+            for e in enabled:
+                if getattr(e, "track", 0):
+                    need_track = max(need_track, int(e.track))
             v_count = self._timeline.GetTrackCount("video")
-            while v_count < track_index:
+            while v_count < need_track:
                 self._timeline.AddTrack("video")
                 v_count += 1
-
-            enabled = [e for e in entries if e.enabled]
 
             # ── 1) 有効なエントリとPNGを収集 ──
             valid_items: list[tuple] = []  # (entry, png_path, start_frame, dur_frames)
@@ -936,17 +1019,25 @@ class ResolveConnector:
             placed = 0
             for i, ((entry, png_path, start_frame, dur_frames), mpi) in enumerate(
                     zip(valid_items, imported)):
+                ti = int(getattr(entry, "track", 0) or 0) or track_index
                 clip_info = [{
                     "mediaPoolItem": mpi,
                     "startFrame":   0,
                     "endFrame":     dur_frames - 1,
                     "recordFrame":  start_frame + base_offset,
                     "mediaType":    1,
-                    "trackIndex":   track_index,
+                    "trackIndex":   ti,
                 }]
                 r = media_pool.AppendToTimeline(clip_info)
                 if r:
                     placed += 1
+                    # 話者別クリップカラー
+                    col = getattr(entry, "color", "")
+                    if col:
+                        try:
+                            r[0].SetClipColor(col)
+                        except Exception:
+                            pass
                 if callback:
                     callback(i + 1, len(valid_items), entry.text[:20])
 
@@ -1121,6 +1212,323 @@ class ResolveConnector:
         except Exception as e:
             self._error = f"Fusion API 配置エラー: {e}"
             return False
+
+    # ─────────────────────────────────────────────────────────────
+    #  りぞりぷと VoiceBin 方式: 既存の立ち絵マクロにしゃべりの口パクを適用
+    # ─────────────────────────────────────────────────────────────
+
+    def get_tatie_inputs(self, track_name: str = None):
+        """現在/再生ヘッド位置のクリップにある（トップレベルの）全マクロの公開入力を返す。
+        返値: [(macro_name, input_name, input_id), ...]。失敗時 []（self._error 設定）。"""
+        result = []
+        try:
+            if self._timeline is None:
+                self._error = "Resolveに接続されていません。"
+                return result
+            item = self._get_current_video_item(track_name)
+            if item is None or item.GetFusionCompCount() == 0:
+                self._error = ("Fusionコンポを持つクリップが見つかりません。\n"
+                               "立ち絵クリップを選択/再生ヘッドを合わせてください。")
+                return result
+            comp = item.GetFusionCompByIndex(1)
+            macros = self._iter_macros(comp, top_only=True)
+            if not macros:
+                macros = self._iter_macros(comp, top_only=False)
+            if not macros:
+                self._error = "立ち絵マクロ（Group/Macro）が見つかりません。"
+                return result
+            for m in macros:
+                try:
+                    mname = m.GetAttrs().get("TOOLS_Name", "?")
+                except Exception:
+                    mname = getattr(m, "Name", "?")
+                for nm, iid in self._macro_inputs(m):
+                    result.append((mname, nm, iid))
+            if not result:
+                self._error = ("立ち絵マクロの公開入力を取得できませんでした。\n"
+                               "りぞりぷと(psd2tatie)立ち絵か確認してください。")
+        except Exception as ex:
+            self._error = f"マクロ入力取得エラー: {ex}"
+        return result
+
+    def _get_current_video_item(self, track_name: str = None):
+        """選択中/再生ヘッド位置のビデオアイテムを返す。"""
+        tl = self._timeline
+        if tl is None:
+            return None
+        # トラック名指定があればその上の再生ヘッド位置クリップ
+        if track_name:
+            try:
+                cnt = tl.GetTrackCount("video")
+                idx = None
+                for i in range(1, cnt + 1):
+                    if tl.GetTrackName("video", i) == track_name:
+                        idx = i
+                        break
+                if idx:
+                    cur = self._current_frame_abs()
+                    for it in (tl.GetItemListInTrack("video", idx) or []):
+                        if it.GetStart() <= cur < it.GetEnd():
+                            return it
+            except Exception:
+                pass
+        # 通常は現在のビデオアイテム
+        getcur = getattr(tl, "GetCurrentVideoItem", None)
+        if getcur:
+            try:
+                it = getcur()
+                if it:
+                    return it
+            except Exception:
+                pass
+        return None
+
+    def _current_frame_abs(self):
+        try:
+            tc = self._timeline.GetCurrentTimecode()
+            fps = float(self._timeline.GetSetting("timelineFrameRate") or 30)
+            ifps = {23: 24, 29: 30, 47: 48, 59: 60, 95: 96, 119: 120}
+            r = round(fps)
+            fps = ifps.get(r, fps)
+            tc = tc.replace(";", ":")
+            h, m, s, f = (int(x) for x in tc.split(":"))
+            return int(((h * 60 + m) * 60 + s) * fps + f)
+        except Exception:
+            return 0
+
+    def _iter_macros(self, comp, top_only: bool = True):
+        """comp 内の Group/Macro ツールを列挙。top_only=True で親を持たない
+        トップレベルのみ（りぞりぷと setTatie と同じ判定）。"""
+        macros = []
+        try:
+            lst = comp.GetToolList(False)
+        except Exception:
+            lst = None
+        if not lst:
+            return macros
+        try:
+            items = list(lst.values())
+        except Exception:
+            try:
+                items = [lst[k] for k in lst]
+            except Exception:
+                items = []
+        for t in items:
+            try:
+                rid = t.GetAttrs().get("TOOLS_RegID", "")
+            except Exception:
+                rid = getattr(t, "ID", "")
+            if rid not in ("GroupOperator", "MacroOperator"):
+                continue
+            if top_only:
+                parent = None
+                try:
+                    parent = t.ParentTool
+                except Exception:
+                    parent = None
+                if parent:
+                    continue
+            macros.append(t)
+        return macros
+
+    def _macro_inputs(self, macro):
+        """マクロの公開入力を (display_name, input_id) で返す（GetInputList）。"""
+        out = []
+        seen = set()
+        try:
+            inputs = macro.GetInputList()
+        except Exception:
+            inputs = None
+        if not inputs:
+            return out
+        try:
+            vals = list(inputs.values())
+        except Exception:
+            try:
+                vals = [inputs[k] for k in inputs]
+            except Exception:
+                vals = []
+        for inp in vals:
+            try:
+                iid = str(getattr(inp, "ID", "") or "")
+            except Exception:
+                iid = ""
+            nm = ""
+            try:
+                nm = str(inp.GetAttrs().get("INPS_Name", "") or "")
+            except Exception:
+                nm = ""
+            if not iid:
+                continue
+            if iid in seen:
+                continue
+            seen.add(iid)
+            out.append((nm or iid, iid))
+        return out
+
+    # 口形状 → りぞりぷと MouthAnim(MultiMerge) の LayerEnabled 番号
+    #   Layer1=なし/閉じ, 2=ん, 3=あ, 4=い, 5=う, 6=え, 7=お
+    _MM_LAYER = {"closed": 1, "N": 2, "a": 3, "i": 4, "u": 5, "e": 6, "o": 7}
+    # 旧式（口セレクタ単一入力）用の 0-6
+    _SHAPE_IDX = {"closed": 0, "a": 1, "i": 2, "u": 3, "e": 4, "o": 5, "N": 6}
+
+    def _find_mouthanim(self, comp):
+        """最新りぞりぷと立ち絵の口ノード（MouthAnim / LayerEnabled を持つ MultiMerge）を返す。"""
+        for nm in ("MouthAnim", "MouthOpenAnim"):
+            try:
+                t = comp.FindTool(nm)
+            except Exception:
+                t = None
+            if t is not None:
+                return t
+        # 名前違い対策: LayerEnabled1 を持つツールを探す
+        try:
+            lst = comp.GetToolList(False)
+            items = list(lst.values()) if lst else []
+        except Exception:
+            items = []
+        for t in items:
+            try:
+                if t.GetInput("LayerEnabled1") is not None and \
+                   t.GetInput("LayerEnabled3") is not None:
+                    return t
+            except Exception:
+                continue
+        return None
+
+    def apply_lipsync_to_tatie(self, timeline: list, fps: float = 30.0,
+                               input_id: str = None,
+                               macro_name: str = None,
+                               start_frame_rel: int = 0,
+                               track_name: str = None) -> bool:
+        """しゃべりに合わせた口パクを、現在/再生ヘッド位置の立ち絵クリップに適用。
+
+        最新りぞりぷと立ち絵（MouthAnim=MultiMerge の LayerEnabled）を自動検出して
+        対応。見つからない場合は旧式（マクロの口セレクタ input_id）にフォールバック。
+
+        timeline        : フレームごとの口形状 list ('closed','a','i','u','e','o','N')
+        input_id        : 旧式用・マクロ公開入力ID（口セレクタ）。MouthAnim 検出時は不要
+        start_frame_rel : クリップ先頭からの開始フレームオフセット
+        """
+        self._need_mouth_pick = False
+        if self._project is None or self._timeline is None:
+            self._error = "Resolveに接続されていません。"
+            return False
+        if not timeline:
+            self._error = "口パクのタイミングデータがありません。"
+            return False
+        try:
+            item = self._get_current_video_item(track_name)
+            if item is None:
+                self._error = ("対象クリップが見つかりません。\n"
+                               "立ち絵クリップを選択するか再生ヘッドを合わせてください。")
+                return False
+            if item.GetFusionCompCount() == 0:
+                self._error = "選択クリップに Fusion コンポがありません。"
+                return False
+            comp = item.GetFusionCompByIndex(1)
+
+            gs = 0
+            try:
+                gs = int(comp.GetAttrs().get("COMPN_GlobalStart", 0))
+            except Exception:
+                gs = 0
+            base = gs + int(start_frame_rel)
+
+            # ── 最新方式: MouthAnim(MultiMerge) の LayerEnabled を動かす ──
+            mouth = self._find_mouthanim(comp)
+            if mouth is not None and not input_id:
+                return self._apply_mm_lipsync(comp, mouth, timeline, base)
+
+            # ── 旧方式: マクロの口セレクタ input_id を 0-6 でキーフレーム ──
+            macros = self._iter_macros(comp, top_only=True) \
+                or self._iter_macros(comp, top_only=False)
+            macro = None
+            for m in macros:
+                if macro_name:
+                    try:
+                        if m.GetAttrs().get("TOOLS_Name") == macro_name:
+                            macro = m; break
+                    except Exception:
+                        pass
+                else:
+                    macro = m; break
+            if macro is None and macros:
+                macro = macros[0]
+
+            if not input_id:
+                # MouthAnim も無く、口入力も未指定 → 呼び出し側で選ばせる
+                self._need_mouth_pick = True
+                self._error = ("口の制御ノード(MouthAnim)が見つかりません。\n"
+                               "口セレクタ入力を選択してください。")
+                return False
+            if macro is None:
+                self._error = "立ち絵マクロ（Group/Macro）が見つかりません。"
+                return False
+
+            try: comp.Lock()
+            except Exception: pass
+            try: comp.StartUndo("DavinTelop LipSync")
+            except Exception: pass
+            applied = 0
+            prev_v = None
+            for f, sh in enumerate(timeline):
+                v = self._SHAPE_IDX.get(sh, 0)
+                if v == prev_v:
+                    continue
+                prev_v = v
+                try:
+                    macro.SetInput(input_id, float(v), float(base + f))
+                    applied += 1
+                except Exception:
+                    pass
+            try: comp.EndUndo(True)
+            except Exception: pass
+            try: comp.Unlock()
+            except Exception: pass
+
+            if applied == 0:
+                self._error = (f"口入力 '{input_id}' にキーフレームを"
+                               "設定できませんでした。")
+                return False
+            self._mouth_param_used = input_id
+            return True
+        except Exception as ex:
+            self._error = f"口パク適用エラー: {ex}"
+            return False
+
+    def _apply_mm_lipsync(self, comp, mouth, timeline, base) -> bool:
+        """MouthAnim(MultiMerge) の LayerEnabled1..7 をステップ・キーフレーム。"""
+        layers = list(range(1, 8))   # 1=なし/閉じ 2=ん 3=あ 4=い 5=う 6=え 7=お
+        try: comp.Lock()
+        except Exception: pass
+        try: comp.StartUndo("DavinTelop LipSync")
+        except Exception: pass
+        applied = 0
+        prev = {k: None for k in layers}
+        for f, sh in enumerate(timeline):
+            active = self._MM_LAYER.get(sh, 1)
+            for k in layers:
+                v = 1.0 if k == active else 0.0
+                if v != prev[k]:
+                    prev[k] = v
+                    try:
+                        mouth.SetInput("LayerEnabled%d" % k, v, float(base + f))
+                        applied += 1
+                    except Exception:
+                        pass
+        try: comp.EndUndo(True)
+        except Exception: pass
+        try: comp.Unlock()
+        except Exception: pass
+        if applied == 0:
+            self._error = "MouthAnim の LayerEnabled にキーフレームを設定できませんでした。"
+            return False
+        try:
+            self._mouth_param_used = mouth.GetAttrs().get("TOOLS_Name", "MouthAnim")
+        except Exception:
+            self._mouth_param_used = "MouthAnim"
+        return True
 
     def place_tatie_full_via_fusion_api(
         self,
