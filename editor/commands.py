@@ -144,6 +144,7 @@ COMMANDS = [
     ("workspace_single", "ワークスペース: シングルディスプレイ", "ウィンドウ", "WS1"),
     ("workspace_dual", "ワークスペース: マルチディスプレイ（推奨配置）", "ウィンドウ", "WS2"),
     ("shortcuts_help", "ショートカット一覧", "ウィンドウ", "?"),
+    ("guidebook", "ガイドブック（使い方）", "ウィンドウ", "Guide"),
     ("tc_window", "大型タイムコード表示", "ウィンドウ", "TC"),
     # ── YouTube・ゆっくり ──
     ("voice_panel", "セリフパネル（1 行ずつ音声合成・字幕・立ち絵）", "YouTube", "セリフ"),
@@ -337,7 +338,7 @@ NEW_COMMAND_KEYS = {"command_palette": ["Ctrl+Shift+P"], "drag_zoom": ["Ctrl+Alt
                     "next_gap": ["Ctrl+Alt+Right"], "prev_gap": ["Ctrl+Alt+Left"],
                     "marker_panel": ["Ctrl+Alt+M"], "snapshot": ["Ctrl+Alt+S"],
                     "graph_editor": ["Shift+F3"], "motion_panel": ["Ctrl+Alt+G"],
-                    "select_at_playhead": ["D"], "auto_clip": ["Ctrl+Alt+A"], "telop_template": ["Ctrl+Shift+E"], "copy_frame": ["Ctrl+Alt+C"], "biim_split": ["Ctrl+Alt+B"], "take_next": ["Ctrl+Alt+T"], "nest": ["Ctrl+Alt+N"]}
+                    "select_at_playhead": ["D"], "auto_clip": ["Ctrl+Alt+Q"], "telop_template": ["Ctrl+Shift+L"], "copy_frame": ["Ctrl+Shift+C"], "biim_split": ["Ctrl+Alt+W"], "take_next": ["Ctrl+Alt+T", "Ctrl+Shift+J"], "nest": ["Ctrl+Alt+N", "Ctrl+Shift+U"]}
 
 COMMAND_INFO = OrderedDict((c[0], c) for c in COMMANDS)
 CATEGORIES = list(OrderedDict.fromkeys(c[2] for c in COMMANDS))
@@ -437,7 +438,7 @@ def add_new_keys(km: Dict[str, List[str]]) -> Dict[str, List[str]]:
     """キー設定に、まだ無い新コマンドの既定キーを足す（使用中のキーは足さない）。"""
     used = {k for v in km.values() for k in v}
     for cid, keys in NEW_COMMAND_KEYS.items():
-        if cid not in km:
+        if not km.get(cid):                     # 無い・空（前は他のキーと重なって付かなかった）
             km[cid] = [k for k in keys if k not in used]
             used |= set(km[cid])
     return km

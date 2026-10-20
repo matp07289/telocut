@@ -580,7 +580,16 @@ class StudioMixin:
         return {"user_settings": self.user_settings_dialog, "project_settings": self.project_settings_dialog,
                 "license": self.license_dialog, "telop_template": self.telop_template_dialog,
                 "telop_template_save": self.telop_template_save, "project_template_save": self.project_template_save,
-                "biim_layout": self.biim_layout_dialog, "biim_split": self.biim_split}
+                "biim_layout": self.biim_layout_dialog, "biim_split": self.biim_split, "guidebook": self.open_guidebook}
+
+    def open_guidebook(self):
+        """ヘルプ → ガイドブック（editor/guide.html をブラウザで開く。ネット接続は不要）。"""
+        import webbrowser
+        p = Path(__file__).with_name("guide.html")
+        if not p.exists():
+            QMessageBox.warning(self, "ガイドブック", f"ガイドブックが見つかりません: {p}")
+            return
+        webbrowser.open(p.as_uri())
 
     def _init_studio(self):
         # 作業時間（操作していた時間だけ数える）

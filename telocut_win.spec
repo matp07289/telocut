@@ -49,7 +49,8 @@ a = Analysis(
     ['telocut.py'],
     pathex=['.'],
     binaries=[],
-    datas=[(ICON, '.'), (os.path.join('editor', 'assetweb.html'), 'editor')],
+    datas=[(ICON, '.'), (os.path.join('editor', 'assetweb.html'), 'editor'),
+           (os.path.join('editor', 'guide.html'), 'editor')],
     hiddenimports=[
         *collect_submodules('editor'), 'editor.build_kind', 'core.telocut_link', 'core.voicevox', 'core.transcribe',
         'psd_tools', 'psd_tools.api', 'psd_tools.constants', 'editor', 'editor.mainwindow', 'editor.model', 'editor.media', 'editor.render',

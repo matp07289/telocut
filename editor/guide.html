@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TeloCut ガイドブック</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2229; --muted: #5d6673; --line: #dde1e7;
+  --accent: #2f6fd6; --accent-soft: #e6eefb; --key-bg: #eef0f3; --key-line: #c5cad2;
+  --tip: #e9f6ec; --tip-line: #3f9c58; --warn: #fdf3e2; --warn-line: #d08a1e; --pro: #7a4fd6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #17191d; --panel: #1f2227; --text: #e4e7eb; --muted: #9aa3ae; --line: #343841;
+    --accent: #6ea0f2; --accent-soft: #1f2d45; --key-bg: #2b2f36; --key-line: #4a505a;
+    --tip: #1b2e21; --tip-line: #4fb46a; --warn: #33291a; --warn-line: #e0a040; --pro: #a98bf0;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #17191d; --panel: #1f2227; --text: #e4e7eb; --muted: #9aa3ae; --line: #343841;
+  --accent: #6ea0f2; --accent-soft: #1f2d45; --key-bg: #2b2f36; --key-line: #4a505a;
+  --tip: #1b2e21; --tip-line: #4fb46a; --warn: #33291a; --warn-line: #e0a040; --pro: #a98bf0;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font-family: "Yu Gothic UI", "Meiryo UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+  font-size: 15px; line-height: 1.8;
+}
+.wrap { display: grid; grid-template-columns: 260px minmax(0, 1fr); max-width: 1180px; margin: 0 auto; }
+nav {
+  position: sticky; top: 0; height: 100vh; overflow-y: auto; padding: 24px 16px;
+  border-right: 1px solid var(--line);
+}
+nav .brand { font-weight: 700; font-size: 18px; margin-bottom: 4px; }
+nav .sub { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+nav ol { list-style: none; padding: 0; margin: 0; counter-reset: ch; }
+nav li a {
+  display: block; padding: 5px 8px; border-radius: 6px; color: var(--text);
+  text-decoration: none; font-size: 14px;
+}
+nav li a:hover { background: var(--accent-soft); color: var(--accent); }
+main { padding: 32px 40px 80px; min-width: 0; }
+header.hero { padding: 8px 0 24px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+header.hero h1 { font-size: 30px; margin: 0 0 4px; }
+header.hero p { color: var(--muted); margin: 0; }
+section { padding-top: 28px; }
+h2 { font-size: 22px; margin: 0 0 12px; padding-bottom: 6px; border-bottom: 2px solid var(--accent); }
+h2 .no { color: var(--accent); margin-right: 8px; }
+h3 { font-size: 17px; margin: 24px 0 8px; }
+p { margin: 8px 0; }
+a { color: var(--accent); }
+ol.steps { counter-reset: st; list-style: none; padding: 0; margin: 12px 0; }
+ol.steps > li {
+  counter-increment: st; position: relative; padding: 10px 14px 10px 52px; margin: 8px 0;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+}
+ol.steps > li::before {
+  content: counter(st); position: absolute; left: 14px; top: 10px; width: 26px; height: 26px;
+  border-radius: 50%; background: var(--accent); color: #fff; font-weight: 700;
+  display: flex; align-items: center; justify-content: center; font-size: 14px;
+}
+kbd {
+  display: inline-block; padding: 0 6px; min-width: 1.6em; text-align: center; line-height: 1.6;
+  font-family: Consolas, "Cascadia Mono", monospace; font-size: 13px;
+  background: var(--key-bg); border: 1px solid var(--key-line); border-bottom-width: 2px; border-radius: 4px;
+}
+.menu { font-weight: 600; color: var(--accent); }
+.box { padding: 10px 14px; border-radius: 8px; margin: 12px 0; border-left: 4px solid; }
+.tip { background: var(--tip); border-color: var(--tip-line); }
+.warn { background: var(--warn); border-color: var(--warn-line); }
+.box b:first-child { margin-right: 6px; }
+.pro {
+  display: inline-block; font-size: 11px; font-weight: 700; color: var(--pro); border: 1px solid var(--pro);
+  border-radius: 4px; padding: 0 5px; margin-left: 6px; vertical-align: 2px; line-height: 1.5;
+}
+.tbl { overflow-x: auto; margin: 12px 0; }
+table { border-collapse: collapse; width: 100%; background: var(--panel); font-size: 14px; }
+th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+th { background: var(--accent-soft); white-space: nowrap; }
+.layout {
+  display: grid; grid-template-columns: 1fr 2fr 1fr; grid-template-rows: auto auto; gap: 6px;
+  margin: 12px 0; font-size: 13px; text-align: center;
+}
+.layout div { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px 6px; }
+.layout .tl { grid-column: 1 / 4; }
+.layout b { display: block; color: var(--accent); }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 12px 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+.card h4 { margin: 0 0 4px; font-size: 15px; }
+.card p { margin: 0; color: var(--muted); font-size: 13px; }
+footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
+@media (max-width: 860px) {
+  .wrap { grid-template-columns: 1fr; }
+  nav { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--line); padding: 16px; }
+  main { padding: 16px 16px 60px; }
+  header.hero h1 { font-size: 24px; }
+  .layout { grid-template-columns: 1fr; }
+  .layout .tl { grid-column: auto; }
+}
+@media print {
+  nav { display: none; }
+  .wrap { display: block; }
+  section { break-inside: avoid-page; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <div class="brand">TeloCut ガイドブック</div>
+  <div class="sub">テロップに強い動画編集ソフト</div>
+  <ol>
+    <li><a href="#start">0. はじめに</a></li>
+    <li><a href="#install">1. インストールと起動</a></li>
+    <li><a href="#screen">2. 画面の見方</a></li>
+    <li><a href="#first">3. 最初の 1 本を作る</a></li>
+    <li><a href="#telop">4. テロップを作り込む</a></li>
+    <li><a href="#yukkuri">5. ゆっくり実況・解説動画</a></li>
+    <li><a href="#biim">6. biim 式の RTA 動画</a></li>
+    <li><a href="#autoclip">7. 配信の切り抜き</a></li>
+    <li><a href="#youtube">8. YouTube 向けの仕上げ</a></li>
+    <li><a href="#export">9. 書き出しと変換</a></li>
+    <li><a href="#blender">10. 3D テロップ（Blender）</a></li>
+    <li><a href="#custom">11. 自分好みにする</a></li>
+    <li><a href="#team">12. チームで使う</a></li>
+    <li><a href="#trouble">13. 困ったとき</a></li>
+    <li><a href="#keys">付録: ショートカット早見表</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <h1>TeloCut ガイドブック</h1>
+  <p>はじめての人が、1 本の動画を作って書き出すまでを順番に案内します。後半は、ゆっくり実況・biim 式・配信の切り抜きなど、目的別の作り方です。</p>
+</header>
+
+<!-- 0 -->
+<section id="start">
+<h2><span class="no">0</span>はじめに</h2>
+<p>TeloCut（テロカット）は、テロップづくりに強い動画編集ソフトです。画面とキー操作はプロ用の編集ソフト Avid Media Composer と同じ並びで、Premiere Pro 風の並びにも切り替えられます。</p>
+<div class="cards">
+  <div class="card"><h4>テロップが速い</h4><p>テンプレートから選んで置くだけ。字幕は文字起こしで自動作成</p></div>
+  <div class="card"><h4>ゆっくり・biim 式</h4><p>台本から音声・字幕・立ち絵を一括配置。RTA タイマーも自動</p></div>
+  <div class="card"><h4>切り抜きを自動で</h4><p>配信アーカイブから見どころを探し、無音を詰めて字幕まで</p></div>
+  <div class="card"><h4>この PC の中で完結</h4><p>音声認識も書き出しもローカル。素材が外に送られることはありません</p></div>
+</div>
+<h3>エディション（無料版・Pro・Studio）</h3>
+<p>このガイドで <span class="pro">Pro</span> や <span class="pro">Studio</span> の印が付いた機能は、そのエディションで使えます。今のエディションはウィンドウのタイトルと <span class="menu">設定 → ライセンス</span> で確認できます。</p>
+<div class="tbl"><table>
+  <tr><th></th><th>無料版</th><th>Pro</th><th>Studio</th></tr>
+  <tr><td>編集・テロップ・テンプレート・ゆっくり・biim 式</td><td>✓</td><td>✓</td><td>✓</td></tr>
+  <tr><td>書き出し</td><td>H.264 / H.265・1080p まで</td><td>4K・DNx / ProRes・透明も</td><td>同左</td></tr>
+  <tr><td>自動切り抜き</td><td>透かし付き</td><td>透かしなし</td><td>透かしなし</td></tr>
+  <tr><td>トランスコード・モーション・Blender・AI・テンプレートの保存</td><td>—</td><td>✓</td><td>✓</td></tr>
+  <tr><td>ファーム（複数 PC で書き出し）・制作管理</td><td>—</td><td>—</td><td>✓</td></tr>
+</table></div>
+</section>
+
+<!-- 1 -->
+<section id="install">
+<h2><span class="no">1</span>インストールと起動</h2>
+<ol class="steps">
+  <li>ダウンロードした zip を右クリック → <b>すべて展開</b>。できたフォルダ <code>TeloCut</code> を好きな場所（例: <code>C:\TeloCut</code>）に置きます。インストーラーはありません。</li>
+  <li>フォルダの中の <b>TeloCut.exe</b> をダブルクリックします。「Windows によって PC が保護されました」と出たら <b>詳細情報 → 実行</b>。</li>
+  <li>「プロジェクトの選択」が開きます。<b>新規作成</b> を押し、名前・テンプレート・解像度（例: 1920×1080）・フレームレート（例: 30）を選んで OK。</li>
+</ol>
+<div class="box tip"><b>ヒント</b>テンプレートで「ゆっくり実況」「biim 式」「ショート」「インタビュー」を選ぶと、必要なトラック・ビン・形式が最初からそろいます。迷ったら「空」で大丈夫です。</div>
+<p>フォルダには ほかに <b>DavinTelop.exe</b>（テロップ専用の編集ソフト。TeloCut と連動します）と <b>TeloCutCLI.exe</b>（サーバーやレンダー用 PC で使うもの）が入っています。普段は TeloCut.exe だけ使えば十分です。</p>
+</section>
+
+<!-- 2 -->
+<section id="screen">
+<h2><span class="no">2</span>画面の見方</h2>
+<div class="layout">
+  <div><b>プロジェクト / ビン</b>素材とシーケンスの入れ物</div>
+  <div><b>コンポーザー</b>左: ソース（素材を見る）／右: レコード（完成映像）</div>
+  <div><b>エフェクトエディター</b>位置・大きさ・音量・テロップの文字</div>
+  <div class="tl"><b>タイムライン</b>クリップを並べる場所。上のトラックほど手前に表示</div>
+</div>
+<div class="tbl"><table>
+  <tr><th>ことば</th><th>意味</th></tr>
+  <tr><td>ビン</td><td>素材やシーケンスを入れるフォルダのようなもの</td></tr>
+  <tr><td>シーケンス</td><td>タイムラインに並べた 1 本の作品</td></tr>
+  <tr><td>ソース / レコード</td><td>左のモニターが素材（ソース）、右が作品（レコード）</td></tr>
+  <tr><td>IN / OUT</td><td>使いたい範囲の始まりと終わり</td></tr>
+  <tr><td>再生ヘッド</td><td>タイムライン上の今の位置（縦の線）</td></tr>
+</table></div>
+<div class="box tip"><b>ヒント</b>機能の場所がわからないときは <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd>（コマンドパレット）で名前を入れて探せます。<kbd>F1</kbd> で今のショートカット一覧が出ます。</div>
+</section>
+
+<!-- 3 -->
+<section id="first">
+<h2><span class="no">3</span>最初の 1 本を作る</h2>
+<p>撮った動画を並べて、テロップを入れて、MP4 で書き出すまでの流れです（キーは Avid 標準の並び。Premiere 風の並びは付録を見てください）。</p>
+<ol class="steps">
+  <li><b>素材を読み込む</b> — <kbd>Ctrl</kbd>+<kbd>I</kbd> で動画・画像・音声を選ぶか、エクスプローラーからビンへドラッグ＆ドロップ。</li>
+  <li><b>素材を見る</b> — ビンの素材をダブルクリックすると、左のソースモニターに表示されます。<kbd>Space</kbd> で再生 / 停止、<kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd> で巻き戻し・停止・早送り（押すたびに速くなる）。</li>
+  <li><b>使う範囲を決める</b> — 始まりで <kbd>I</kbd>、終わりで <kbd>O</kbd>。</li>
+  <li><b>タイムラインに置く</b> — <kbd>V</kbd>（スプライスイン = 後ろを押し出して挿入）か <kbd>B</kbd>（上書き）。再生ヘッドの位置に入ります。2〜4 をくり返して並べます。</li>
+  <li><b>いらない部分を消す</b> — タイムラインで範囲に IN / OUT を付けて <kbd>X</kbd>（抽出 = 詰める）か <kbd>Z</kbd>（リフト = すき間を残す）。間違えたら <kbd>Ctrl</kbd>+<kbd>Z</kbd>。</li>
+  <li><b>テロップを入れる</b> — テロップを出したい位置に再生ヘッドを置いて <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd>（テロップのテンプレート）。種類を選び、文字を入れて <b>配置</b>。すぐ入れるだけなら <kbd>Shift</kbd>+<kbd>T</kbd>。</li>
+  <li><b>テロップを直す</b> — タイムラインでテロップを選ぶと、右のエフェクトエディターで文字・フォント・色・縁取り・位置を変えられます。</li>
+  <li><b>保存</b> — <kbd>Ctrl</kbd>+<kbd>S</kbd>。自動保存（5 分ごと）とバックアップ（Attic）もあります。</li>
+  <li><b>書き出し</b> — <kbd>Ctrl</kbd>+<kbd>E</kbd>。形式は「H.264（MP4）」のままで OK。保存先を選んで書き出します。</li>
+</ol>
+<div class="box tip"><b>ヒント</b>タイムラインの上に赤い線が出ている所は、重くてそのままでは滑らかに再生できない区間です。<span class="menu">レンダリング → 要レンダリング部分をすべてレンダリング</span> で滑らかになります。</div>
+</section>
+
+<!-- 4 -->
+<section id="telop">
+<h2><span class="no">4</span>テロップを作り込む</h2>
+<h3>テンプレートで置く</h3>
+<p><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> で、14 種類のテンプレート（字幕・ロワーサード・見出し・テロップ帯・ツッコミ・強調・吹き出し・速報・場所 / 日時・ゆっくり霊夢 / 魔理沙・引用・エンドクレジット・カウントダウン）から選べます。
+<code>{名前}</code> のような差し込み欄を埋めると、プレビューで仕上がりを確認してから置けます。</p>
+<p>自分で作ったテロップは、タイムラインで選んで <span class="menu">テロップ → 選んだテロップをテンプレートとして保存</span> すれば次から同じ見た目で使えます <span class="pro">Pro</span>。</p>
+<h3>字幕を自動で作る</h3>
+<ol class="steps">
+  <li><span class="menu">YouTube → 文字起こしで字幕を作成</span>。音声を聞き取って、読みやすい長さ（10〜20 文字ほど）で区切った字幕を並べます。</li>
+  <li><span class="menu">ウィンドウ → テロップ一覧</span> で、表のまま誤字を直せます。</li>
+  <li><span class="menu">YouTube → テロップの読みやすさチェック</span> で、読む速さが速すぎる字幕にマーカーが付きます。</li>
+</ol>
+<h3>見た目を一気にそろえる</h3>
+<ul>
+  <li>テロップスタイル: YouTube 黄色・極太縁・強調・ニュース帯などをワンクリック</li>
+  <li><span class="menu">便利 → テロップのフォントを一括変更</span> / <span class="menu">便利 → はみ出すテロップを画面に収める</span></li>
+  <li>文字アニメ（ポップ・スライドアップ・タイプライター）とカラオケ表示</li>
+  <li>細かい編集は <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> のテロップエディター（DavinTelop と同じ画面）</li>
+</ul>
+<div class="box tip"><b>ヒント</b>プロジェクトでいつも同じテロップを使うなら、<span class="menu">設定 → プロジェクト設定</span> の「新しいテロップの既定テンプレート」に入れておくと、<kbd>Shift</kbd>+<kbd>T</kbd> でそのテンプレートが入ります。</div>
+</section>
+
+<!-- 5 -->
+<section id="yukkuri">
+<h2><span class="no">5</span>ゆっくり実況・解説動画</h2>
+<ol class="steps">
+  <li><b>キャラクターを登録</b> — <span class="menu">YouTube → キャラクター（立ち絵）を登録</span>。口閉じ・口開き・目閉じの PNG を選ぶか、PSD から自動で作ります。</li>
+  <li><b>台本を書く</b> — 「霊夢：こんにちは」「魔理沙：今日は〜」のように、1 行に 1 セリフ。</li>
+  <li><b>一括生成</b> — <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Y</kbd>（台本から一括生成）に台本を貼ると、音声（VOICEVOX か Windows の音声）・字幕・立ち絵がまとめて並びます。口パクとまばたきも自動です。</li>
+  <li><b>セリフを直す</b> — <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Y</kbd> のセリフパネルで文を直すと、その音声だけ作り直し、長さが変わった分は後ろを自動で詰めます。</li>
+  <li><b>BGM と効果音</b> — <span class="menu">YouTube → BGM を最後までループ</span>。<span class="menu">YouTube → 選択トラックのダッキング</span> で、声の所だけ BGM が自動で下がります。効果音は SE パッドからクリックで置けます。</li>
+</ol>
+<div class="box warn"><b>注意</b>VOICEVOX を使うときは、VOICEVOX を先に起動しておいてください。動画の概要欄には「VOICEVOX:キャラ名」のクレジットが必要です（<span class="menu">YouTube → 概要欄テキスト</span> で自動で入ります）。</div>
+</section>
+
+<!-- 6 -->
+<section id="biim">
+<h2><span class="no">6</span>biim 式の RTA 動画</h2>
+<ol class="steps">
+  <li>新規プロジェクトのテンプレートで <b>biim 式</b> を選びます（あとからでも OK）。</li>
+  <li>ゲーム画面の動画をタイムラインに置き、そのクリップを選びます。</li>
+  <li><span class="menu">YouTube → 素材の配置テンプレート</span> で配置を選びます: biim 全画面 / サイド / 4:3＋余白 / ワイプ / 比較。</li>
+  <li>ゲーム画面・RTA タイマー・区間名・倍速の表示（×N）・立ち絵・話者ごとの色の字幕がまとめて置かれます。</li>
+  <li>区間の切れ目（ボス撃破など）で <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>W</kbd>（区間を追加）。タイマーに区間名と区間タイムが出ます。</li>
+</ol>
+<div class="box tip"><b>ヒント</b>タイマーはゲーム映像の再生位置から計算するので、倍速やカットをしても実際のゲーム内の時間を表示し続けます。</div>
+</section>
+
+<!-- 7 -->
+<section id="autoclip">
+<h2><span class="no">7</span>配信の切り抜き（自動切り抜き）</h2>
+<p><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Q</kbd>。長い配信アーカイブから、自動で 9 割まで作ってくれます。残りは手で直すだけです。</p>
+<ol class="steps">
+  <li>配信の動画をドラッグ＆ドロップ。あればチャットのログや配信マーカーも入れると、見どころ探しが正確になります。</li>
+  <li>作るものを選ぶ: 見どころを切り抜く / 全体を 1 本に / 縦動画に。</li>
+  <li><b>実行</b> → 音の大きさのグラフと、見どころの候補（点数の高い順）が出ます。候補をクリックするとその場面を確認できます。無音カットのしきい値もここで調整。</li>
+  <li><b>OK</b> → 選んだ区間ごとにシーケンスができ、無音を詰め、字幕を付けます。</li>
+  <li>字幕を確認（誤字を直す・いらない字幕を外す・話者を選ぶ）→ <b>字幕決定</b> → 書き出し（音量は −14 LUFS にそろえます）。</li>
+</ol>
+<div class="box warn"><b>注意</b>無料版は書き出しに小さな透かし「Made with TeloCut Free」が入ります。Pro 以上で消えます。</div>
+</section>
+
+<!-- 8 -->
+<section id="youtube">
+<h2><span class="no">8</span>YouTube 向けの仕上げ</h2>
+<div class="tbl"><table>
+  <tr><th>やりたいこと</th><th>場所</th></tr>
+  <tr><td>サムネイルを作る（1280×720）</td><td><span class="menu">YouTube → サムネイルを作成</span></td></tr>
+  <tr><td>ショート（縦 1080×1920）を作る</td><td><span class="menu">YouTube → ショート動画（縦型）を作成</span></td></tr>
+  <tr><td>音量を YouTube の基準にそろえる</td><td><span class="menu">YouTube → ラウドネス測定（-14 LUFS に合わせる）</span></td></tr>
+  <tr><td>チャプター・クレジット付きの概要欄</td><td>マーカー（<kbd>Shift</kbd>+<kbd>M</kbd>）を付けてから <span class="menu">YouTube → 概要欄テキスト（チャプター・クレジット）</span></td></tr>
+  <tr><td>書き出す前に間違いを探す</td><td><span class="menu">整理・チェック → 書き出し前チェック</span>（オフライン素材・はみ出し・音割れなど）</td></tr>
+  <tr><td>字幕ファイルを付ける</td><td><span class="menu">便利 → ASS 字幕 / WebVTT 字幕を書き出し</span></td></tr>
+</table></div>
+</section>
+
+<!-- 9 -->
+<section id="export">
+<h2><span class="no">9</span>書き出しと変換</h2>
+<p><kbd>Ctrl</kbd>+<kbd>E</kbd> で書き出し画面を開きます。よく使う設定は <b>プリセットとして保存</b> しておけます。</p>
+<div class="tbl"><table>
+  <tr><th>形式</th><th>使いどころ</th></tr>
+  <tr><td>H.264（MP4）</td><td>YouTube・SNS への投稿。迷ったらこれ</td></tr>
+  <tr><td>H.265（MP4）</td><td>同じ画質でファイルを小さくしたいとき</td></tr>
+  <tr><td>ProRes / DNxHR（MOV / MXF） <span class="pro">Pro</span></td><td>ほかの編集ソフトに渡す・高画質で保存する</td></tr>
+  <tr><td>透明付き（ProRes 4444 など） <span class="pro">Pro</span></td><td>テロップだけを別のソフトで重ねる</td></tr>
+</table></div>
+<p><b>トランスコード</b> <span class="pro">Pro</span>: <span class="menu">変換・仕上げ</span> から、素材をまとめて編集しやすい形式（DNxHR LB など）に変換できます。</p>
+<p>ほかの編集ソフトとのやり取りは <span class="menu">ファイル → 他ソフトから読み込み</span>（<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>I</kbd>）と <span class="menu">ファイル → 他の形式で書き出し</span>。AAF・Premiere Pro・Final Cut Pro XML・EDL に対応しています。</p>
+</section>
+
+<!-- 10 -->
+<section id="blender">
+<h2><span class="no">10</span>3D テロップ（Blender） <span class="pro">Pro</span></h2>
+<ol class="steps">
+  <li>Blender をインストールしておきます（ふつうの場所に入れれば TeloCut が自動で見つけます。見つからないときは環境設定で <code>blender.exe</code> の場所を指定）。</li>
+  <li><span class="menu">3D / MMD → 3D テキスト（Blender）</span> を開き、テンプレートを選んで文字などを決めて OK。Blender が裏で動いて、できた映像がタイムラインに入ります。</li>
+  <li>直したいときは、その 3D テロップを選んで <span class="menu">3D / MMD → 3D テロップを直す（Blender）</span>。同じ場所で作り直されます。</li>
+  <li>気に入った設定は「テンプレートとして保存」で、次から選べるようになります。</li>
+</ol>
+</section>
+
+<!-- 11 -->
+<section id="custom">
+<h2><span class="no">11</span>自分好みにする</h2>
+<h3>配色</h3>
+<p><span class="menu">設定 → ユーザー設定 → 配色</span>。Avid・Avid Blue・Graphite・Midnight・Forest・Warm・Light・High Contrast の 8 種類。明るさ・アクセント色・文字の大きさも変えられ、選ぶとすぐ反映されます（キャンセルで元に戻ります）。</p>
+<h3>3 つの設定の違い</h3>
+<div class="tbl"><table>
+  <tr><th>設定</th><th>中身</th><th>どこに残る</th></tr>
+  <tr><td>ユーザー設定</td><td>配色・ショートカット・編集と再生のくせ・書き出しプリセット</td><td>人ごと（ユーザーを切り替えられる・ほかの PC に持っていける）</td></tr>
+  <tr><td>プロジェクト設定</td><td>解像度・fps・既定のテロップ・書き出し先・メモ・作業時間</td><td>そのプロジェクトの中</td></tr>
+  <tr><td>環境設定</td><td>ドライブ・キャッシュの場所・サーバーなど</td><td>この PC</td></tr>
+</table></div>
+<h3>ショートカット</h3>
+<p><span class="menu">ファイル → キーボード設定</span>。画面のキーボードに、コマンドをドラッグして割り当てます。「Avid 標準」と「Premiere 風」のプリセットがあります。</p>
+</section>
+
+<!-- 12 -->
+<section id="team">
+<h2><span class="no">12</span>チームで使う</h2>
+<ul>
+  <li><b>共有プロジェクト</b>: プロジェクトを NAS に置けます。だれかが開いていると「だれがどの PC で」と表示され、ほかの人は読み取り専用で開けます。</li>
+  <li><b>アセットサーバー</b>: 素材を検索・★・タグ付けして共有。ブラウザからも使えます（<code>http://サーバー:8770/</code>）。</li>
+  <li><b>ファーム</b> <span class="pro">Studio</span>: 書き出しや変換を、複数の PC に分けて速く終わらせます。手伝う PC では <code>TeloCutCLI.exe --render-node --server http://サーバー:8770</code> を動かします。</li>
+  <li><b>制作管理</b> <span class="pro">Studio</span>: ショット・担当・期限をブラウザと TeloCut の両方で管理します。</li>
+</ul>
+</section>
+
+<!-- 13 -->
+<section id="trouble">
+<h2><span class="no">13</span>困ったとき</h2>
+<div class="tbl"><table>
+  <tr><th>こまりごと</th><th>やること</th></tr>
+  <tr><td>赤い「メディアオフライン」の画面が出る</td><td>素材ファイルが移動・削除されています。ビンで右クリック → <b>オフライン素材を再リンク</b> で、新しい場所を選びます</td></tr>
+  <tr><td>再生がカクカクする</td><td>レンダリング（赤い線の区間）か、重い素材のプロキシ作成。4K 素材はプロキシがおすすめ</td></tr>
+  <tr><td>間違えて保存してしまった</td><td><span class="menu">ファイル → Attic（バックアップ）から復元</span> で、前の版に戻せます（30 世代まで）</td></tr>
+  <tr><td>キーが効かない・どれか忘れた</td><td><kbd>F1</kbd> で一覧。<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> で名前から実行</td></tr>
+  <tr><td>「Pro の機能です」と出る</td><td><span class="menu">設定 → ライセンス</span> でキーを登録（有料版）。有料版なら 14 日間のお試しもできます</td></tr>
+  <tr><td>落ちてしまった</td><td>自動保存（5 分ごと）と <span class="menu">ファイル → Attic（バックアップ）から復元</span> で、直前の状態に戻せます。原因は <code>%USERPROFILE%\.davintelop\telocut_crash.log</code> に残ります（問い合わせのときに添えてください）</td></tr>
+</table></div>
+</section>
+
+<!-- 付録 -->
+<section id="keys">
+<h2><span class="no">付録</span>ショートカット早見表</h2>
+<p>キーの並びは <span class="menu">ファイル → キーボード設定</span> で切り替えられます。<kbd>F1</kbd> で今の一覧が見られます。</p>
+<div class="tbl"><table>
+  <tr><th>操作</th><th>Avid 標準</th><th>Premiere 風</th></tr>
+  <tr><td>素材を読み込み</td><td><kbd>Ctrl</kbd>+<kbd>I</kbd></td><td><kbd>Ctrl</kbd>+<kbd>I</kbd></td></tr>
+  <tr><td>再生 / 停止</td><td><kbd>Space</kbd></td><td><kbd>Space</kbd></td></tr>
+  <tr><td>巻き戻し / 停止 / 早送り</td><td><kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd></td><td><kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd></td></tr>
+  <tr><td>IN / OUT</td><td><kbd>I</kbd> <kbd>O</kbd>（<kbd>E</kbd> <kbd>R</kbd>）</td><td><kbd>I</kbd> <kbd>O</kbd></td></tr>
+  <tr><td>挿入 / 上書き</td><td><kbd>V</kbd> / <kbd>B</kbd></td><td><kbd>,</kbd> / <kbd>.</kbd></td></tr>
+  <tr><td>テロップを追加</td><td><kbd>Shift</kbd>+<kbd>T</kbd></td><td><kbd>T</kbd></td></tr>
+  <tr><td>テロップのテンプレート</td><td colspan="2"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd></td></tr>
+  <tr><td>テロップエディター</td><td colspan="2"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd></td></tr>
+  <tr><td>マーカーを追加</td><td><kbd>Shift</kbd>+<kbd>M</kbd></td><td><kbd>M</kbd></td></tr>
+  <tr><td>台本から一括生成 / セリフパネル</td><td colspan="2"><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Y</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Y</kbd></td></tr>
+  <tr><td>自動切り抜き</td><td colspan="2"><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Q</kbd></td></tr>
+  <tr><td>biim: 区間を追加</td><td colspan="2"><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>W</kbd></td></tr>
+  <tr><td>今のフレームをコピー</td><td colspan="2"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd></td></tr>
+  <tr><td>新規シーケンス</td><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd></td><td><kbd>Ctrl</kbd>+<kbd>N</kbd></td></tr>
+  <tr><td>保存 / 元に戻す</td><td><kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td><kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Ctrl</kbd>+<kbd>Z</kbd></td></tr>
+  <tr><td>書き出し</td><td><kbd>Ctrl</kbd>+<kbd>E</kbd></td><td><kbd>Ctrl</kbd>+<kbd>M</kbd></td></tr>
+  <tr><td>フルスクリーン再生</td><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd></td><td><kbd>Ctrl</kbd>+<kbd>`</kbd></td></tr>
+  <tr><td>コマンドパレット / キー一覧</td><td colspan="2"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> / <kbd>F1</kbd></td></tr>
+</table></div>
+</section>
+
+<footer>TeloCut ガイドブック — <span id="ver">TeloCut</span>。この画面は <span class="menu">ヘルプ → ガイドブック</span> からいつでも開けます。</footer>
+</main>
+</div>
+</body>
+</html>

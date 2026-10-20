@@ -587,6 +587,7 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         self.fs_menu.aboutToShow.connect(self._rebuild_fs_menu)
 
         h = mb.addMenu("ヘルプ")
+        self._a(h, "guidebook")
         self._a(h, "shortcuts_help")
 
     # ── 状態・共通 ───────────────────────────
