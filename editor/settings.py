@@ -22,7 +22,9 @@ USER_KEYS = ("user_name", "keyboard_preset", "keymap", "keyboard_layout", "theme
              "last_location", "export_presets", "favorites", "palette_favorites", "effect_presets", "fx_mode_default",
              "telop_dict", "autoclip", "asset_saved_searches", "asset_recent", "se_dir", "timeline_track_height",
              "timeline_show_waveforms", "timeline_show_thumbs", "default_telop_template", "use_proxy",
-             "auto_dual", "dual_swap", "screen_roles", "idle_render")
+             "auto_dual", "dual_swap", "screen_roles", "idle_render", "menu_mode", "shortcut_hints", "toolbar_size",
+             "toolbar_text", "lock_layout", "show_start_panel", "notify_export", "open_folder_after_export",
+             "recent_commands", "page")
 
 
 @dataclass
@@ -90,6 +92,16 @@ class AppSettings:
     timeline_show_waveforms: bool = True
     timeline_show_thumbs: bool = True
     default_telop_template: str = ""   # テロップを追加するときのテンプレート
+    menu_mode: str = "full"            # メニュー: full = すべて / simple = かんたん（よく使うものだけ）
+    shortcut_hints: bool = True        # メニューから使ったとき、ショートカットを教える
+    toolbar_size: str = "medium"       # ツールバーのボタン: small / medium / large
+    toolbar_text: bool = True          # ツールバーのボタンに文字を出す（False = 記号だけ）
+    lock_layout: bool = False          # パネルの配置をロック（うっかり動かさない）
+    show_start_panel: bool = True      # 空のプロジェクトでスタート画面を出す
+    notify_export: bool = True         # 書き出しが終わったら知らせる（音・タスクバー）
+    open_folder_after_export: bool = False
+    recent_commands: List[str] = field(default_factory=list)   # 最近使ったコマンド（検索欄・パレットの上に）
+    page: str = "edit"                 # 画面のページ（edit / telop / audio / effects / finish）
     current_profile: str = "default"   # 使っているユーザー設定の名前（サイト設定にだけ保存）
     trial_started: str = ""            # Pro のお試しを始めた日（YYYY-MM-DD）
 

@@ -431,6 +431,9 @@ class ExportDialog(QDialog):
         self.go.setEnabled(True)
         self.cancel_btn.setText("閉じる")
         self.worker = None
+        done = getattr(self.mw, "on_export_done", None)
+        if done is not None:
+            done(path)
 
     def _fail(self, err):
         self.msg.setText("失敗しました")

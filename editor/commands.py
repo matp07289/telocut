@@ -269,6 +269,44 @@ COMMANDS = [
     ("biim_layout", "素材の配置テンプレート（biim 式・実況ワイプ・比較）", "YouTube", "biim"),
     ("biim_split", "区間を追加（RTA タイマーの区間名・区間タイム）", "YouTube", "区間"),
     ("text3d_edit", "3D テロップを直す（Blender）", "3D・MMD", "3D直"),
+    # ── 画面（ページ・検索・メニュー）──
+    ("page_edit", "ページ: 編集", "ウィンドウ", "編集"),
+    ("page_telop", "ページ: テロップ", "ウィンドウ", "テロ"),
+    ("page_audio", "ページ: 音声", "ウィンドウ", "音声"),
+    ("page_effects", "ページ: エフェクト", "ウィンドウ", "FX"),
+    ("page_finish", "ページ: 仕上げ", "ウィンドウ", "仕上"),
+    ("find_action", "やりたいことを検索（ツールバーの検索欄へ）", "ウィンドウ", "検索"),
+    ("menu_mode", "メニュー: かんたん / すべて を切り替え", "ウィンドウ", "Menu"),
+    ("start_panel", "スタート画面", "ウィンドウ", "Start"),
+    ("focus_mode", "フォーカスモード（モニターとタイムラインだけ）", "ウィンドウ", "集中"),
+    ("lock_layout", "パネルの配置をロック / 解除", "ウィンドウ", "🔒枠"),
+    ("monitor_guide", "ガイドを表示（セーフエリア・ショートの UI・画面比率）", "再生・移動", "Guide"),
+    # ── 演出 ──
+    ("bleep", "ピー音（IN〜OUT の声を消して 1kHz）", "YouTube", "ピー"),
+    ("replay", "リプレイ（今の場面をスローでもう一度）", "YouTube", "Replay"),
+    ("tsukkomi", "ツッコミ（止めて寄る・集中線・テロップ）", "YouTube", "ツッコミ"),
+    ("zoom_cut", "ズームカット（1 カットおきに少し寄る）", "YouTube", "Zoom切"),
+    ("transition_flash", "場面転換: 白フラッシュ", "YouTube", "白転"),
+    ("transition_black", "場面転換: 黒にフェード", "YouTube", "黒転"),
+    ("subscribe_button", "チャンネル登録ボタン（アニメ付き）", "YouTube", "登録"),
+    ("chapter_slides", "目次スライドとチャプター見出し（マーカーから）", "YouTube", "目次"),
+    ("digest", "ダイジェスト（予告）を作る（マーカーの前後をつなぐ）", "YouTube", "予告"),
+    ("hype_markers", "盛り上がりにマーカー（音から探す）", "YouTube", "盛◆"),
+    # ── テロップ ──
+    ("telop_check", "テロップの表記チェック（誤字っぽい所・全角英数・カッコ）", "テロップ", "表記"),
+    ("telop_tidy", "句読点を整える（「。」を消す・！？・数字）", "テロップ", "句読"),
+    ("subs_by_speaker", "字幕を話者ごとのトラックに分ける", "テロップ", "話者"),
+    ("telop_se", "テロップに効果音を付ける", "テロップ", "字SE"),
+    # ── クリップ・音声・シーケンス ──
+    ("auto_crop", "黒帯を自動でカット（ゲーム・配信の画面）", "クリップ", "黒帯"),
+    ("wipe", "ワイプにする（角丸・枠・影）", "クリップ", "ワイプ"),
+    ("blur_fill", "ぼかし背景で埋める（縦長の写真・動画）", "クリップ", "ぼか背"),
+    ("bgm_end", "BGM の終わりを動画の終わりにそろえる（フェードアウト）", "オーディオ", "BGM終"),
+    ("insert_space", "空白を挿入（全トラック・再生ヘッド）", "編集", "空白"),
+    # ── 整理 ──
+    ("bins_by_kind", "ビンを種類で整理（映像・画像・音声）", "整理・チェック", "Bin整"),
+    ("merge_duplicates", "重複した素材をまとめる", "整理・チェック", "重複"),
+    ("work_report", "作業レポート（作業時間・編集の記録）", "整理・チェック", "日報"),
     # ── 便利 ──
     ("mixdown_video", "ビデオミックスダウン（IN〜OUT を 1 本の映像に）", "便利", "MixV"),
     ("mixdown_audio", "オーディオミックスダウン（IN〜OUT の音を 1 本に）", "便利", "MixA"),
@@ -338,7 +376,10 @@ NEW_COMMAND_KEYS = {"command_palette": ["Ctrl+Shift+P"], "drag_zoom": ["Ctrl+Alt
                     "next_gap": ["Ctrl+Alt+Right"], "prev_gap": ["Ctrl+Alt+Left"],
                     "marker_panel": ["Ctrl+Alt+M"], "snapshot": ["Ctrl+Alt+S"],
                     "graph_editor": ["Shift+F3"], "motion_panel": ["Ctrl+Alt+G"],
-                    "select_at_playhead": ["D"], "auto_clip": ["Ctrl+Alt+Q"], "telop_template": ["Ctrl+Shift+L"], "copy_frame": ["Ctrl+Shift+C"], "biim_split": ["Ctrl+Alt+W"], "take_next": ["Ctrl+Alt+T", "Ctrl+Shift+J"], "nest": ["Ctrl+Alt+N", "Ctrl+Shift+U"]}
+                    "select_at_playhead": ["D"], "auto_clip": ["Ctrl+Alt+Q"], "telop_template": ["Ctrl+Shift+L"], "copy_frame": ["Ctrl+Shift+C"], "biim_split": ["Ctrl+Alt+W"], "take_next": ["Ctrl+Alt+T", "Ctrl+Shift+J"], "nest": ["Ctrl+Alt+N", "Ctrl+Shift+U"],
+                    "page_edit": ["Shift+F1"], "page_telop": ["Shift+F2"], "page_audio": ["Shift+F4"],
+                    "page_effects": ["Shift+F5"], "page_finish": ["Shift+F6"], "find_action": ["Ctrl+Alt+F"],
+                    "focus_mode": ["F11", "Shift+F11"]}
 
 COMMAND_INFO = OrderedDict((c[0], c) for c in COMMANDS)
 CATEGORIES = list(OrderedDict.fromkeys(c[2] for c in COMMANDS))

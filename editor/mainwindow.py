@@ -28,6 +28,7 @@ from .farmpanel import FarmMixin as FarmUIMixin
 from .autoclippanel import AutoClipMixin
 from .settingsui import StudioMixin
 from .features8 import Features8Mixin
+from .features9 import Features9Mixin
 from .dualdisplay import DualDisplayMixin
 from . import media as MD
 from . import render as R
@@ -89,7 +90,7 @@ class SequenceDialog(QDialog):
 
 
 class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin, ProductionMixin, Features6Mixin,
-                 Features7Mixin, FarmUIMixin, AutoClipMixin, StudioMixin, Features8Mixin, DualDisplayMixin,
+                 Features7Mixin, FarmUIMixin, AutoClipMixin, StudioMixin, Features8Mixin, Features9Mixin, DualDisplayMixin,
                  QMainWindow):
     def __init__(self):
         super().__init__()
@@ -235,9 +236,11 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         self._build_feature6_menus()
         self._build_feature7_menus()
         self._build_feature8_menus()
+        self._build_feature9_menus()
         self._build_toolbar()
         from .commands import add_new_keys
         self.apply_keymap(add_new_keys(dict(SETTINGS.keymap)) if SETTINGS.keymap else preset_keymap(SETTINGS.keyboard_preset))
+        self._init_feature9_ui()
 
         st = self.settings.value("window_state")
         geo = self.settings.value("window_geometry")
@@ -391,6 +394,7 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         self.cmd_fns.update(self._autoclip_commands())
         self.cmd_fns.update(self._studio_commands())
         self.cmd_fns.update(self._feature8_commands())
+        self.cmd_fns.update(self._feature9_commands())
         # エディション（無料版 / Pro / Studio）で使えない機能は、どこから呼んでも案内を出す
         from . import license as LIC
         for cid, feat in LIC.GATED_COMMANDS.items():
@@ -1704,6 +1708,7 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
                     return True
             elif act[0] == "new":
                 if self.create_project(*act[1:]):
+                    self.maybe_start_panel()
                     return True
 
     def close_project(self):

@@ -288,6 +288,28 @@ def _shape_image(seq: Sequence, clip: Clip, cf: int, W: int, H: int) -> Image.Im
         cxx = (box[0] + box[2]) / 2
         d.rectangle([cxx - tw / 2 - pad, box[1], cxx + tw / 2 + pad, box[1] + fh * 1.3], fill=(0, 0, 0, max(fo, 160)))
         d.text((cxx - tw / 2, box[1] + fh * 0.12), txt, font=f, fill=rgb + (255,))
+    elif shape == "subscribe":
+        # チャンネル登録ボタン: 赤いボタン → 途中（60%）で押されて灰色の「登録済み」に。押す瞬間は少し縮む
+        k = (cf - clip.start) / max(1, clip.duration)
+        done = k >= 0.6
+        press = 0.94 if 0.56 <= k < 0.64 else 1.0
+        bw, bh = (box[2] - box[0]) * press, (box[3] - box[1]) * press
+        cx0, cy0 = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+        bb = [cx0 - bw / 2, cy0 - bh / 2, cx0 + bw / 2, cy0 + bh / 2]
+        d.rounded_rectangle(bb, radius=int(bh / 2), fill=(96, 96, 96, 255) if done else rgb + (255,))
+        from .render import _offline_font as _of
+        lab = str(clip.prop("label_done" if done else "label", "") or ("登録済み" if done else "チャンネル登録"))
+        f = _of(max(10, int(bh * 0.42)))
+        tw = d.textlength(lab, font=f)
+        d.text((cx0 - tw / 2, cy0 - bh * 0.27), lab, font=f, fill=(255, 255, 255, 255))
+        if 0.3 <= k < 0.75:
+            # 押しに来るカーソル（矢印）
+            t = min(1.0, (k - 0.3) / 0.26)
+            px, py = bb[2] + bw * 0.5 * (1 - t) - bw * 0.15, bb[3] + bh * 1.2 * (1 - t) - bh * 0.25
+            s_ = bh * 0.6
+            d.polygon([(px, py), (px, py + s_), (px + s_ * 0.28, py + s_ * 0.75), (px + s_ * 0.5, py + s_ * 1.05),
+                       (px + s_ * 0.62, py + s_ * 0.98), (px + s_ * 0.42, py + s_ * 0.68), (px + s_ * 0.75, py + s_ * 0.68)],
+                      fill=(255, 255, 255, 255), outline=(0, 0, 0, 255))
     elif shape == "rta_timer":
         from .biim import draw_timer
         draw_timer(d, seq, clip, cf, box, W, H)
@@ -528,6 +550,8 @@ def frame_signature(seq: Sequence, frame: int, project: Project, scale: float, u
                 item.append(int(np.ceil((c.end - L.cf) / seq.fps)))
             elif c.prop("shape") == "timecode":
                 item += [L.cf, c.prop("tc_label", ""), seq.start_tc]
+            elif c.prop("shape") == "subscribe":
+                item += [L.cf - c.start, c.duration, c.prop("label", ""), c.prop("label_done", "")]
             elif c.prop("shape") == "rta_timer":
                 item += [L.cf, [(m.frame, m.name) for m in seq.markers], c.props.get("timer_start"),
                          c.props.get("timer_rate"), c.props.get("timer_ms")]

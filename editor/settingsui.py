@@ -147,6 +147,32 @@ class UserSettingsDialog(_Pages):
         f.addRow(self.open_last)
         f.addRow("自動保存", self.autosave)
         f.addRow("バックアップ（Attic）", self.attic)
+        # 画面と操作
+        f = self.page("画面と操作")
+        self.menu_mode = QComboBox()
+        self.menu_mode.addItem("すべて", "full")
+        self.menu_mode.addItem("かんたん（よく使うメニューだけ）", "simple")
+        self.menu_mode.setCurrentIndex(max(0, self.menu_mode.findData(SETTINGS.menu_mode)))
+        self.tb_size = QComboBox()
+        for k, lab in (("small", "小"), ("medium", "中"), ("large", "大（タッチ・高解像度の画面向け）")):
+            self.tb_size.addItem(lab, k)
+        self.tb_size.setCurrentIndex(max(0, self.tb_size.findData(SETTINGS.toolbar_size)))
+        self.tb_text = QCheckBox("ツールバーのボタンに文字を出す（外すと記号だけで細くなる）")
+        self.tb_text.setChecked(SETTINGS.toolbar_text)
+        self.hints = QCheckBox("メニューやボタンから使ったとき、ショートカットキーを教える")
+        self.hints.setChecked(SETTINGS.shortcut_hints)
+        self.lock = QCheckBox("パネルの配置をロックする（うっかりドラッグで動かさない）")
+        self.lock.setChecked(SETTINGS.lock_layout)
+        self.start = QCheckBox("新しいプロジェクトでスタート画面を出す")
+        self.start.setChecked(SETTINGS.show_start_panel)
+        self.notify = QCheckBox("書き出しが終わったら音とタスクバーで知らせる")
+        self.notify.setChecked(SETTINGS.notify_export)
+        self.open_dir = QCheckBox("書き出しが終わったら保存先のフォルダを開く")
+        self.open_dir.setChecked(SETTINGS.open_folder_after_export)
+        f.addRow("メニュー", self.menu_mode)
+        f.addRow("ツールバーの大きさ", self.tb_size)
+        for w in (self.tb_text, self.hints, self.lock, self.start, self.notify, self.open_dir):
+            f.addRow(w)
         # 書き出しプリセット
         f = self.page("書き出しプリセット")
         self.presets = QListWidget()
@@ -248,8 +274,18 @@ class UserSettingsDialog(_Pages):
         SETTINGS.open_last_project = self.open_last.isChecked()
         SETTINGS.autosave_minutes = self.autosave.value()
         SETTINGS.attic_keep = self.attic.value()
+        SETTINGS.menu_mode = self.menu_mode.currentData()
+        SETTINGS.toolbar_size = self.tb_size.currentData()
+        SETTINGS.toolbar_text = self.tb_text.isChecked()
+        SETTINGS.shortcut_hints = self.hints.isChecked()
+        SETTINGS.lock_layout = self.lock.isChecked()
+        SETTINGS.show_start_panel = self.start.isChecked()
+        SETTINGS.notify_export = self.notify.isChecked()
+        SETTINGS.open_folder_after_export = self.open_dir.isChecked()
         SETTINGS.save()
         TH.apply(QApplication.instance())
+        if hasattr(self.mw, "apply_ui_prefs"):
+            self.mw.apply_ui_prefs()
         super().accept()
 
     def reject(self):
@@ -637,6 +673,8 @@ class StudioMixin:
         TH.apply(QApplication.instance())
         from .commands import add_new_keys, preset_keymap
         self.apply_keymap(add_new_keys(dict(SETTINGS.keymap)) if SETTINGS.keymap else preset_keymap(SETTINGS.keyboard_preset))
+        if hasattr(self, "apply_ui_prefs"):
+            self.apply_ui_prefs()
         self._update_title()
         self.status.showMessage(f"ユーザー「{name}」に切り替えました", 5000)
 

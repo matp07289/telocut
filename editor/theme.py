@@ -108,6 +108,9 @@ QMenuBar::item:selected {{ background: {c['panel3']}; }}
 QMenu {{ background: {c['panel2']}; border: 1px solid {c['border']}; }}
 QMenu::item {{ padding: 4px 22px 4px 18px; }}
 QMenu::item:selected {{ background: {c['accent']}; color: {on_accent}; }}
+QTabBar#page_bar::tab {{ padding: 4px 14px; margin: 0 1px; border-radius: 4px; background: transparent; }}
+QTabBar#page_bar::tab:selected {{ background: {c['accent']}; color: {on_accent}; font-weight: bold; }}
+QTabBar#page_bar::tab:hover:!selected {{ background: {c['hover']}; }}
 QMenu::separator {{ height: 1px; background: {c['border']}; margin: 3px 6px; }}
 QToolTip {{ background: #fefbe3; color: #111; border: 1px solid #888; padding: 3px; }}
 QPushButton, QToolButton {{

@@ -27,9 +27,42 @@ class VideoView(QWidget):
         self.aspect = 16 / 9
         self.safe_area = False
         self.grid = False                 # 三分割のガイド
+        self.guide = ""                   # 画面比率・セーフエリアのガイド（title / shorts / 4:3 / 1:1 / 9:16）
         self.message = ""
         self.setMinimumSize(240, 135)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def _draw_guide(self, p: QPainter, r):
+        """画面比率の範囲（外は暗く）・タイトルセーフ・ショートの UI（右のボタン・下の説明文）の位置。"""
+        g = self.guide
+        dim = QColor(0, 0, 0, 110)
+        pen = QPen(QColor(255, 220, 80, 200), 1, Qt.PenStyle.DashLine)
+        if g in ("4:3", "1:1", "9:16"):
+            a, b = {"4:3": (4, 3), "1:1": (1, 1), "9:16": (9, 16)}[g]
+            w = min(r.width(), int(r.height() * a / b))
+            h = min(r.height(), int(r.width() * b / a))
+            x = r.x() + (r.width() - w) // 2
+            y = r.y() + (r.height() - h) // 2
+            p.fillRect(r.x(), r.y(), x - r.x(), r.height(), dim)
+            p.fillRect(x + w, r.y(), r.right() - (x + w) + 1, r.height(), dim)
+            p.fillRect(x, r.y(), w, y - r.y(), dim)
+            p.fillRect(x, y + h, w, r.bottom() - (y + h) + 1, dim)
+            p.setPen(pen)
+            p.drawRect(x, y, w, h)
+        elif g == "title":
+            p.setPen(pen)
+            for f in (0.9, 0.8):
+                w, h = int(r.width() * f), int(r.height() * f)
+                p.drawRect(r.x() + (r.width() - w) // 2, r.y() + (r.height() - h) // 2, w, h)
+        elif g == "shorts":
+            # 縦動画で、アプリのボタン（右）・チャンネル名と説明（下）・上の検索などに隠れやすい所
+            p.fillRect(r.x() + int(r.width() * 0.84), r.y() + int(r.height() * 0.42), int(r.width() * 0.16),
+                       int(r.height() * 0.48), dim)
+            p.fillRect(r.x(), r.y() + int(r.height() * 0.80), int(r.width() * 0.84), int(r.height() * 0.20), dim)
+            p.fillRect(r.x(), r.y(), r.width(), int(r.height() * 0.08), dim)
+            p.setPen(QColor(255, 220, 80, 220))
+            p.drawText(r.x() + 8, r.y() + int(r.height() * 0.80) + 18, "説明・チャンネル名")
+            p.drawText(r.x() + int(r.width() * 0.84) + 4, r.y() + int(r.height() * 0.42) + 18, "ボタン")
 
     def set_image(self, img: QImage):
         self._img = img
@@ -96,6 +129,8 @@ class VideoView(QWidget):
                 y = r.y() + r.height() * k // 3
                 p.drawLine(x, r.y(), x, r.bottom())
                 p.drawLine(r.x(), y, r.right(), y)
+        if self.guide:
+            self._draw_guide(p, r)
         if self.safe_area:
             p.setPen(QPen(QColor(255, 255, 255, 90), 1, Qt.PenStyle.DashLine))
             for f in (0.9, 0.8):
