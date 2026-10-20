@@ -77,7 +77,7 @@ if (-not $ViaNas -and $Git) {
     if ($dirty) { Write-Host "注意: コミットしていない変更があります（VM には push 済みの内容が入ります）" -ForegroundColor Yellow }
     $hasSmb = @($shares | Where-Object { $_.Type -eq "cifs" }).Count -gt 0
     $user = if ($NasUser) { $NasUser } else { "guest" }
-    $pre = if ($hasSmb) { 'read -rsp "NAS（SMB・__USER__）のパスワード: " NP; echo; ' } else { 'NP=""; ' }
+    $pre = 'cd ~; ' + $(if ($hasSmb) { 'read -rsp "NAS（SMB・__USER__）のパスワード: " NP; echo; ' } else { 'NP=""; ' })   # 消えたフォルダの中にいると git が動かないので、まずホームへ
     $cmd = $pre +
            '(sudo dnf -y -q install git >/dev/null 2>&1 || sudo apt-get -y -qq install git >/dev/null) && ' +
            '(if [ -d ~/telocut-src/.git ]; then git -C ~/telocut-src pull -q --ff-only; else rm -rf ~/telocut-src && git clone -q __GIT__ ~/telocut-src; fi) && ' +
@@ -136,7 +136,7 @@ Write-Host "== NAS に置きました: $(Join-Path $drop 'telocut_server.tgz')"
 # ── VM で貼り付ける 1 行（最初の共有を一時的につないで、まとめたファイルを取り出す）
 $hasSmb = @($shares | Where-Object { $_.Type -eq "cifs" }).Count -gt 0     # @() が無いと 1 件のとき Count が取れない（PowerShell 5.1）
 $user = if ($NasUser) { $NasUser } else { "guest" }
-$pre = if ($hasSmb) { 'read -rsp "NAS（SMB・__USER__）のパスワード: " NP; echo; ' } else { 'NP=""; ' }
+$pre = 'cd ~; ' + $(if ($hasSmb) { 'read -rsp "NAS（SMB・__USER__）のパスワード: " NP; echo; ' } else { 'NP=""; ' })   # 消えたフォルダの中にいると git が動かないので、まずホームへ
 if ($first.Type -eq "nfs") {
     $tmpMount = 'sudo mount -t nfs -o ro __FIRSTSRC__ /mnt/telocut_tmp'
 } else {
