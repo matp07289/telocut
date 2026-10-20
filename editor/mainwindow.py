@@ -24,6 +24,7 @@ from .features5 import Features5Mixin
 from .production import ProductionMixin
 from .features6 import Features6Mixin
 from .features7 import Features7Mixin
+from .farmpanel import FarmMixin as FarmUIMixin
 from .dualdisplay import DualDisplayMixin
 from . import media as MD
 from . import render as R
@@ -85,7 +86,7 @@ class SequenceDialog(QDialog):
 
 
 class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin, ProductionMixin, Features6Mixin,
-                 Features7Mixin, DualDisplayMixin, QMainWindow):
+                 Features7Mixin, FarmUIMixin, DualDisplayMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         SETTINGS.ensure_dirs()
@@ -217,6 +218,7 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         self._init_features4()
         self._init_features5()
         self._init_production()
+        self._init_farmui()
         self._init_dual()
         self._build_commands()
         self._build_menus()
@@ -379,6 +381,7 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         self.cmd_fns.update(self._production_commands())
         self.cmd_fns.update(self._feature6_commands())
         self.cmd_fns.update(self._feature7_commands())
+        self.cmd_fns.update(self._farmui_commands())
         for i in range(4):
             self.cmd_fns[f"toggle_v{i + 1}"] = lambda i=i: self.toggle_track("video", i)
             self.cmd_fns[f"toggle_a{i + 1}"] = lambda i=i: self.toggle_track("audio", i)
@@ -1840,6 +1843,10 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         f.addRow("形式", enc)
         folder = QLineEdit(os.path.join(os.path.expanduser("~"), "Desktop"))
         f.addRow("出力フォルダ", folder)
+        from PyQt6.QtWidgets import QCheckBox
+        to_farm = QCheckBox("ファームに送る（複数 PC で同時に書き出し・この PC は空く）")
+        to_farm.setEnabled(bool(SETTINGS.asset_server))
+        f.addRow("", to_farm)
         v.addLayout(f)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         bb.accepted.connect(dlg.accept)
@@ -1850,6 +1857,23 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         ids = [lst.item(i).data(Qt.ItemDataRole.UserRole) for i in range(lst.count())
                if lst.item(i).checkState() == Qt.CheckState.Checked]
         codec, ext = enc.currentData()
+        if to_farm.isChecked():
+            cur = self.project.current
+            n = 0
+            try:
+                for sid in ids:
+                    self.project.current = next(k for k, s in enumerate(self.project.sequences) if s.id == sid)
+                    sq = self.project.sequence
+                    if sq.duration > 0 and self.farm_submit_export(0, sq.duration, codec,
+                                                                   os.path.join(folder.text(), f"{sq.name}{ext}")):
+                        n += 1
+            except Exception as ex:
+                QMessageBox.warning(self, "ファーム", f"送れませんでした: {ex}")
+            finally:
+                self.project.current = cur
+            self.show_dock(self.dock_farm)
+            self.status.showMessage(f"{n} 本をファームに送りました", 6000)
+            return
         prog = QProgressDialog("書き出し中...", "中止", 0, len(ids), self)
         prog.setWindowTitle("書き出しキュー")
         prog.show()

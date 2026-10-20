@@ -94,8 +94,11 @@ def psd_embedded_thumbnail(path: str):
         return None
 
 
-class Store:
-    def __init__(self, data_dir: str, roots):
+from .farm import FarmMixin
+
+
+class Store(FarmMixin):
+    def __init__(self, data_dir: str, roots, local_worker: bool = True):
         self.data = Path(data_dir)
         self.data.mkdir(parents=True, exist_ok=True)
         (self.data / "thumbs").mkdir(exist_ok=True)
@@ -150,12 +153,7 @@ class Store:
         self._indexing: set = set()
         self._proxy_sem = threading.Semaphore(1)        # ブラウザ用プロキシは 1 本ずつ（VM の CPU・メモリを守る）
         self._proxy_state: dict = {}                    # id → {"status": making/ready/error, "progress": 0〜1}
-        self._tc_cancel: dict = {}                       # 変換ジョブ id → threading.Event
-        self._tc_wake = threading.Event()
-        with self.lock:                                  # 前回の途中の変換はやり直す
-            self.db.execute("UPDATE tc_jobs SET status='waiting', progress=0 WHERE status='running'")
-            self.db.commit()
-        threading.Thread(target=self._tc_loop, daemon=True).start()
+        self._farm_init(local_worker)                    # ジョブ（レンダリング・変換）を複数 PC に振り分ける
 
     # ── 素材 ─────────────────────────────────
     @staticmethod
@@ -480,99 +478,23 @@ class Store:
                 "sizes": [{"id": k, "label": v} for k, v in SIZES]}
 
     def transcode_add(self, ids, preset: str, size: str = "", user: str = "") -> list:
-        import uuid
+        """ブラウザから: サーバーの素材を変換（ファームのジョブ。空いているノードかサーバー自身が行う）。"""
+        return [self._tc_view(j) for j in self.farm_add_transcode([{"asset_id": i} for i in ids or []], preset, size, user)]
+
+    def _tc_view(self, j: dict) -> dict:
         from .mediacodecs import BY_ID
-        if preset not in BY_ID:
-            raise ValueError("形式が正しくありません")
-        out = []
-        for i in list(ids or [])[:200]:
-            a = self.get(i)
-            if not a or a["kind"] not in ("video", "audio"):
-                continue
-            j = {"id": uuid.uuid4().hex[:12], "asset_id": i, "name": a["name"], "preset": preset, "size": size or "",
-                 "status": "waiting", "progress": 0.0, "user": (user or "")[:40], "created": time.time()}
-            with self.lock:
-                self.db.execute(f"INSERT INTO tc_jobs({','.join(j)}) VALUES({','.join('?' * len(j))})", list(j.values()))
-                self.db.commit()
-            out.append(j)
-        if out:
-            self.add_activity(user, "", "", "transcode", preset, f"{len(out)} 件の変換を受け付けました（{BY_ID[preset].label}）")
-            self._tc_wake.set()
-        return out
+        p = j["params"]
+        return {"id": j["id"], "name": j["name"], "preset": p.get("preset"), "size": p.get("size", ""),
+                "preset_label": BY_ID[p["preset"]].label if p.get("preset") in BY_ID else p.get("preset"),
+                "status": j["status"], "progress": j["progress"], "out_asset": j.get("result_asset", ""),
+                "out_path": j.get("result_path", ""), "error": j.get("error", ""), "user": j.get("user", ""),
+                "created": j["created"], "nodes": j.get("nodes", [])}
 
     def transcode_jobs(self, limit: int = 100) -> list:
-        with self.lock:
-            rows = [dict(r) for r in self.db.execute("SELECT * FROM tc_jobs ORDER BY created DESC LIMIT ?",
-                                                     (max(1, min(500, int(limit))),))]
-        from .mediacodecs import BY_ID
-        for r in rows:
-            r["preset_label"] = BY_ID[r["preset"]].label if r["preset"] in BY_ID else r["preset"]
-        return rows
+        return [self._tc_view(j) for j in self.farm_jobs(limit, "transcode")]
 
     def transcode_cancel(self, jid: str) -> dict:
-        ev = self._tc_cancel.get(jid)
-        if ev is not None:
-            ev.set()
-        with self.lock:
-            self.db.execute("UPDATE tc_jobs SET status='cancelled', finished=? WHERE id=? AND status IN ('waiting','running')",
-                            (time.time(), jid))
-            self.db.commit()
-        return {"ok": True}
-
-    def _tc_loop(self):
-        """変換を 1 本ずつ（VM の CPU・メモリを使い切らない）。"""
-        from .mediacodecs import BY_ID, default_name, transcode
-        while True:
-            with self.lock:
-                r = self.db.execute("SELECT * FROM tc_jobs WHERE status='waiting' ORDER BY created LIMIT 1").fetchone()
-                if r is not None:
-                    self.db.execute("UPDATE tc_jobs SET status='running' WHERE id=?", (r["id"],))
-                    self.db.commit()
-            if r is None:
-                self._tc_wake.wait(5)
-                self._tc_wake.clear()
-                continue
-            j = dict(r)
-            ev = threading.Event()
-            self._tc_cancel[j["id"]] = ev
-            a = self.get(j["asset_id"])
-            last = [0.0]
-
-            def prog(x, jid=j["id"]):
-                if x - last[0] >= 0.02 or x >= 1:
-                    last[0] = x
-                    with self.lock:
-                        self.db.execute("UPDATE tc_jobs SET progress=? WHERE id=?", (round(x, 3), jid))
-                        self.db.commit()
-            try:
-                try:
-                    os.nice(10)
-                except (AttributeError, OSError):
-                    pass
-                if not a or not os.path.exists(a["path"]):
-                    raise FileNotFoundError("元の素材が見つかりません")
-                d = self.data / "uploads" / "変換"
-                dst = d / default_name(a["path"], j["preset"], j["size"])
-                k = 1
-                while dst.exists():
-                    dst = d / f"{Path(default_name(a['path'], j['preset'], j['size'])).stem}_{k}{BY_ID[j['preset']].ext}"
-                    k += 1
-                transcode(a["path"], str(dst), j["preset"], j["size"], prog, ev)
-                na = self.index(str(dst))
-                with self.lock:
-                    self.db.execute("UPDATE tc_jobs SET status='done', progress=1, out_asset=?, finished=? WHERE id=?",
-                                    (na["id"] if na else "", time.time(), j["id"]))
-                    self.db.commit()
-                self.add_activity(j["user"], "", "", "transcode", j["id"], f"{a['name']} を {BY_ID[j['preset']].label} に変換しました")
-            except InterruptedError:
-                pass
-            except Exception as ex:
-                with self.lock:
-                    self.db.execute("UPDATE tc_jobs SET status='error', error=?, finished=? WHERE id=?",
-                                    (str(ex)[:500], time.time(), j["id"]))
-                    self.db.commit()
-            finally:
-                self._tc_cancel.pop(j["id"], None)
+        return self.farm_cancel(jid)
 
     # ── 片付け（プロキシの容量・消えた素材のサムネイル / プロキシ）──
     def housekeeping(self, proxy_gb: float = 20.0) -> dict:
@@ -904,7 +826,8 @@ class Store:
         return {"total": len(sh), "by_status": by_status, "by_user": by_user, "overdue": overdue,
                 "done_ratio": (by_status.get("done", 0) / len(sh)) if sh else 0.0, "projects": projects,
                 "nodes_online": sum(1 for n in nodes if n.get("online")), "nodes": len(nodes),
-                "jobs_running": sum(1 for j in jobs if j.get("status") not in ("done", "failed", "cancelled")),
+                "jobs_running": sum(1 for j in jobs if j.get("status") not in ("done", "failed", "cancelled"))
+                + sum(1 for j in self.farm_jobs(100) if j["status"] in ("waiting", "running")),
                 "activity": self.activity(30, project)}
 
     # ── フォルダ（NAS と同じ構成）──
@@ -1320,6 +1243,9 @@ class Handler(BaseHTTPRequestHandler):
         parts = [p for p in u.path.split("/") if p]
         st = self.store
         try:
+            from . import farm as FARM
+            if FARM.handle(self, "GET", parts, qs):
+                return
             if not parts:
                 web = Path(__file__).with_name("assetweb.html")
                 html = web.read_bytes() if web.exists() else WEB.encode("utf-8")
@@ -1418,6 +1344,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.rfile.read(n)                  # 読み捨ててから答える（読まずに切ると相手に届かない）
                 self.close_connection = True
                 return self._json({"error": "この要求は受け付けません（ほかのサイトからの送信）"}, 403)
+            from . import farm as FARM
+            if FARM.handle(self, "POST", parts, qs):
+                return
             if parts[:2] == ["api", "housekeeping"]:
                 return self._json(st.housekeeping(float(qs.get("proxy_gb", 20))))
             if parts[:2] == ["api", "scan"]:
@@ -1488,6 +1417,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_PATCH(self):
         parts = [p for p in urllib.parse.urlparse(self.path).path.split("/") if p]
         try:
+            from . import farm as FARM
+            if FARM.handle(self, "PATCH", parts, {}):
+                return
             if parts[:2] == ["api", "assets"] and len(parts) == 3:
                 return self._json(self.store.update(parts[2], json.loads(self._body() or b"{}")))
             if parts[:2] == ["api", "vfolders"] and len(parts) == 3:
@@ -1519,6 +1451,9 @@ class Handler(BaseHTTPRequestHandler):
         qs = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
         parts = [p for p in u.path.split("/") if p]
         try:
+            from . import farm as FARM
+            if FARM.handle(self, "PUT", parts, qs):
+                return
             if parts[:3] == ["api", "render", "segment"] and len(parts) == 4:
                 self.store.put_segment(parts[3], self._body(), qs.get("node", "?"))
                 return self._json({"ok": True})
@@ -1527,8 +1462,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": str(ex)}, 500)
 
 
-def serve(roots, data_dir: str, port: int = 8770, rescan_min: int = 10, block: bool = True, proxy_gb: float = 20.0):
-    store = Store(data_dir, roots)
+def serve(roots, data_dir: str, port: int = 8770, rescan_min: int = 10, block: bool = True, proxy_gb: float = 20.0,
+          local_worker: bool = True):
+    store = Store(data_dir, roots, local_worker)
     Handler.store = store
     ThreadingHTTPServer.daemon_threads = True
     ThreadingHTTPServer.request_queue_size = 128      # 混んでいても接続を受け付ける
@@ -1564,8 +1500,9 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=8770)
     ap.add_argument("--rescan", type=int, default=10, help="再スキャン間隔（分）")
     ap.add_argument("--proxy-gb", type=float, default=20.0, help="ブラウザ用プロキシの容量の上限（GB）")
+    ap.add_argument("--no-local-jobs", action="store_true", help="サーバー自身は変換しない（レンダーノードに任せる）")
     a = ap.parse_args(argv)
-    serve(a.root, a.data, a.port, a.rescan, proxy_gb=a.proxy_gb)
+    serve(a.root, a.data, a.port, a.rescan, proxy_gb=a.proxy_gb, local_worker=not a.no_local_jobs)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@
 param(
     [string]$Server = "",
     [string]$Name = $env:COMPUTERNAME,
+    [string]$Kinds = "",            # 受ける仕事: render,merge,full,transcode（空 = 全部）
     [switch]$Uninstall
 )
 $ErrorActionPreference = "Stop"
@@ -25,6 +26,7 @@ if ($Server -notlike "http*") { $Server = "http://$Server" }
 try { Invoke-RestMethod "$Server/api/info" -TimeoutSec 5 | Out-Null } catch { throw "アセットサーバー $Server に接続できません" }
 
 $inner = "& '$exe' --render-node --server '$Server' --name '$Name'"
+if ($Kinds) { $inner += " --kinds '$Kinds'" }
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -Command `"$inner`""
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 99 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Priority 7

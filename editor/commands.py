@@ -258,6 +258,9 @@ COMMANDS = [
     ("match_loudness", "選んだ音声のラウドネスをそろえる", "クリップ", "LUFS="),
     ("compare_seq", "シーケンスを比較", "クリップ", "比較"),
     ("collect_files", "ファイルの収集（素材をプロジェクトに集める）", "クリップ", "収集"),
+    # ── ファーム ──
+    ("farm_panel", "ジョブ（ファーム）を表示", "変換・仕上げ", "Farm"),
+    ("farm_export", "ファームで書き出し（複数 PC に振り分け）", "変換・仕上げ", "Farm書"),
     # ── 変換・仕上げ ──
     ("transcode", "トランスコード（DNxHR / DNxHD / ProRes / QuickTime …）", "変換・仕上げ", "⇄"),
     ("export_audio_only", "音声だけ書き出し（WAV / AAC / FLAC）", "変換・仕上げ", "♪書"),

@@ -97,7 +97,7 @@ table.det tr.sel td{background:var(--sel)}table.det tr:hover td{background:#2a2a
 </style></head><body>
 <header>
   <h1>TeloCut アセットサーバー</h1>
-  <nav><a id="t1" class="on" onclick="tab(1)">素材</a><a id="t2" onclick="tab(2)">プロジェクト</a><a id="t3" onclick="tab(3)">レンダーファーム</a><a id="t4" onclick="tab(4)">制作管理</a><a id="t5" onclick="tab(5)">変換</a></nav>
+  <nav><a id="t1" class="on" onclick="tab(1)">素材</a><a id="t2" onclick="tab(2)">プロジェクト</a><a id="t3" onclick="tab(3)">ファーム</a><a id="t4" onclick="tab(4)">制作管理</a><a id="t5" onclick="tab(5)">変換</a></nav>
   <span class="grow"></span>
   <span id="stats"></span>
   <input id="user" placeholder="あなたの名前" style="width:120px" title="お気に入り・コメントに使う名前">
@@ -496,10 +496,22 @@ function editShot(x){const isNew=!x;x=x||{name:'',assignee:user(),status:'todo',
 document.addEventListener('keydown',e=>{if(e.key=='Escape'&&$('modal').style.display=='flex')$('modal').style.display='none'})
 async function projects(){const p=await api('/api/projects').catch(()=>[]);$('p2c').innerHTML=p.length?'<table><tr><th>プロジェクト</th><th>更新</th><th>使用中</th><th>場所</th><th></th></tr>'+
   p.map(x=>`<tr><td>${esc(x.name)}</td><td>${hdate(x.mtime)}</td><td>${x.lock?'🔒 '+esc(x.lock.user||'')+' @ '+esc(x.lock.host||''):''}</td><td class="dim">${esc(winPath(x.path))}</td><td><button onclick="copy(${esc(JSON.stringify(winPath(x.path)))})">パスをコピー</button></td></tr>`).join('')+'</table>':'<div class="empty">素材フォルダに .tcut のプロジェクトはありません</div>'}
-async function farm(){const n=await api('/api/render/nodes').catch(()=>[]);const j=await api('/api/render/jobs').catch(()=>[]);
-  $('p3c').innerHTML='<h3>レンダーノード</h3><table><tr><th>名前</th><th>状態</th><th>情報</th></tr>'+n.map(x=>`<tr><td>${esc(x.name)}</td><td>${x.online?'🟢 稼働中':'⚪ 停止'}</td><td class="dim">${esc(JSON.stringify(x.info))}</td></tr>`).join('')+
-  '</table><h3>ジョブ</h3><table><tr><th>ID</th><th>開始</th><th>進捗</th><th>状態</th><th>依頼元</th></tr>'+j.map(x=>`<tr><td>${esc(x.id)}</td><td>${hdate(x.created)}</td><td><progress max="${x.total||1}" value="${x.done}"></progress> ${x.done}/${x.total}</td><td>${esc(x.status)}</td><td>${esc(x.client)}</td></tr>`).join('')+'</table>';
-  if($('p3').classList.contains('on'))setTimeout(farm,3000)}
+async function farm(){const n=await api('/api/farm/nodes').catch(()=>[]);const j=await api('/api/farm/jobs?limit=60').catch(()=>[]);const sj=await api('/api/render/jobs').catch(()=>[]);
+  const STJ={waiting:'待ち',running:'処理中',done:'完了',error:'失敗',cancelled:'中止'},KJ={export:'書き出し',transcode:'変換'};
+  const hms=s=>{s=Math.round(s||0);return s>=3600?`${Math.floor(s/3600)}:${String(Math.floor(s/60)%60).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`:`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`};
+  $('p3c').innerHTML='<h3>レンダーノード</h3><table><tr><th>名前</th><th>状態</th><th>今の仕事</th><th>受ける仕事</th><th>情報</th><th></th></tr>'+n.map(x=>`<tr><td>${esc(x.name)}</td>
+   <td>${x.disabled?'⏸ 一時停止':x.online?'🟢 稼働中':'⚪ 停止'}</td><td>${x.busy?esc(x.busy.job)+'（'+esc(x.busy.task)+' '+Math.round(x.busy.progress*100)+'%）':''}</td>
+   <td><select data-n="${esc(x.name)}" class="nk"><option value="" ${!(x.kinds||[]).length?'selected':''}>すべて</option><option value="render,merge,full" ${(x.kinds||[]).join()=='render,merge,full'?'selected':''}>書き出しだけ</option><option value="transcode" ${(x.kinds||[]).join()=='transcode'?'selected':''}>変換だけ</option></select></td>
+   <td class="dim small">${esc((x.info||{}).cpu?'CPU '+x.info.cpu:'')} ${esc((x.info||{}).version||'')}</td><td><button data-n="${esc(x.name)}" data-d="${x.disabled?0:1}" class="nd">${x.disabled?'再開':'一時停止'}</button></td></tr>`).join('')+
+  '</table><h3>ジョブ（書き出し・変換を複数 PC に振り分け）</h3><table><tr><th>ジョブ</th><th>種類</th><th>状態</th><th>進み</th><th>残り</th><th>ノード</th><th>依頼</th><th></th></tr>'+j.map(x=>`<tr><td>${esc(x.name)}${x.priority?` <span class="dim">（優先 ${x.priority>0?'+':''}${x.priority}）</span>`:''}${x.error?`<div class="small" style="color:#ff8080">${esc(x.error)}</div>`:''}</td><td>${KJ[x.kind]||x.kind}</td><td>${STJ[x.status]||x.status}</td>
+   <td><progress max="1" value="${x.progress}"></progress> ${Math.round(x.progress*100)}%（${x.done}/${x.total}）</td><td>${x.eta?hms(x.eta):''}</td><td class="small">${esc((x.nodes||[]).join(', '))}</td><td class="dim small">${esc(x.user||'')} ${hdate(x.created)}</td>
+   <td>${x.status=='done'&&x.result_asset?`<a href="/api/assets/${x.result_asset}/file?dl=1"><button>⇩</button></a>`:''}${['waiting','running'].includes(x.status)?`<button onclick="farmAct('${x.id}','cancel')">中止</button><button onclick="farmPrio('${x.id}',${(x.priority||0)+1})" title="先にやる">↑</button>`:''}${['error','cancelled'].includes(x.status)?`<button onclick="farmAct('${x.id}','retry')">やり直す</button>`:''}</td></tr>`).join('')+'</table>'+
+  (sj.length?'<h3>スマート書き出しの区間（TeloCut が待っている書き出し）</h3><table><tr><th>ID</th><th>開始</th><th>進捗</th><th>状態</th><th>依頼元</th></tr>'+sj.map(x=>`<tr><td>${esc(x.id)}</td><td>${hdate(x.created)}</td><td><progress max="${x.total||1}" value="${x.done}"></progress> ${x.done}/${x.total}</td><td>${esc(x.status)}</td><td>${esc(x.client)}</td></tr>`).join('')+'</table>':'');
+  document.querySelectorAll('.nd').forEach(b=>b.onclick=async()=>{await post('/api/farm/nodes/'+encodeURIComponent(b.dataset.n),{disabled:b.dataset.d=='1'});farm()});
+  document.querySelectorAll('.nk').forEach(s=>s.onchange=async()=>{await post('/api/farm/nodes/'+encodeURIComponent(s.dataset.n),{kinds:s.value?s.value.split(','):[]});farm()});
+  clearTimeout(farm.t);if($('p3').classList.contains('on'))farm.t=setTimeout(farm,3000)}
+async function farmAct(id,what){await post(`/api/farm/jobs/${id}/${what}`,{});farm()}
+async function farmPrio(id,p){await post(`/api/farm/jobs/${id}`,{priority:p},'PATCH');farm()}
 init();
 if(LS.get('tab',1)==4)tab(4);
 </script></body></html>

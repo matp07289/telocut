@@ -61,85 +61,16 @@ class ExportWorker(QThread):
         return Fraction(fps).limit_denominator(1001)
 
     def _run_pyav(self):
-        """PyAV（同梱の FFmpeg ライブラリ）で書き出す。外部 ffmpeg 不要。DNx・ProRes・QuickTime・透明ありにも対応。"""
-        import av
-        import numpy as np
-        seq = self.seq
-        pool = DecoderPool()
-        n = self.b - self.a
-        W, H = seq.width & ~1, seq.height & ~1
-        preset = MC.BY_ID[self.encoder]
-        alpha = self.alpha and preset.alpha
-        out = None
+        """PyAV（同梱の FFmpeg ライブラリ）で書き出す。中身は exportcore（レンダーノードと共通）。"""
+        from . import exportcore as EC
         try:
-            err = MC.check(preset, W, H, seq.fps)
-            if err:
-                raise ValueError(err)
-            if preset.id in ("h264", "h264_mov", "h265"):
-                preset = MC.Preset(**{**preset.__dict__, "options": {**preset.options, "crf": str(self.quality)}})
-            out = MC.open_output(self.path, preset)
-            vs = MC.add_video_stream(out, preset, W, H, seq.fps)
-            ast = MC.add_audio_stream(out, preset, SAMPLE_RATE, 2)
-            res = av.AudioResampler(format=MC.audio_format(preset), layout="stereo", rate=SAMPLE_RATE)
-            s_total = int(round(self.b * SAMPLE_RATE / seq.fps))
-            s_cur = int(round(self.a * SAMPLE_RATE / seq.fps))
-            a_pts = 0
-            for i, f in enumerate(range(self.a, self.b)):
-                if self.cancel.is_set():
-                    return
-                if alpha:
-                    arr = render.render_frame_rgba(seq, f, self.project, pool, 1.0)
-                    if arr.shape[:2] != (H, W):
-                        from PIL import Image
-                        arr = np.asarray(Image.fromarray(arr, "RGBA").resize((W, H)))
-                    vf = av.VideoFrame.from_ndarray(np.ascontiguousarray(arr), format="rgba")
-                else:
-                    im = render.render_frame(seq, f, self.project, pool, 1.0)
-                    if im.size != (W, H):
-                        im = im.resize((W, H))
-                    vf = av.VideoFrame.from_ndarray(np.asarray(im), format="rgb24")
-                vf = vf.reformat(format=preset.pix_fmt)
-                vf.pts = i
-                for pkt in vs.encode(vf):
-                    out.mux(pkt)
-                # このフレームまでの音声
-                s_next = min(s_total, int(round((f + 1) * SAMPLE_RATE / seq.fps)))
-                if s_next > s_cur:
-                    buf = render.mix_audio(seq, self.project, pool, s_cur, s_next - s_cur)
-                    af = av.AudioFrame.from_ndarray(np.ascontiguousarray(np.clip(buf, -1, 1).T.astype(np.float32)),
-                                                    format="fltp", layout="stereo")
-                    af.sample_rate = SAMPLE_RATE
-                    af.pts = a_pts
-                    a_pts += s_next - s_cur
-                    for rf in res.resample(af):
-                        rf.pts = None
-                        for pkt in ast.encode(rf):
-                            out.mux(pkt)
-                    s_cur = s_next
-                if i % 5 == 0:
-                    self.progress.emit(i, n)
-            for pkt in vs.encode(None):
-                out.mux(pkt)
-            for pkt in ast.encode(None):
-                out.mux(pkt)
-            out.close()
-            out = None
-            self.progress.emit(n, n)
+            EC.render_to_file(self.project, self.a, self.b, self.path, self.encoder, self.quality, self.alpha,
+                              progress=lambda i, n: self.progress.emit(i, n), cancel=self.cancel)
             self.finished_ok.emit(self.path)
+        except InterruptedError:
+            pass
         except Exception as ex:
             self.failed.emit(f"書き出しに失敗しました: {ex}")
-        finally:
-            pool.close()
-            if out is not None:
-                try:
-                    out.close()
-                except Exception:
-                    pass
-                if self.cancel.is_set():
-                    try:
-                        os.remove(self.path)
-                    except OSError:
-                        pass
 
     def _run_ffmpeg_cli(self):
         """外部 ffmpeg 経由（NVENC など PyAV に無いエンコーダ用）。"""
@@ -302,6 +233,7 @@ class ExportDialog(QDialog):
         self.mode.addItem("スマート（変わった区間だけレンダリング・部分修正向け）", "smart")
         self.mode.addItem("スマート + 並列（この PC の CPU を全部使う）", "parallel")
         self.mode.addItem("スマート + レンダーファーム（アセットサーバー経由で複数 PC）", "farm")
+        self.mode.addItem("ファームのジョブ（複数 PC に分けて書き出し・この PC は空く・全形式）", "farmjob")
         self.mode.setToolTip("スマート書き出しは 2 秒ごとの区間に分けてキャッシュし、テロップ修正などで\n"
                              "変わった区間だけをレンダリングし直して結合します（2 回目以降が速い）。\n"
                              "H.264 / ProRes のみ対応。")
@@ -329,7 +261,7 @@ class ExportDialog(QDialog):
 
     def _on_mode(self):
         m = self.mode.currentData()
-        self.server.setEnabled(m == "farm")
+        self.server.setEnabled(m in ("farm", "farmjob"))
         codec = self.enc.currentData()[0]
         if m != "normal" and codec not in SMART_CODEC:
             self.msg.setText("スマート書き出しは H.264 / MP4 と ProRes 422 HQ のみ対応です（この形式は通常で書き出します）")
@@ -366,6 +298,27 @@ class ExportDialog(QDialog):
         mode = self.mode.currentData()
         codec = self.enc.currentData()[0]
         self.mw.settings.setValue("export_mode", mode)
+        if mode == "farmjob":
+            if codec not in MC.BY_ID:
+                QMessageBox.warning(self, "ファーム", "この形式（NVENC）はファームでは書き出せません。")
+                return
+            from .settings import SETTINGS
+            server = self.server.text().strip().rstrip("/")
+            if server and not server.startswith("http"):
+                server = "http://" + server
+            if server and server != SETTINGS.asset_server:
+                SETTINGS.asset_server = server
+                SETTINGS.save()
+            try:
+                j = self.mw.farm_submit_export(a, b, codec, self.path.text(), self.alpha.isChecked() and self.alpha.isEnabled(),
+                                               self.q.value())
+            except Exception as ex:
+                QMessageBox.warning(self, "ファーム", f"送れませんでした: {ex}")
+                return
+            if j:
+                self.msg.setText(f"ファームに送りました（{j['total']} 個の仕事）。終わると {self.path.text()} に保存します。\n"
+                                 "この画面を閉じて編集を続けられます")
+            return
         if p_err := (MC.check(MC.BY_ID[codec], seq.width & ~1, seq.height & ~1, seq.fps) if codec in MC.BY_ID else ""):
             QMessageBox.warning(self, "書き出し", p_err)
             return

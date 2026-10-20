@@ -106,7 +106,7 @@ class ClientMonitor(FullscreenOutput):
 class DualDisplayMixin:
     _MATERIAL_DOCKS = ("dock_project", "dock_bin", "dock_assets", "dock_comfy", "dock_telop_ed", "dock_telops",
                        "dock_markers", "dock_history", "dock_voice", "dock_updates", "dock_prod")
-    _FINISH_DOCKS = ("dock_presets", "dock_se", "dock_assist", "dock_scopes", "dock_mixer", "dock_motion")
+    _FINISH_DOCKS = ("dock_presets", "dock_se", "dock_assist", "dock_scopes", "dock_mixer", "dock_motion", "dock_farm")
 
     def _init_dual(self):
         self.panel_win: Optional[PanelWindow] = None

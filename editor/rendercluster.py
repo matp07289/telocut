@@ -104,13 +104,17 @@ def _resolve_media(project) -> list:
     return offline
 
 
-def run_node(server: str, name: Optional[str] = None, once: bool = False, stop: Optional[threading.Event] = None):
-    """レンダーノードとして待機し、配られた区間をレンダリングし続ける。"""
+def run_node(server: str, name: Optional[str] = None, once: bool = False, stop: Optional[threading.Event] = None,
+             kinds=None):
+    """レンダーノードとして待機し、配られた区間（スマート書き出し）とジョブ（書き出し・変換）をこなし続ける。"""
     from .model import Project
     from . import smartrender as SR
+    from . import farm as FARM
+    from .version import VERSION
     server = server.rstrip("/")
     name = name or socket.gethostname()
-    info = {"os": platform.platform(), "cpu": os.cpu_count()}
+    info = {"os": platform.platform(), "cpu": os.cpu_count(), "version": VERSION,
+            "kinds": list(kinds or FARM.KINDS)}
     print(f"レンダーノード「{name}」: {server} に接続しました。Ctrl+C で終了。")
     last_hb = 0
     cache = {}
@@ -120,9 +124,13 @@ def run_node(server: str, name: Optional[str] = None, once: bool = False, stop: 
                 _req(server + "/api/render/heartbeat", {"node": name, "info": info})
                 last_hb = time.time()
             t = _req(server + "/api/render/claim", {"node": name})
+            ft = None if t else FARM.claim(server, name, kinds)
         except Exception as ex:
             print("サーバーに接続できません:", ex)
             time.sleep(5)
+            continue
+        if ft:
+            FARM.run_task(server, name, ft)
             continue
         if not t:
             if once:

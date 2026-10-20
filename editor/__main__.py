@@ -141,10 +141,11 @@ def main():
         from editor.rendercluster import run_node
         server = _arg("--server")
         if not server:
-            print("使い方: --render-node --server http://<アセットサーバー>:8770 [--name 名前]")
+            print("使い方: --render-node --server http://<アセットサーバー>:8770 [--name 名前] [--kinds render,merge,full,transcode]")
             sys.exit(2)
+        kinds = [k for k in (_arg("--kinds") or "").split(",") if k] or None
         try:
-            run_node(server, _arg("--name") or None)
+            run_node(server, _arg("--name") or None, kinds=kinds)
         except KeyboardInterrupt:
             pass
         return

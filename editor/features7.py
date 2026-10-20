@@ -86,6 +86,7 @@ class TranscodeDialog(QDialog):
         self.dest.addItem("プロジェクトの Transcoded フォルダ", "project")
         self.dest.addItem("元のファイルと同じフォルダ", "same")
         self.dest.addItem("フォルダを選ぶ...", "pick")
+        self.dest.addItem("ファーム（レンダーノードに振り分け・この PC は空く）", "farm")
         if not mw.project_path:
             self.dest.setCurrentIndex(1)
         f.addRow("保存先", self.dest)
@@ -127,6 +128,20 @@ class TranscodeDialog(QDialog):
     def start(self):
         preset, size = self.preset.currentData(), self.size.currentData()
         self.mw.settings.setValue("transcode_preset", preset)
+        if self.dest.currentData() == "farm":
+            dst = str(Path(self.mw.project_path).parent / "Transcoded") if self.mw.project_path else ""
+            if dst:
+                os.makedirs(dst, exist_ok=True)
+            try:
+                jobs = self.mw.farm_submit_transcode([m for m in self.media if m.kind in ("video", "audio")], preset, size,
+                                                     dst, self.after.currentData())
+            except Exception as ex:
+                QMessageBox.warning(self, "ファーム", f"送れませんでした: {ex}")
+                return
+            self.result = ([], [])
+            self.info.setText(f"{len(jobs)} 件をファームに送りました。終わると自動で取り込みます（「ジョブ（ファーム）」で確認）")
+            self.go.setEnabled(False)
+            return
         jobs = []
         for m in self.media:
             if m.kind not in ("video", "audio") or MD.is_offline(m.path):
@@ -203,7 +218,7 @@ class Features7Mixin:
         help_menu = mb.actions()[-1]
         from .features import QMenu_before
         m = QMenu_before(mb, help_menu, "変換・仕上げ")
-        for c in ("transcode", "export_audio_only", "export_gif", "export_images", "archive_project", "thumb_candidates",
+        for c in ("farm_panel", "farm_export", None, "transcode", "export_audio_only", "export_gif", "export_images", "archive_project", "thumb_candidates",
                   None, "color_match", "auto_color", "stabilize", "flip_h", "flip_v", "split_screen", None,
                   "j_cut", "l_cut", "sync_audio", "still_length", "split_every", "reverse_order", "shuffle_order",
                   "fit_to_markers", "media_usage", None, "burn_timecode", "watermark", "letterbox", "bars_tone", None,
