@@ -65,6 +65,8 @@ def import_csv(
         col_end   = find_col(['end', 'end_time', 'out', 'tc_out', '終了', 'finish'])
         col_text  = find_col(['text', 'content', 'caption', 'テキスト', 'テロップ', 'subtitle', 'body'])
         col_note  = find_col(['note', 'memo', 'comment', 'notes', 'メモ', '備考'])
+        col_speaker = find_col(['speaker', 'name', '話者', '名前'])
+        col_enabled = find_col(['enabled', 'enable', '有効'])
 
         if not col_start or not col_end or not col_text:
             # ヘッダなしとして 1列目=start, 2列目=end, 3列目=text と仮定
@@ -72,6 +74,12 @@ def import_csv(
             reader2 = csv.reader(f, delimiter=delim)
             for idx, row in enumerate(reader2):
                 if len(row) >= 3:
+                    try:
+                        # ヘッダ行・不正行はスキップ
+                        parse_timecode(row[0], 30)
+                        parse_timecode(row[1], 30)
+                    except ValueError:
+                        continue
                     try:
                         entries.append(TelopEntry(
                             id=start_id + idx,
@@ -94,11 +102,60 @@ def import_csv(
                     end_time=row.get(col_end, '').strip(),
                     text=text,
                     note=row.get(col_note, '').strip() if col_note else '',
+                    speaker=row.get(col_speaker, '').strip() if col_speaker else '',
                 )
+                if col_enabled:
+                    v = (row.get(col_enabled) or '').strip().lower()
+                    entry.enabled = v not in ('0', 'false', 'no', 'off', '無効', '×', '-')
                 entries.append(entry)
             except Exception:
                 continue
 
+    return entries
+
+
+def export_csv(entries: list[TelopEntry], output_path: str) -> None:
+    """テロップを CSV (UTF-8 BOM 付き / Excel 互換) で書き出す。import_csv で再読込可能。"""
+    with open(output_path, 'w', encoding='utf-8-sig', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['start', 'end', 'text', 'enabled', 'note', 'speaker'])
+        for e in entries:
+            w.writerow([e.start_time, e.end_time, e.text.replace('\n', '\\n'),
+                        1 if e.enabled else 0, e.note, e.speaker])
+
+
+def import_srt(path: str, fps: float = 29.97, start_id: int = 1) -> list[TelopEntry]:
+    """SRT 字幕ファイルをテロップエントリのリストに変換。"""
+    for enc in ('utf-8-sig', 'cp932', 'utf-16'):
+        try:
+            with open(path, 'r', encoding=enc) as f:
+                content = f.read()
+            break
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    else:
+        raise ValueError("SRT の文字コードを判別できませんでした。")
+
+    entries: list[TelopEntry] = []
+    tc_re = re.compile(
+        r'(\d{1,2}:\d{2}:\d{2}[,.]\d{1,3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,.]\d{1,3})')
+    content = content.replace('\r\n', '\n').replace('\r', '\n').strip()
+    for block in re.split(r'\n\s*\n', content):
+        lines = block.split('\n')
+        for i, line in enumerate(lines):
+            m = tc_re.search(line)
+            if not m:
+                continue
+            text = '\n'.join(l.strip() for l in lines[i + 1:]).strip()
+            text = re.sub(r'</?[a-zA-Z][^>]*>', '', text)   # <i> 等のタグ除去
+            if text:
+                entries.append(TelopEntry(
+                    id=start_id + len(entries),
+                    start_time=seconds_to_timecode(parse_timecode(m.group(1), fps), fps),
+                    end_time=seconds_to_timecode(parse_timecode(m.group(2), fps), fps),
+                    text=text,
+                ))
+            break
     return entries
 
 
@@ -137,7 +194,7 @@ def export_png(
         if callback:
             callback(i + 1, len(enabled), entry.text[:20])
 
-        img = render_telop_image(entry.text, settings)
+        img = render_telop_image(entry.text, settings.with_overrides(entry.style))
         if include_text_in_filename:
             sanitized = _sanitize_for_filename(entry.text)
             filename = f"telop_{i+1:04d}_{sanitized}.png" if sanitized else f"telop_{i+1:04d}.png"
@@ -1061,6 +1118,16 @@ class ResolveConnector:
             return self._timeline.GetCurrentTimecode()
         except Exception:
             return None
+
+    def set_current_timecode(self, tc: str) -> bool:
+        """タイムラインの再生ヘッドを指定タイムコードへ移動する。"""
+        if not self._timeline:
+            return False
+        try:
+            return bool(self._timeline.SetCurrentTimecode(tc))
+        except Exception as e:
+            self._error = f"再生ヘッドの移動に失敗しました: {e}"
+            return False
 
     def place_lipsync_via_fusion_api(
         self,

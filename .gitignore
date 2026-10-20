@@ -10,9 +10,14 @@ __pycache__/
 # PyInstaller 生成物
 *.icns
 *.ico
+!/DavinTelop.ico
 /dist/
 /dist_*/
-/build/
+/build/*
+!/build/build_telocut.bat
+!/build/build_windows.bat
+!/build/build_mac.sh
+!/build/create_icon.py
 /DavinTelop.spec
 
 # 配布アーカイブ
@@ -40,3 +45,10 @@ Desktop.ini
 # ローカル設定
 .env
 *.local
+
+# TeloCut ビルド生成物
+editor/version_info.txt
+editor/telocut.png
+
+# サーバー配布時の一時フォルダ
+/fonts/

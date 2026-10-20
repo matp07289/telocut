@@ -33,7 +33,31 @@ _FONT_FALLBACK_CANDIDATES = [
     "/System/Library/Fonts/ヒラギノ明朝 ProN W6.ttc",
     "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
     "/Library/Fonts/Arial Unicode.ttf",
+    # Linux（Rocky / Ubuntu の Noto CJK）
+    "/usr/share/fonts/google-noto-sans-cjk-ttc/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
 ]
+
+_FONT_INDEX: Optional[dict] = None
+
+
+def _find_font_by_name(font_path: str) -> Optional[str]:
+    """別の OS で作ったプロジェクトのフォント（例 C:/Windows/Fonts/xxx.ttf）を、
+    この PC のフォントフォルダから同じファイル名で探す（Linux のレンダーノード用）。"""
+    global _FONT_INDEX
+    if _FONT_INDEX is None:
+        _FONT_INDEX = {}
+        dirs = [os.environ.get("TELOCUT_FONT_DIR", ""), "/usr/share/fonts", "/usr/local/share/fonts",
+                str(Path.home() / ".fonts"), str(Path.home() / ".local/share/fonts"),
+                "C:/Windows/Fonts", str(Path.home() / "AppData/Local/Microsoft/Windows/Fonts")]
+        for d in dirs:
+            if d and os.path.isdir(d):
+                for root, _, files in os.walk(d):
+                    for f in files:
+                        _FONT_INDEX.setdefault(f.lower(), os.path.join(root, f))
+    name = font_path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return _FONT_INDEX.get(name)
 
 
 def get_system_fonts() -> list[tuple[str, str]]:
@@ -91,6 +115,15 @@ def load_font(font_path: str, size: int) -> "ImageFont.FreeTypeFont":
             return ImageFont.truetype(font_path, size)
         except Exception:
             pass
+
+    # 同じファイル名のフォントを探す（別の PC・OS で作ったプロジェクト）
+    if font_path:
+        alt = _find_font_by_name(font_path)
+        if alt:
+            try:
+                return ImageFont.truetype(alt, size)
+            except Exception:
+                pass
 
     # フォールバック: システムの日本語フォント
     for path in _FONT_FALLBACK_CANDIDATES:

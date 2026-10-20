@@ -1,0 +1,8 @@
+# 改行コード: Linux 用スクリプトは LF、Windows 用は CRLF に固定（VM で bash が動かなくなるのを防ぐ）
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.py text
+*.md text
+*.ico binary
+*.png binary

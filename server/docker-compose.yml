@@ -1,0 +1,28 @@
+# TeloCut 自宅サーバー一式
+#   MEDIA_DIR: 素材フォルダ（NAS をマウントした場所）。編集 PC からも同じ素材が見えるようにしておく
+#   編集 PC の TeloCut: 環境設定 / アセットパネルで http://<VM の IP>:8770 を指定
+#   NAS のパスが PC と VM で違う場合は、TeloCut の環境設定「パス置換ルール」に
+#   例: \\NAS\video → /media を登録（レンダーノードは同じ設定ファイル /data/home を使う）
+services:
+  asset-server:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    image: telocut-server
+    restart: unless-stopped
+    ports:
+      - "8770:8770"
+    volumes:
+      - ${MEDIA_DIR:-./media}:/media
+      - ./data:/data
+
+  # レンダーノード（CPU の多い VM・PC で台数分起動できる）
+  render-node:
+    image: telocut-server
+    restart: unless-stopped
+    depends_on: [asset-server]
+    command: ["python", "telocut.py", "--render-node", "--server", "http://asset-server:8770", "--name", "docker-node"]
+    volumes:
+      - ${MEDIA_DIR:-./media}:/media
+      - ./data:/data
+    profiles: ["render"]

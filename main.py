@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import queue
+import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, colorchooser, simpledialog
 from pathlib import Path
@@ -27,10 +28,13 @@ except ImportError:
 
 # コアモジュール
 from core.models import DesignSettings, TelopEntry
-from core.timecode import parse_timecode, seconds_to_timecode
+from core.timecode import (parse_timecode, seconds_to_timecode, normalize_timecode,
+                           shift_timecode, timecode_to_frames, seconds_to_frames,
+                           _nominal_fps)
 from core.preset import PresetManager
 from core.exporter import (import_csv, export_png, export_srt, export_fcpxml,
-                            export_resolve_script, ResolveConnector)
+                            export_resolve_script, export_csv, import_srt,
+                            ResolveConnector)
 
 try:
     from core.exporter import export_aaf, HAS_AAF2
@@ -73,26 +77,57 @@ def _make_checker_bg(w: int, h: int, sq: int = 16) -> "Image.Image":
 # ─────────────────────────────────────────────
 
 class TelopEditDialog(tk.Toplevel):
-    """テロップ1エントリの編集ダイアログ（プレビュー付き・タイムコード連動）。"""
+    """テロップ1エントリの編集／新規作成ダイアログ（プレビュー付き・タイムコード連動）。
+
+    新規作成時:
+      - start_tc / end_tc で開始・終了TCを自動反映
+      - submit_key（既定 Enter）で作成、newline_key（既定 Shift+Enter）で改行
+      - on_submit(result) -> (next_start, next_end) を渡すと「連続入力」が使え、
+        作成後もダイアログを閉じずに次のテロップを続けて入力できる
+    """
 
     def __init__(self, parent, entry: Optional[TelopEntry] = None,
-                 design: Optional["DesignSettings"] = None):
+                 design: Optional["DesignSettings"] = None,
+                 start_tc: str = "", end_tc: str = "",
+                 submit_key: str = "Return", newline_key: str = "Shift-Return",
+                 on_submit=None, continuous: bool = False,
+                 get_playhead=None, chars_per_sec: float = 6.0,
+                 min_duration: float = 1.0, title: str = ""):
         super().__init__(parent)
-        self.title("テロップ編集")
-        self.geometry("900x460")
-        self.minsize(700, 380)
+        self._is_new = entry is None
+        self.title(title or ("新規テロップ" if self._is_new else "テロップ編集"))
+        self.minsize(700, 400)
         self.resizable(True, True)
+        self.transient(parent)
         self.result: Optional[dict] = None
+        self.added_count = 0
         self._design = design
         self._preview_image_ref = None
         self._preview_pending = False
         self._updating_tc = False
         self._fps = design.frame_rate if design else 29.97
-        self._build(entry)
+        self._on_submit = on_submit if self._is_new else None
+        self._get_playhead = get_playhead
+        self._cps = max(0.5, float(chars_per_sec or 6.0))
+        self._min_dur = max(0.0, float(min_duration or 0.0))
+        self._submit_key = submit_key or "Return"
+        self._newline_key = newline_key if newline_key != self._submit_key else ""
+        self.continuous_var = tk.BooleanVar(value=continuous)
+        self._build(entry, start_tc, end_tc)
+        self._center_on(parent, 920, 480)
         self.grab_set()
         self.wait_window()
 
-    def _build(self, entry: Optional[TelopEntry]):
+    def _center_on(self, parent, w: int, h: int):
+        try:
+            self.update_idletasks()
+            px = parent.winfo_rootx() + parent.winfo_width() // 2
+            py = parent.winfo_rooty() + parent.winfo_height() // 2
+            self.geometry(f"{w}x{h}+{max(0, px - w // 2)}+{max(0, py - h // 2)}")
+        except tk.TclError:
+            self.geometry(f"{w}x{h}")
+
+    def _build(self, entry: Optional[TelopEntry], start_tc: str, end_tc: str):
         main = ttk.Frame(self, padding=8)
         main.pack(fill=tk.BOTH, expand=True)
         main.columnconfigure(1, weight=1)
@@ -102,13 +137,21 @@ class TelopEditDialog(tk.Toplevel):
         left = ttk.Frame(main, padding=4)
         left.grid(row=0, column=0, sticky='nsew')
         left.columnconfigure(1, weight=1)
+        left.rowconfigure(0, weight=1)
 
         pad = dict(padx=6, pady=4)
 
         ttk.Label(left, text="テキスト:").grid(row=0, column=0, sticky='ne', **pad)
-        self._text = tk.Text(left, width=30, height=7, wrap='word')
-        self._text.grid(row=0, column=1, columnspan=2, sticky='ew', **pad)
-        self._text.bind('<KeyRelease>', lambda e: self._schedule_preview())
+        txt_frame = ttk.Frame(left)
+        txt_frame.grid(row=0, column=1, columnspan=2, sticky='nsew', **pad)
+        txt_frame.columnconfigure(0, weight=1)
+        txt_frame.rowconfigure(0, weight=1)
+        self._text = tk.Text(txt_frame, width=30, height=7, wrap='word', undo=True)
+        self._text.grid(row=0, column=0, sticky='nsew')
+        self._text.bind('<KeyRelease>', lambda e: self._on_text_change())
+        self._count_var = tk.StringVar(value="0 文字 / 1 行")
+        ttk.Label(txt_frame, textvariable=self._count_var, foreground='gray',
+                  font=('', 8)).grid(row=1, column=0, sticky='e')
 
         ttk.Separator(left, orient='horizontal').grid(
             row=1, column=0, columnspan=3, sticky='ew', pady=6)
@@ -116,16 +159,21 @@ class TelopEditDialog(tk.Toplevel):
         # 開始TC
         ttk.Label(left, text="開始 TC:").grid(row=2, column=0, sticky='e', **pad)
         self._start_var = tk.StringVar()
-        ttk.Entry(left, textvariable=self._start_var, width=16).grid(
-            row=2, column=1, sticky='w', **pad)
-        ttk.Label(left, text="HH:MM:SS:FF", foreground='gray').grid(row=2, column=2, sticky='w')
+        start_row = ttk.Frame(left)
+        start_row.grid(row=2, column=1, columnspan=2, sticky='w', **pad)
+        self._start_entry = ttk.Entry(start_row, textvariable=self._start_var, width=14)
+        self._start_entry.pack(side='left')
+        if self._get_playhead:
+            ttk.Button(start_row, text="◉ 再生ヘッド", width=11,
+                       command=self._use_playhead).pack(side='left', padx=(6, 0))
+        ttk.Label(start_row, text="HH:MM:SS:FF", foreground='gray').pack(side='left', padx=6)
         self._start_var.trace_add('write', self._on_start_change)
 
         # 終了TC
         ttk.Label(left, text="終了 TC:").grid(row=3, column=0, sticky='e', **pad)
         self._end_var = tk.StringVar()
-        ttk.Entry(left, textvariable=self._end_var, width=16).grid(
-            row=3, column=1, sticky='w', **pad)
+        self._end_entry = ttk.Entry(left, textvariable=self._end_var, width=14)
+        self._end_entry.grid(row=3, column=1, sticky='w', **pad)
         self._end_var.trace_add('write', self._on_end_change)
 
         # 尺（秒）
@@ -133,30 +181,54 @@ class TelopEditDialog(tk.Toplevel):
         dur_frame = ttk.Frame(left)
         dur_frame.grid(row=4, column=1, columnspan=2, sticky='w', **pad)
         self._dur_var = tk.StringVar()
-        ttk.Entry(dur_frame, textvariable=self._dur_var, width=9).pack(side='left')
-        ttk.Label(dur_frame, text="秒  ← 入力で終了TC自動計算", foreground='gray').pack(
-            side='left', padx=6)
+        ttk.Entry(dur_frame, textvariable=self._dur_var, width=8).pack(side='left')
+        ttk.Label(dur_frame, text="秒", foreground='gray').pack(side='left', padx=(2, 6))
+        for d in (2, 3, 5):
+            ttk.Button(dur_frame, text=f"{d}s", width=3,
+                       command=lambda d=d: self._dur_var.set(f"{d:.3f}")).pack(side='left', padx=1)
+        ttk.Button(dur_frame, text="文字数で", width=7,
+                   command=self._dur_from_text).pack(side='left', padx=(4, 0))
         self._dur_var.trace_add('write', self._on_dur_change)
 
+        ttk.Label(left, text="TC欄: ↑↓ で ±1フレーム / Shift+↑↓ で ±1秒 / 数字のみ入力可 (例 1234)",
+                  foreground='gray', font=('', 8)).grid(
+                  row=5, column=0, columnspan=3, sticky='w', padx=6)
+
         ttk.Separator(left, orient='horizontal').grid(
-            row=5, column=0, columnspan=3, sticky='ew', pady=6)
+            row=6, column=0, columnspan=3, sticky='ew', pady=6)
 
         # メモ
-        ttk.Label(left, text="メモ:").grid(row=6, column=0, sticky='e', **pad)
+        ttk.Label(left, text="メモ:").grid(row=7, column=0, sticky='e', **pad)
         self._note = ttk.Entry(left, width=30)
-        self._note.grid(row=6, column=1, columnspan=2, sticky='ew', **pad)
+        self._note.grid(row=7, column=1, columnspan=2, sticky='ew', **pad)
 
-        # 有効
+        # 有効 / 連続入力
+        chk_row = ttk.Frame(left)
+        chk_row.grid(row=8, column=1, columnspan=2, sticky='w', **pad)
         self._enabled_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(left, text="有効", variable=self._enabled_var).grid(
-            row=7, column=1, sticky='w', **pad)
+        ttk.Checkbutton(chk_row, text="有効", variable=self._enabled_var).pack(side='left')
+        if self._on_submit:
+            ttk.Checkbutton(chk_row, text="連続入力（作成後も閉じない）",
+                            variable=self.continuous_var).pack(side='left', padx=(12, 0))
 
         # ボタン
         btn_frame = ttk.Frame(left)
-        btn_frame.grid(row=8, column=0, columnspan=3, pady=(12, 0))
-        ttk.Button(btn_frame, text="OK", width=10, command=self._ok).pack(side='left', padx=4)
-        ttk.Button(btn_frame, text="キャンセル", width=10, command=self.destroy).pack(
-            side='left', padx=4)
+        btn_frame.grid(row=9, column=0, columnspan=3, pady=(8, 0))
+        ok_label = "作成" if self._is_new else "OK"
+        ok_label += f"  ({_binding_to_display(self._submit_key)})"
+        ttk.Button(btn_frame, text=ok_label, width=16, command=self._ok).pack(side='left', padx=4)
+        ttk.Button(btn_frame, text="閉じる (Esc)" if self._is_new else "キャンセル",
+                   width=12, command=self.destroy).pack(side='left', padx=4)
+
+        hint = f"{_binding_to_display(self._submit_key)}: {'作成' if self._is_new else '確定'}"
+        if self._newline_key:
+            hint += f"  /  {_binding_to_display(self._newline_key)}: 改行"
+        hint += "  /  Esc: 閉じる"
+        ttk.Label(left, text=hint, foreground='gray', font=('', 8)).grid(
+            row=10, column=0, columnspan=3, pady=(4, 0))
+        self._status_var = tk.StringVar(value="")
+        ttk.Label(left, textvariable=self._status_var, foreground='#2E8B57').grid(
+            row=11, column=0, columnspan=3, pady=(2, 0))
 
         # ── 右パネル（プレビュー） ────────────────────
         right = ttk.LabelFrame(main, text="プレビュー", padding=4)
@@ -164,21 +236,115 @@ class TelopEditDialog(tk.Toplevel):
         right.rowconfigure(0, weight=1)
         right.columnconfigure(0, weight=1)
 
-        self._preview_canvas = tk.Canvas(right, bg='#888888')
+        self._preview_canvas = tk.Canvas(right, bg='#888888', highlightthickness=0)
         self._preview_canvas.grid(row=0, column=0, sticky='nsew')
         self._preview_canvas.bind('<Configure>', lambda e: self._schedule_preview())
 
-        # 既存エントリを反映
+        # 既存エントリ / 新規の初期値を反映
         if entry:
             self._start_var.set(entry.start_time)
             self._end_var.set(entry.end_time)
             self._text.insert('1.0', entry.text)
             self._note.insert(0, entry.note)
             self._enabled_var.set(entry.enabled)
-            self._update_dur_from_tc()
+        else:
+            self._start_var.set(start_tc)
+            self._end_var.set(end_tc)
+        self._update_dur_from_tc()
+        self._update_count()
+
+        # ── キーバインド ──
+        try:
+            self._text.bind(f"<{self._submit_key}>", self._on_submit_key)
+            self.bind(f"<{self._submit_key}>", self._on_submit_key)
+        except tk.TclError:
+            self._text.bind("<Return>", self._on_submit_key)
+            self.bind("<Return>", self._on_submit_key)
+        if self._newline_key:
+            try:
+                self._text.bind(f"<{self._newline_key}>", self._on_newline_key)
+            except tk.TclError:
+                pass
+        self.bind('<Escape>', lambda e: self.destroy())
+        for ent, var in ((self._start_entry, self._start_var),
+                         (self._end_entry, self._end_var)):
+            ent.bind('<Up>',         lambda e, v=var: self._nudge(v, 1))
+            ent.bind('<Down>',       lambda e, v=var: self._nudge(v, -1))
+            ent.bind('<Shift-Up>',   lambda e, v=var: self._nudge(v, None, 1))
+            ent.bind('<Shift-Down>', lambda e, v=var: self._nudge(v, None, -1))
+            ent.bind('<FocusOut>',   lambda e, v=var: self._normalize(v))
 
         self._text.focus_set()
+        self._text.mark_set('insert', 'end-1c')
         self._schedule_preview()
+
+    # ── キー操作 ────────────────────────────────────
+
+    def _on_submit_key(self, event=None):
+        # Text 内と Toplevel の両方にバインドしているので二重実行を防ぐ
+        if getattr(event, 'widget', None) is self and self.focus_get() is self._text:
+            return "break"
+        self._ok()
+        return "break"
+
+    def _on_newline_key(self, event=None):
+        self._text.insert('insert', '\n')
+        self._on_text_change()
+        return "break"
+
+    def _nudge(self, var: tk.StringVar, frames: Optional[int], secs: int = 0):
+        from core.timecode import shift_timecode, _nominal_fps
+        delta = frames if frames is not None else secs * _nominal_fps(self._fps)
+        try:
+            var.set(shift_timecode(var.get().strip() or "00:00:00:00", delta, self._fps))
+        except ValueError:
+            pass
+        return "break"
+
+    def _normalize(self, var: tk.StringVar):
+        from core.timecode import normalize_timecode
+        cur = var.get().strip()
+        if not cur:
+            return
+        try:
+            norm = normalize_timecode(cur, self._fps)
+            if norm != cur:
+                var.set(norm)
+        except ValueError:
+            pass
+
+    def _use_playhead(self):
+        tc = None
+        try:
+            tc = self._get_playhead()
+        except Exception:
+            tc = None
+        if not tc:
+            self._status_var.set("⚠ Resolve の再生ヘッドを取得できませんでした")
+            return
+        dur = self._dur_var.get()
+        self._start_var.set(tc)
+        self._dur_var.set(dur)   # 尺を保ったまま終了TCを再計算
+        self._status_var.set(f"再生ヘッド {tc} を開始TCに設定しました")
+
+    def _dur_from_text(self):
+        """文字数から尺を自動計算（chars_per_sec 文字/秒、最小 min_duration 秒）。"""
+        text = self._text.get('1.0', 'end-1c').replace('\n', '').strip()
+        if not text:
+            return
+        dur = max(self._min_dur, len(text) / self._cps)
+        self._dur_var.set(f"{dur:.3f}")
+
+    def _on_text_change(self):
+        self._update_count()
+        self._schedule_preview()
+
+    def _update_count(self):
+        text = self._text.get('1.0', 'end-1c')
+        lines = text.split('\n')
+        chars = len(text.replace('\n', ''))
+        longest = max((len(l) for l in lines), default=0)
+        self._count_var.set(f"{chars} 文字 / {len(lines)} 行 (最長 {longest} 文字)")
 
     # ── タイムコード連動 ─────────────────────────────
 
@@ -231,6 +397,11 @@ class TelopEditDialog(tk.Toplevel):
         self._preview_pending = False
         if not PILLOW_OK or self._design is None:
             return
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return
 
         from core.renderer import render_telop_image
 
@@ -267,191 +438,49 @@ class TelopEditDialog(tk.Toplevel):
                 fill='red', justify='center')
 
     def _ok(self):
-        start = self._start_var.get().strip()
-        end   = self._end_var.get().strip()
+        from core.timecode import normalize_timecode
         text  = self._text.get('1.0', 'end-1c').strip()
-        if not start or not end or not text:
-            messagebox.showwarning("入力エラー", "開始・終了・テキストは必須です。", parent=self)
+        if not text:
+            messagebox.showwarning("入力エラー", "テキストを入力してください。", parent=self)
+            self._text.focus_set()
             return
-        self.result = {
+        try:
+            start = normalize_timecode(self._start_var.get(), self._fps)
+            end   = normalize_timecode(self._end_var.get(), self._fps)
+        except ValueError as ex:
+            messagebox.showwarning("入力エラー", f"タイムコードが不正です:\n{ex}", parent=self)
+            return
+        if parse_timecode(end, self._fps) <= parse_timecode(start, self._fps):
+            messagebox.showwarning("入力エラー",
+                                   "終了TCは開始TCより後にしてください。", parent=self)
+            return
+        result = {
             "start_time": start,
             "end_time":   end,
             "text":       text,
             "note":       self._note.get().strip(),
             "enabled":    self._enabled_var.get(),
         }
-        self.destroy()
-
-
-# ─────────────────────────────────────────────
-#  クイックテロップ入力ダイアログ
-# ─────────────────────────────────────────────
-
-class QuickTelopDialog(tk.Toplevel):
-    """ショートカットキーで呼び出すミニマル新規テロップ入力ダイアログ。"""
-
-    def __init__(self, parent, start_tc: str, end_tc: str,
-                 fps: float, design: Optional["DesignSettings"] = None):
-        super().__init__(parent)
-        self.title("新規テロップ")
-        self.resizable(True, True)
-        self.result: Optional[dict] = None
-        self._fps = fps
-        self._design = design
-        self._preview_image_ref = None
-        self._preview_pending = False
-        self._updating_tc = False
-        self._build(start_tc, end_tc)
-        self.grab_set()
-        # 親ウィンドウの中央に配置
-        self.update_idletasks()
-        pw = parent.winfo_rootx() + parent.winfo_width() // 2
-        ph = parent.winfo_rooty() + parent.winfo_height() // 2
-        w, h = 700, 380
-        self.geometry(f"{w}x{h}+{pw - w // 2}+{ph - h // 2}")
-        self.wait_window()
-
-    def _build(self, start_tc: str, end_tc: str):
-        main = ttk.Frame(self, padding=10)
-        main.pack(fill=tk.BOTH, expand=True)
-        main.columnconfigure(0, weight=1)
-        main.rowconfigure(0, weight=1)
-
-        # ── 左: 入力エリア ─────────────────────────
-        left = ttk.Frame(main)
-        left.grid(row=0, column=0, sticky='nsew')
-        left.columnconfigure(1, weight=1)
-
-        pad = dict(padx=6, pady=4)
-
-        ttk.Label(left, text="テキスト:").grid(row=0, column=0, sticky='ne', **pad)
-        self._text = tk.Text(left, width=28, height=6, wrap='word')
-        self._text.grid(row=0, column=1, sticky='nsew', **pad)
-        self._text.bind('<KeyRelease>', lambda e: self._schedule_preview())
-        left.rowconfigure(0, weight=1)
-
-        ttk.Label(left, text="開始 TC:").grid(row=1, column=0, sticky='e', **pad)
-        self._start_var = tk.StringVar(value=start_tc)
-        ttk.Entry(left, textvariable=self._start_var, width=16).grid(row=1, column=1, sticky='w', **pad)
-        self._start_var.trace_add('write', self._on_tc_change)
-
-        ttk.Label(left, text="終了 TC:").grid(row=2, column=0, sticky='e', **pad)
-        self._end_var = tk.StringVar(value=end_tc)
-        ttk.Entry(left, textvariable=self._end_var, width=16).grid(row=2, column=1, sticky='w', **pad)
-        self._end_var.trace_add('write', self._on_tc_change)
-
-        ttk.Label(left, text="尺 (秒):").grid(row=3, column=0, sticky='e', **pad)
-        self._dur_var = tk.StringVar()
-        dur_frame = ttk.Frame(left)
-        dur_frame.grid(row=3, column=1, sticky='w', **pad)
-        ttk.Entry(dur_frame, textvariable=self._dur_var, width=9).pack(side='left')
-        ttk.Label(dur_frame, text="秒  ← 入力で終了TC自動計算",
-                  foreground='gray').pack(side='left', padx=4)
-        self._dur_var.trace_add('write', self._on_dur_change)
-        self._update_dur_from_tc()
-
-        # ヒント
-        ttk.Label(left, text="Ctrl+Enter で追加  /  Esc でキャンセル",
-                  foreground='gray', font=('', 8)).grid(
-                  row=4, column=0, columnspan=2, sticky='w', padx=6, pady=(0, 4))
-
-        btn_frame = ttk.Frame(left)
-        btn_frame.grid(row=5, column=0, columnspan=2, pady=(4, 0))
-        ttk.Button(btn_frame, text="追加  (Ctrl+Enter)", width=18, command=self._ok).pack(side='left', padx=4)
-        ttk.Button(btn_frame, text="キャンセル", width=10, command=self.destroy).pack(side='left', padx=4)
-
-        # ── 右: プレビュー ──────────────────────────
-        right = ttk.LabelFrame(main, text="プレビュー", padding=4)
-        right.grid(row=0, column=1, sticky='nsew', padx=(10, 0))
-        right.rowconfigure(0, weight=1)
-        right.columnconfigure(0, weight=1)
-        main.columnconfigure(1, weight=1)
-
-        self._preview_canvas = tk.Canvas(right, bg='#888888')
-        self._preview_canvas.grid(row=0, column=0, sticky='nsew')
-        self._preview_canvas.bind('<Configure>', lambda e: self._schedule_preview())
-
-        # キーバインド
-        self.bind('<Control-Return>', lambda e: self._ok())
-        self.bind('<Escape>',         lambda e: self.destroy())
-        self._text.focus_set()
-        self._schedule_preview()
-
-    def _on_tc_change(self, *_):
-        if not self._updating_tc:
-            self._updating_tc = True
-            self._update_dur_from_tc()
-            self._updating_tc = False
-
-    def _on_dur_change(self, *_):
-        if not self._updating_tc:
-            self._updating_tc = True
-            self._update_end_from_dur()
-            self._updating_tc = False
-
-    def _update_dur_from_tc(self):
-        try:
-            s = parse_timecode(self._start_var.get().strip(), self._fps)
-            e = parse_timecode(self._end_var.get().strip(), self._fps)
-            self._dur_var.set(f"{max(0.0, e - s):.3f}")
-        except Exception:
-            pass
-
-    def _update_end_from_dur(self):
-        try:
-            s   = parse_timecode(self._start_var.get().strip(), self._fps)
-            dur = float(self._dur_var.get().strip())
-            self._end_var.set(seconds_to_timecode(s + max(0.0, dur), self._fps))
-        except Exception:
-            pass
-
-    def _schedule_preview(self):
-        if not self._preview_pending:
-            self._preview_pending = True
-            self.after(150, self._update_preview)
-
-    def _update_preview(self):
-        self._preview_pending = False
-        if not PILLOW_OK or self._design is None:
-            return
-        from core.renderer import render_telop_image
-        text = self._text.get('1.0', 'end-1c').strip() or "入力テキストのプレビュー"
-        cw = self._preview_canvas.winfo_width()
-        ch = self._preview_canvas.winfo_height()
-        if cw < 10 or ch < 10:
-            return
-        try:
-            img = render_telop_image(text, self._design)
-            W, H = self._design.canvas_width, self._design.canvas_height
-            bg = _make_checker_bg(W, H)
-            bg.paste(img, (0, 0), img)
-            scale = min(cw / W, ch / H)
-            pw, ph = int(W * scale), int(H * scale)
-            from PIL import Image, ImageTk
-            thumb = bg.resize((pw, ph), Image.LANCZOS)
-            photo = ImageTk.PhotoImage(thumb)
-            self._preview_image_ref = photo
-            self._preview_canvas.delete('all')
-            ox, oy = (cw - pw) // 2, (ch - ph) // 2
-            self._preview_canvas.create_image(ox, oy, anchor='nw', image=photo)
-        except Exception as ex:
-            self._preview_canvas.delete('all')
-            self._preview_canvas.create_text(
-                cw // 2, ch // 2, text=f"エラー:\n{ex}", fill='red', justify='center')
-
-    def _ok(self):
-        start = self._start_var.get().strip()
-        end   = self._end_var.get().strip()
-        text  = self._text.get('1.0', 'end-1c').strip()
-        if not text:
-            messagebox.showwarning("入力エラー", "テキストを入力してください。", parent=self)
-            self._text.focus_set()
-            return
-        if not start or not end:
-            messagebox.showwarning("入力エラー", "開始・終了 TC を入力してください。", parent=self)
-            return
-        self.result = {"start_time": start, "end_time": end, "text": text,
-                       "note": "", "enabled": True}
+        if self._on_submit:
+            nxt = self._on_submit(result)
+            self.added_count += 1
+            self.result = result
+            if self.continuous_var.get() and nxt:
+                # 次のテロップ入力へ（尺は維持）
+                dur = self._dur_var.get()
+                self._text.delete('1.0', 'end')
+                self._start_var.set(nxt[0])
+                self._end_var.set(nxt[1])
+                if not nxt[1]:
+                    self._dur_var.set(dur)
+                self._note.delete(0, 'end')
+                self._status_var.set(
+                    f"✓ 追加しました ({self.added_count} 件): {text.splitlines()[0][:24]}")
+                self._update_count()
+                self._schedule_preview()
+                self._text.focus_set()
+                return
+        self.result = result
         self.destroy()
 
 
@@ -545,7 +574,8 @@ def _binding_to_display(binding: str) -> str:
         "BackSpace": "BS",  "Escape": "Esc",  "Prior": "PageUp",
         "Next": "PageDown", "Insert": "Ins",
     }
-    return "+".join(_MAP.get(p, p) for p in binding.split("-"))
+    return "+".join(_MAP.get(p, p.upper() if len(p) == 1 else p)
+                    for p in binding.split("-"))
 
 
 class _ShortcutCapture(ttk.Frame):
@@ -633,15 +663,20 @@ class ShortcutConfigDialog(tk.Toplevel):
         grid = ttk.Frame(main)
         grid.pack(fill='x')
 
-        ttk.Label(grid, text="アクション",      font=('', 9, 'bold')).grid(row=0, column=0, sticky='w', padx=(4, 24), pady=2)
-        ttk.Label(grid, text="ショートカット",  font=('', 9, 'bold')).grid(row=0, column=1, sticky='w', padx=4, pady=2)
-        ttk.Separator(grid, orient='horizontal').grid(row=1, column=0, columnspan=2, sticky='ew', pady=4)
+        # 項目が多いので2列に分けて表示
+        items = list(self._labels.items())
+        half = (len(items) + 1) // 2
+        for c in (0, 2):
+            ttk.Label(grid, text="アクション",      font=('', 9, 'bold')).grid(row=0, column=c, sticky='w', padx=(4, 16), pady=2)
+            ttk.Label(grid, text="ショートカット",  font=('', 9, 'bold')).grid(row=0, column=c + 1, sticky='w', padx=(4, 20), pady=2)
+        ttk.Separator(grid, orient='horizontal').grid(row=1, column=0, columnspan=4, sticky='ew', pady=4)
 
-        for i, (action, label) in enumerate(self._labels.items(), start=2):
-            ttk.Label(grid, text=label).grid(row=i, column=0, sticky='w', padx=(4, 24), pady=5)
+        for i, (action, label) in enumerate(items):
+            r, c = 2 + i % half, (i // half) * 2
+            ttk.Label(grid, text=label).grid(row=r, column=c, sticky='w', padx=(4, 16), pady=3)
             var = tk.StringVar(value=self._shortcuts.get(action, ""))
             self._vars[action] = var
-            _ShortcutCapture(grid, var).grid(row=i, column=1, sticky='w', padx=4)
+            _ShortcutCapture(grid, var).grid(row=r, column=c + 1, sticky='w', padx=(4, 20))
 
         ttk.Separator(main).pack(fill='x', pady=12)
 
@@ -652,12 +687,167 @@ class ShortcutConfigDialog(tk.Toplevel):
         ttk.Button(btn_frame, text="デフォルトに戻す", command=self._reset_defaults).pack(side='left', padx=8)
 
     def _ok(self):
-        self.result = {action: var.get() for action, var in self._vars.items()}
+        result = {action: var.get() for action, var in self._vars.items()}
+        # ダイアログ内専用キーはメイン画面のキーと重複してよい
+        local = {"dlg_submit", "dlg_newline"}
+        seen: dict = {}
+        dups = []
+        for action, key in result.items():
+            if not key or action in local:
+                continue
+            if key in seen:
+                dups.append(f"{_binding_to_display(key)}: {self._labels[seen[key]]} / {self._labels[action]}")
+            seen[key] = action
+        if result.get("dlg_submit") and result.get("dlg_submit") == result.get("dlg_newline"):
+            dups.append("テロップ入力の作成キーと改行キーが同じです")
+        if not result.get("dlg_submit"):
+            result["dlg_submit"] = self._defaults.get("dlg_submit", "Return")
+        if dups and not messagebox.askyesno(
+                "ショートカットの重複",
+                "次のショートカットが重複しています:\n\n" + "\n".join(dups) +
+                "\n\nこのまま保存しますか？", parent=self):
+            return
+        self.result = result
         self.destroy()
 
     def _reset_defaults(self):
         for action, var in self._vars.items():
             var.set(self._defaults.get(action, ""))
+
+
+# ─────────────────────────────────────────────
+#  テロップ作成設定ダイアログ
+# ─────────────────────────────────────────────
+
+class NewTelopSettingsDialog(tk.Toplevel):
+    """新規テロップ作成時の TC 自動反映・尺の既定値を設定する。"""
+
+    _MODES = [
+        ("auto",     "選択テロップの直後（未選択なら最後のテロップの直後）"),
+        ("last",     "常に最後のテロップの直後"),
+        ("playhead", "Resolve の再生ヘッド位置（取得失敗時は最後の直後）"),
+        ("qa",       "「直接入力」欄の開始TC"),
+    ]
+
+    def __init__(self, parent, cfg: dict):
+        super().__init__(parent)
+        self.title("テロップ作成設定")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.result: Optional[dict] = None
+        f = ttk.Frame(self, padding=16)
+        f.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(f, text="新規テロップの開始TC", font=('', 10, 'bold')).grid(
+            row=0, column=0, columnspan=3, sticky='w')
+        self._mode = tk.StringVar(value=cfg.get("start_mode", "auto"))
+        for i, (val, label) in enumerate(self._MODES, start=1):
+            ttk.Radiobutton(f, text=label, value=val, variable=self._mode).grid(
+                row=i, column=0, columnspan=3, sticky='w', padx=(12, 0), pady=1)
+
+        r = len(self._MODES) + 1
+        ttk.Separator(f).grid(row=r, column=0, columnspan=3, sticky='ew', pady=8)
+        self._dur = tk.DoubleVar(value=cfg.get("default_dur", 3.0))
+        self._gap = tk.IntVar(value=cfg.get("gap_frames", 0))
+        self._cps = tk.DoubleVar(value=cfg.get("cps", 6.0))
+        self._min = tk.DoubleVar(value=cfg.get("min_dur", 1.0))
+        self._cont = tk.BooleanVar(value=cfg.get("continuous", False))
+        rows = [
+            ("既定の尺:", self._dur, 0.1, 600, 0.5, "秒"),
+            ("前テロップとの間隔:", self._gap, 0, 600, 1, "フレーム"),
+            ("文字数→尺 の速さ:", self._cps, 1, 30, 0.5, "文字/秒"),
+            ("文字数→尺 の最小:", self._min, 0, 60, 0.5, "秒"),
+        ]
+        for i, (label, var, lo, hi, inc, unit) in enumerate(rows, start=r + 1):
+            ttk.Label(f, text=label).grid(row=i, column=0, sticky='e', pady=3)
+            ttk.Spinbox(f, from_=lo, to=hi, increment=inc, textvariable=var,
+                        width=8).grid(row=i, column=1, sticky='w', padx=6)
+            ttk.Label(f, text=unit, foreground='gray').grid(row=i, column=2, sticky='w')
+        r = r + 1 + len(rows)
+        ttk.Checkbutton(f, text="連続入力モードを既定でオン（作成後もダイアログを閉じない）",
+                        variable=self._cont).grid(row=r, column=0, columnspan=3,
+                                                  sticky='w', pady=(8, 0))
+        ttk.Label(f, text="作成/改行キーは［ファイル → キーボードショートカット設定］で変更できます。",
+                  foreground='gray', font=('', 8)).grid(row=r + 1, column=0, columnspan=3,
+                                                         sticky='w', pady=(6, 0))
+        btns = ttk.Frame(f)
+        btns.grid(row=r + 2, column=0, columnspan=3, pady=(12, 0))
+        ttk.Button(btns, text="OK", width=10, command=self._ok).pack(side='left', padx=4)
+        ttk.Button(btns, text="キャンセル", width=10, command=self.destroy).pack(side='left', padx=4)
+        self.bind('<Escape>', lambda e: self.destroy())
+        self.grab_set()
+        self.wait_window()
+
+    def _ok(self):
+        try:
+            self.result = {
+                "start_mode": self._mode.get(),
+                "default_dur": max(0.1, float(self._dur.get())),
+                "gap_frames": max(0, int(self._gap.get())),
+                "cps": max(0.5, float(self._cps.get())),
+                "min_dur": max(0.0, float(self._min.get())),
+                "continuous": bool(self._cont.get()),
+            }
+        except (tk.TclError, ValueError):
+            messagebox.showwarning("入力エラー", "数値を正しく入力してください。", parent=self)
+            return
+        self.destroy()
+
+
+# ─────────────────────────────────────────────
+#  検索と置換ダイアログ
+# ─────────────────────────────────────────────
+
+class FindReplaceDialog(tk.Toplevel):
+    """テロップテキストの検索・一括置換（モードレス）。"""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self._app = app
+        self.title("検索と置換")
+        self.resizable(False, False)
+        self.transient(app)
+        f = ttk.Frame(self, padding=12)
+        f.pack(fill=tk.BOTH, expand=True)
+        self._find = tk.StringVar()
+        self._repl = tk.StringVar()
+        ttk.Label(f, text="検索:").grid(row=0, column=0, sticky='e', pady=3)
+        self._find_entry = ttk.Entry(f, textvariable=self._find, width=36)
+        self._find_entry.grid(row=0, column=1, columnspan=3, sticky='ew', padx=6)
+        ttk.Label(f, text="置換:").grid(row=1, column=0, sticky='e', pady=3)
+        ttk.Entry(f, textvariable=self._repl, width=36).grid(
+            row=1, column=1, columnspan=3, sticky='ew', padx=6)
+        self._regex = tk.BooleanVar(value=False)
+        self._case = tk.BooleanVar(value=False)
+        self._sel_only = tk.BooleanVar(value=False)
+        ttk.Checkbutton(f, text="正規表現", variable=self._regex).grid(row=2, column=1, sticky='w')
+        ttk.Checkbutton(f, text="大文字小文字を区別", variable=self._case).grid(row=2, column=2, sticky='w')
+        ttk.Checkbutton(f, text="選択行のみ", variable=self._sel_only).grid(row=2, column=3, sticky='w')
+        btns = ttk.Frame(f)
+        btns.grid(row=3, column=0, columnspan=4, pady=(10, 0))
+        ttk.Button(btns, text="該当を選択", command=self._select).pack(side='left', padx=3)
+        ttk.Button(btns, text="すべて置換", command=self._replace).pack(side='left', padx=3)
+        ttk.Button(btns, text="閉じる", command=self.destroy).pack(side='left', padx=3)
+        self._msg = tk.StringVar(value="改行は \\n で指定できます")
+        ttk.Label(f, textvariable=self._msg, foreground='gray').grid(
+            row=4, column=0, columnspan=4, pady=(8, 0))
+        self.bind('<Escape>', lambda e: self.destroy())
+        self.bind('<Return>', lambda e: self._select())
+        self._find_entry.focus_set()
+
+    def _select(self):
+        hits = self._app.find_matches(self._find.get(), self._regex.get(), self._case.get())
+        self._app._filter_var.set("")
+        self._app._tree.selection_set([])
+        self._app._select_entries(hits)
+        self._msg.set(f"{len(hits)} 件見つかりました")
+
+    def _replace(self):
+        n = self._app.find_replace_apply(self._find.get(), self._repl.get(),
+                                         self._regex.get(), self._sel_only.get(),
+                                         self._case.get())
+        if n >= 0:
+            self._msg.set(f"{n} 箇所を置換しました（Ctrl+Z で元に戻せます）")
 
 
 # ─────────────────────────────────────────────
@@ -716,6 +906,15 @@ _THEME: dict[str, dict] = {
         "checker_c2":   (40,  40,  40),
         "panel_header": "#252535",
         "header_fg":    "#a0a8c0",
+        "timeline_bg":       "#1e1f22",
+        "timeline_fg":       "#9aa0aa",
+        "timeline_ruler":    "#2a2c30",
+        "timeline_grid":     "#33363b",
+        "timeline_block":    "#2F6FB3",
+        "timeline_styled":   "#7A4FB5",
+        "timeline_disabled": "#555555",
+        "timeline_sel":      "#FFD54A",
+        "timeline_border":   "#16181b",
     },
     "light": {
         "window_bg":    "#f0f0f0",
@@ -730,6 +929,15 @@ _THEME: dict[str, dict] = {
         "checker_c2":   (153, 153, 153),
         "panel_header": "#e0e4f0",
         "header_fg":    "#3c4060",
+        "timeline_bg":       "#f4f5f7",
+        "timeline_fg":       "#555a66",
+        "timeline_ruler":    "#e2e5ea",
+        "timeline_grid":     "#d5d9e0",
+        "timeline_block":    "#3D7FD0",
+        "timeline_styled":   "#8E5CCB",
+        "timeline_disabled": "#aaaaaa",
+        "timeline_sel":      "#E8590C",
+        "timeline_border":   "#2a3a50",
     },
 }
 
@@ -747,6 +955,483 @@ def _tc(key: str) -> str:
 
 def _tc_rgb(key: str) -> tuple:
     return _THEME[_current_theme_name()].get(key, (128, 128, 128))
+
+
+# ─────────────────────────────────────────────
+#  ツールチップ
+# ─────────────────────────────────────────────
+
+class _Tooltip:
+    """ウィジェットにマウスを乗せると説明を表示する。"""
+
+    def __init__(self, widget, text: str, delay: int = 500):
+        self._w = widget
+        self._text = text
+        self._delay = delay
+        self._job = None
+        self._tip = None
+        widget.bind('<Enter>', self._schedule, add='+')
+        widget.bind('<Leave>', self._hide, add='+')
+        widget.bind('<ButtonPress>', self._hide, add='+')
+
+    def _schedule(self, _e=None):
+        self._cancel()
+        self._job = self._w.after(self._delay, self._show)
+
+    def _cancel(self):
+        if self._job:
+            try:
+                self._w.after_cancel(self._job)
+            except tk.TclError:
+                pass
+            self._job = None
+
+    def _show(self):
+        if self._tip or not self._text:
+            return
+        try:
+            x = self._w.winfo_rootx() + 8
+            y = self._w.winfo_rooty() + self._w.winfo_height() + 4
+            self._tip = tw = tk.Toplevel(self._w)
+            tw.wm_overrideredirect(True)
+            tw.attributes('-topmost', True)
+            tk.Label(tw, text=self._text, justify='left', bg='#ffffe1', fg='#000000',
+                     relief='solid', borderwidth=1, font=('', 9), padx=6, pady=3).pack()
+            tw.wm_geometry(f"+{x}+{y}")
+        except tk.TclError:
+            self._tip = None
+
+    def _hide(self, _e=None):
+        self._cancel()
+        if self._tip:
+            try:
+                self._tip.destroy()
+            except tk.TclError:
+                pass
+            self._tip = None
+
+
+class _PrefixSuffixDialog(tk.Toplevel):
+    """先頭・末尾に追加する文字列を入力。"""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("先頭・末尾に文字を追加")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.result = None
+        f = ttk.Frame(self, padding=14)
+        f.pack(fill='both', expand=True)
+        self._pre = tk.StringVar()
+        self._suf = tk.StringVar()
+        ttk.Label(f, text="先頭に追加:").grid(row=0, column=0, sticky='e', pady=3)
+        e1 = ttk.Entry(f, textvariable=self._pre, width=24)
+        e1.grid(row=0, column=1, padx=6)
+        ttk.Label(f, text="末尾に追加:").grid(row=1, column=0, sticky='e', pady=3)
+        ttk.Entry(f, textvariable=self._suf, width=24).grid(row=1, column=1, padx=6)
+        ttk.Label(f, text="例: 先頭「♪」末尾「♪」、末尾「（笑）」など",
+                  foreground='gray', font=('', 8)).grid(row=2, column=0, columnspan=2, pady=(4, 0))
+        b = ttk.Frame(f)
+        b.grid(row=3, column=0, columnspan=2, pady=(10, 0))
+        ttk.Button(b, text="OK", width=10, command=self._ok).pack(side='left', padx=4)
+        ttk.Button(b, text="キャンセル", width=10, command=self.destroy).pack(side='left', padx=4)
+        self.bind('<Return>', lambda e: self._ok())
+        self.bind('<Escape>', lambda e: self.destroy())
+        e1.focus_set()
+        self.grab_set()
+        self.wait_window()
+
+    def _ok(self):
+        if self._pre.get() or self._suf.get():
+            self.result = (self._pre.get(), self._suf.get())
+        self.destroy()
+
+
+# ─────────────────────────────────────────────
+#  タイムラインビュー（テロップの時間配置を視覚的に編集）
+# ─────────────────────────────────────────────
+
+class TimelineView(ttk.Frame):
+    """テロップをブロックで表示するミニタイムライン。
+
+    - クリックで選択（Ctrl/Shift で追加選択）、ダブルクリックで編集
+    - ブロックをドラッグで移動（複数選択はまとめて移動）、左右端ドラッグで開始/終了を調整
+    - ホイールで横スクロール、Ctrl+ホイールでズーム、Alt でスナップ無効
+    """
+
+    RULER_H = 18
+    LANE_H = 26
+    EDGE = 6
+
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self._app = app
+        self._pps = 40.0          # pixels per second
+        self._t0 = 0.0            # 表示左端の秒
+        self._drag = None
+        self._items: dict = {}    # canvas item id -> entry
+        self._layout: list = []   # (entry, s, e, lane)
+        self._fit_pending = True
+
+        bar = ttk.Frame(self)
+        bar.pack(fill='x')
+        ttk.Label(bar, text="タイムライン", font=('', 9, 'bold')).pack(side='left', padx=(4, 8))
+        ttk.Button(bar, text="全体", width=5, command=self.fit).pack(side='left', padx=1)
+        ttk.Button(bar, text="選択へ", width=6, command=self.show_selection).pack(side='left', padx=1)
+        ttk.Button(bar, text="＋", width=3, command=lambda: self.zoom(1.5)).pack(side='left', padx=1)
+        ttk.Button(bar, text="－", width=3, command=lambda: self.zoom(1 / 1.5)).pack(side='left', padx=1)
+        self._snap_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bar, text="隣接スナップ", variable=self._snap_var).pack(side='left', padx=8)
+        self._info_var = tk.StringVar(value="")
+        ttk.Label(bar, textvariable=self._info_var, foreground='gray').pack(side='left', padx=8)
+        ttk.Label(bar, text="ドラッグ: 移動 / 端: 尺調整 / Ctrl+ホイール: ズーム",
+                  foreground='gray', font=('', 8)).pack(side='right', padx=4)
+
+        self._canvas = tk.Canvas(self, height=self.RULER_H + self.LANE_H * 2 + 8,
+                                 highlightthickness=0, bg=_tc("timeline_bg"))
+        self._canvas.pack(fill='both', expand=True)
+        self._hbar = ttk.Scrollbar(self, orient='horizontal', command=self._on_scrollbar)
+        self._hbar.pack(fill='x')
+
+        c = self._canvas
+        c.bind('<Configure>', lambda e: self.redraw())
+        c.bind('<ButtonPress-1>', self._on_press)
+        c.bind('<B1-Motion>', self._on_motion)
+        c.bind('<ButtonRelease-1>', self._on_release)
+        c.bind('<Double-Button-1>', self._on_double)
+        c.bind('<Motion>', self._on_hover)
+        c.bind('<MouseWheel>', self._on_wheel)
+        c.bind('<Shift-MouseWheel>', self._on_wheel)
+        c.bind('<Control-MouseWheel>', self._on_ctrl_wheel)
+        c.bind('<Button-4>', lambda e: self._scroll(-1))
+        c.bind('<Button-5>', lambda e: self._scroll(1))
+        c.bind('<Button-3>', self._on_right)
+
+    # ── 座標変換 ─────────────────────────────
+    def _fps(self) -> float:
+        return self._app._current_fps()
+
+    def _x(self, t: float) -> float:
+        return (t - self._t0) * self._pps
+
+    def _t(self, x: float) -> float:
+        return self._t0 + x / self._pps
+
+    def _span(self, e):
+        fps = self._fps()
+        try:
+            s = parse_timecode(e.start_time, fps)
+            t = parse_timecode(e.end_time, fps)
+            return s, max(t, s)
+        except ValueError:
+            return None
+
+    def _bounds(self):
+        spans = [sp for sp in (self._span(e) for e in self._app.telop_list) if sp]
+        if not spans:
+            return 0.0, 10.0
+        return min(s for s, _ in spans), max(t for _, t in spans)
+
+    # ── 表示操作 ─────────────────────────────
+    def fit(self):
+        w = max(100, self._canvas.winfo_width())
+        lo, hi = self._bounds()
+        dur = max(5.0, hi - lo)
+        self._pps = max(2.0, (w - 20) / dur)
+        self._t0 = lo - 10 / self._pps
+        self.redraw()
+
+    def zoom(self, factor: float, x: Optional[float] = None):
+        if x is None:
+            x = self._canvas.winfo_width() / 2
+        t = self._t(x)
+        self._pps = min(2000.0, max(1.0, self._pps * factor))
+        self._t0 = t - x / self._pps
+        self.redraw()
+
+    def show_selection(self):
+        sel = self._app._get_selected_entries()
+        spans = [sp for sp in (self._span(e) for e in sel) if sp]
+        if not spans:
+            return
+        s = min(a for a, _ in spans)
+        w = self._canvas.winfo_width()
+        if not (self._t0 <= s <= self._t(w - 40)):
+            self._t0 = s - 2.0
+        self.redraw()
+
+    def _scroll(self, units: int):
+        self._t0 += units * 60 / self._pps
+        self.redraw()
+
+    def _on_wheel(self, e):
+        self._scroll(-1 if e.delta > 0 else 1)
+        return "break"
+
+    def _on_ctrl_wheel(self, e):
+        self.zoom(1.25 if e.delta > 0 else 0.8, e.x)
+        return "break"
+
+    def _on_scrollbar(self, *args):
+        lo, hi = self._bounds()
+        lo -= 5
+        hi += 5
+        total = max(1e-6, hi - lo)
+        w = self._canvas.winfo_width() / self._pps
+        if args[0] == 'moveto':
+            self._t0 = lo + float(args[1]) * total
+        elif args[0] == 'scroll':
+            step = w * 0.9 if args[2] == 'pages' else 60 / self._pps
+            self._t0 += int(args[1]) * step
+        self.redraw()
+
+    # ── 描画 ────────────────────────────────
+    def _assign_lanes(self):
+        items = []
+        for e in self._app.telop_list:
+            sp = self._span(e)
+            if sp:
+                items.append((sp[0], sp[1], e))
+        items.sort(key=lambda x: (x[0], x[1]))
+        lane_end: list = []
+        layout = []
+        for s, t, e in items:
+            for i, le in enumerate(lane_end):
+                if s >= le - 1e-6:
+                    lane_end[i] = t
+                    lane = i
+                    break
+            else:
+                lane_end.append(t)
+                lane = len(lane_end) - 1
+            layout.append((e, s, t, lane))
+        return layout, max(1, len(lane_end))
+
+    def redraw(self):
+        c = self._canvas
+        try:
+            if not c.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        w, h = c.winfo_width(), c.winfo_height()
+        if w < 20:
+            return
+        if self._fit_pending and self._app.telop_list:
+            self._fit_pending = False
+            self.fit()
+            return
+        c.delete('all')
+        self._items.clear()
+        c.configure(bg=_tc("timeline_bg"))
+        fps = self._fps()
+        layout, lanes = self._assign_lanes()
+        self._layout = layout
+        need_h = self.RULER_H + lanes * self.LANE_H + 8
+        if int(c.cget('height')) != need_h and lanes <= 6:
+            c.configure(height=need_h)
+
+        # ルーラー
+        fg = _tc("timeline_fg")
+        c.create_rectangle(0, 0, w, self.RULER_H, fill=_tc("timeline_ruler"), width=0)
+        steps = [1 / fps, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600]
+        step = next((s for s in steps if s * self._pps >= 70), 3600)
+        t = (self._t0 // step) * step
+        t_end = self._t(w)
+        while t <= t_end:
+            x = self._x(t)
+            c.create_line(x, self.RULER_H - 6, x, h, fill=_tc("timeline_grid"))
+            c.create_text(x + 3, 2, text=seconds_to_timecode(max(0.0, t), fps),
+                          anchor='nw', fill=fg, font=('', 7))
+            t += step
+
+        # ブロック
+        issues = self._app._validate_entries()
+        sel_ids = {e.id for e in self._app._get_selected_entries()}
+        for e, s, t, lane in layout:
+            x1, x2 = self._x(s), self._x(t)
+            if x2 < -2 or x1 > w + 2:
+                continue
+            y1 = self.RULER_H + 4 + lane * self.LANE_H
+            y2 = y1 + self.LANE_H - 4
+            if not e.enabled:
+                fill = _tc("timeline_disabled")
+            elif issues.get(e.id) == 'error':
+                fill = "#C0392B"
+            elif issues.get(e.id) == 'overlap':
+                fill = "#D68910"
+            elif e.style:
+                fill = _tc("timeline_styled")
+            else:
+                fill = _tc("timeline_block")
+            outline = _tc("timeline_sel") if e.id in sel_ids else _tc("timeline_border")
+            rid = c.create_rectangle(x1, y1, max(x1 + 2, x2), y2, fill=fill,
+                                     outline=outline, width=2 if e.id in sel_ids else 1)
+            self._items[rid] = e
+            if x2 - x1 > 18:
+                label = e.text.replace('\n', ' ')
+                maxc = max(1, int((x2 - x1 - 6) / 7))
+                tid = c.create_text(max(x1, 0) + 4, (y1 + y2) / 2, anchor='w',
+                                    text=label[:maxc], fill='white', font=('', 8))
+                self._items[tid] = e
+
+        # スクロールバー
+        lo, hi = self._bounds()
+        lo -= 5
+        hi += 5
+        total = max(1e-6, hi - lo)
+        a = (self._t0 - lo) / total
+        b = (self._t(w) - lo) / total
+        self._hbar.set(max(0.0, min(1.0, a)), max(0.0, min(1.0, b)))
+
+    # ── マウス操作 ─────────────────────────────
+    def _hit(self, x, y):
+        """(entry, mode) mode = 'move' | 'start' | 'end'"""
+        for e, s, t, lane in reversed(self._layout):
+            y1 = self.RULER_H + 4 + lane * self.LANE_H
+            y2 = y1 + self.LANE_H - 4
+            x1, x2 = self._x(s), self._x(t)
+            if y1 <= y <= y2 and x1 - 2 <= x <= x2 + 2:
+                if x2 - x1 > self.EDGE * 3:
+                    if x - x1 <= self.EDGE:
+                        return e, 'start'
+                    if x2 - x <= self.EDGE:
+                        return e, 'end'
+                return e, 'move'
+        return None, None
+
+    def _on_hover(self, ev):
+        e, mode = self._hit(ev.x, ev.y)
+        self._canvas.configure(cursor={'start': 'sb_h_double_arrow', 'end': 'sb_h_double_arrow',
+                                       'move': 'fleur'}.get(mode, ''))
+        if e:
+            sp = self._span(e)
+            dur = sp[1] - sp[0] if sp else 0
+            self._info_var.set(f"No.{e.id}  {e.start_time} → {e.end_time}  ({dur:.2f}秒)")
+        else:
+            self._info_var.set(seconds_to_timecode(max(0.0, self._t(ev.x)), self._fps()))
+
+    def _on_press(self, ev):
+        self._canvas.focus_set()
+        e, mode = self._hit(ev.x, ev.y)
+        tree = self._app._tree
+        if e is None:
+            self._drag = None
+            if not (ev.state & 0x5):
+                tree.selection_set([])
+            return
+        iid = str(e.id)
+        if ev.state & 0x4:            # Ctrl: トグル
+            if iid in tree.selection():
+                tree.selection_remove(iid)
+            else:
+                tree.selection_add(iid)
+        elif ev.state & 0x1:          # Shift: 追加
+            tree.selection_add(iid)
+        elif iid not in tree.selection():
+            tree.selection_set(iid)
+        if tree.exists(iid):
+            tree.see(iid)
+        fps = self._fps()
+        targets = self._app._get_selected_entries() if mode == 'move' else [e]
+        orig = {}
+        for t in targets:
+            try:
+                orig[t.id] = (timecode_to_frames(t.start_time, fps),
+                              timecode_to_frames(t.end_time, fps))
+            except ValueError:
+                pass
+        self._drag = dict(entry=e, mode=mode, x0=ev.x, targets=targets, orig=orig, moved=False)
+
+    def _snap_frames(self, frame: int, exclude: set) -> int:
+        """近くのテロップ端（±8px）に吸着。"""
+        if not self._snap_var.get():
+            return frame
+        fps = self._fps()
+        tol = 8 / self._pps * _nominal_fps(fps)
+        best, best_d = frame, tol + 1
+        for e, s, t, _lane in self._layout:
+            if e.id in exclude:
+                continue
+            for edge in (s, t):
+                f = seconds_to_frames(edge, fps)
+                d = abs(f - frame)
+                if d < best_d:
+                    best, best_d = f, d
+        return best if best_d <= tol else frame
+
+    def _on_motion(self, ev):
+        d = self._drag
+        if not d or not d['orig']:
+            return
+        fps = self._fps()
+        nom = _nominal_fps(fps)
+        df = int(round((ev.x - d['x0']) / self._pps * nom))
+        if df == 0 and not d['moved']:
+            return
+        d['moved'] = True
+        from core.timecode import frames_to_timecode
+        excl = {t.id for t in d['targets']}
+        snap = not (ev.state & 0x20000)   # Alt でスナップ無効
+        if d['mode'] == 'move':
+            # 先頭ブロックの開始/終了をスナップ基準にする
+            lead = d['entry']
+            ls, le = d['orig'].get(lead.id, (0, 0))
+            if snap:
+                ns = self._snap_frames(ls + df, excl)
+                if ns != ls + df:
+                    df = ns - ls
+                else:
+                    ne = self._snap_frames(le + df, excl)
+                    df = ne - le
+            min_s = min(s for s, _ in d['orig'].values())
+            df = max(df, -min_s)
+            for t in d['targets']:
+                if t.id in d['orig']:
+                    s0, e0 = d['orig'][t.id]
+                    t.start_time = frames_to_timecode(s0 + df, fps)
+                    t.end_time = frames_to_timecode(e0 + df, fps)
+        else:
+            e = d['entry']
+            s0, e0 = d['orig'][e.id]
+            if d['mode'] == 'start':
+                ns = s0 + df
+                if snap:
+                    ns = self._snap_frames(ns, excl)
+                e.start_time = frames_to_timecode(max(0, min(ns, e0 - 1)), fps)
+            else:
+                ne = e0 + df
+                if snap:
+                    ne = self._snap_frames(ne, excl)
+                e.end_time = frames_to_timecode(max(ne, s0 + 1), fps)
+        lead = d['entry']
+        self._info_var.set(f"No.{lead.id}  {lead.start_time} → {lead.end_time}")
+        self.redraw()
+
+    def _on_release(self, ev):
+        d = self._drag
+        self._drag = None
+        if d and d['moved']:
+            self._app._refresh_tree()
+            self._app._on_select()
+
+    def _on_double(self, ev):
+        e, _ = self._hit(ev.x, ev.y)
+        if e:
+            self._app._tree.selection_set(str(e.id))
+            self._app.edit_selected()
+        else:
+            # 空き部分のダブルクリック → その位置に新規テロップ
+            fps = self._fps()
+            tc = seconds_to_timecode(max(0.0, self._t(ev.x)), fps)
+            self._app.add_entry_at(tc)
+
+    def _on_right(self, ev):
+        e, _ = self._hit(ev.x, ev.y)
+        if e and str(e.id) not in self._app._tree.selection():
+            self._app._tree.selection_set(str(e.id))
+        if e:
+            self._app._ctx_menu.tk_popup(ev.x_root, ev.y_root)
 
 
 # ─────────────────────────────────────────────
@@ -2265,7 +2950,7 @@ class VoiceVoxPanel(ttk.Frame):
                 tmp.close()
                 self.after(0, lambda p=tmp.name: self._play_wav(p))
             except Exception as ex:
-                self.after(0, lambda: self._prog_var.set(f"エラー: {ex}"))
+                self.after(0, lambda ex=ex: self._prog_var.set(f"エラー: {ex}"))
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -2518,7 +3203,8 @@ class VoiceVoxPanel(ttk.Frame):
                     ev = threading.Event()
                     def _ask():
                         inputs = rc.get_tatie_inputs()
-                        box["sel"] = (self._app._pick_mouth_param(inputs)
+                        # _pick_mouth_param は LipSyncDialog のメソッド（親ウィンドウとして使うだけ）
+                        box["sel"] = (LipSyncDialog._pick_mouth_param(self.winfo_toplevel(), inputs)
                                       if inputs else (None, None))
                         ev.set()
                     self.after(0, _ask)
@@ -3925,12 +4611,21 @@ class DavinTelopApp(tk.Tk):
     _DEFAULT_SHORTCUTS: dict = {
         "send_to_resolve":       "Control-Return",
         "export_png":            "Control-Shift-P",
-        "export_srt":            "Control-Shift-S",
+        "export_srt":            "Control-Shift-T",
         "export_fcpxml":         "Control-Shift-X",
         "export_resolve_script": "Control-Shift-R",
         "place_at_playhead":     "Control-Shift-Return",
         # テロップ操作
+        "new_telop":             "Control-n",
         "new_telop_quick":       "Control-Alt-n",
+        "undo":                  "Control-z",
+        "redo":                  "Control-y",
+        "find_replace":          "Control-Shift-F",
+        "focus_search":          "Control-f",
+        "jump_playhead":         "Control-j",
+        # テロップ入力ダイアログ内
+        "dlg_submit":            "Return",
+        "dlg_newline":           "Shift-Return",
         "move_left":             "Alt-Left",
         "move_right":            "Alt-Right",
         "move_up":               "Alt-Up",
@@ -3953,8 +4648,17 @@ class DavinTelopApp(tk.Tk):
         "export_fcpxml":         "FCPxml 書き出し",
         "export_resolve_script": "🐍 Resolveスクリプト生成",
         "place_at_playhead":     "📍 選択テロップを再生ヘッドに配置",
+        # テロップ操作
+        "new_telop":             "＋ 新規テロップ作成",
+        "new_telop_quick":       "＋ 新規テロップ作成（サブキー）",
+        "undo":                  "↶ 元に戻す",
+        "redo":                  "↷ やり直し",
+        "find_replace":          "🔍 検索と置換",
+        "focus_search":          "🔎 リスト絞り込み欄へ移動",
+        "jump_playhead":         "▶ Resolve再生ヘッドを選択テロップへ移動",
+        "dlg_submit":            "テロップ入力: 作成/確定キー",
+        "dlg_newline":           "テロップ入力: 改行キー",
         # テロップ移動
-        "new_telop_quick":       "新規テロップ（クイック入力）",
         "move_left":             "テロップ 左に移動（ステップ）",
         "move_right":            "テロップ 右に移動（ステップ）",
         "move_up":               "テロップ 上に移動（ステップ）",
@@ -3971,10 +4675,21 @@ class DavinTelopApp(tk.Tk):
         "snap_center":           "⊕ 位置: 中央（中央中央）",
     }
 
+    _NEW_TELOP_DEFAULTS: dict = {
+        "default_dur": 3.0,      # 既定の尺（秒）
+        "gap_frames": 0,         # 前テロップとの間隔（フレーム）
+        "start_mode": "auto",    # auto / last / playhead / qa
+        "cps": 6.0,              # 文字数→尺 換算（文字/秒）
+        "min_dur": 1.0,          # 文字数→尺 の最小値（秒）
+        "continuous": False,     # 連続入力モード
+    }
+    _UNDO_LIMIT = 100
+
     def __init__(self):
         super().__init__()
         self.title("DavinTelop  —  テロップ作成 for DaVinci Resolve")
-        self.geometry("1440x860")
+        _geo = self._load_app_config().get("window_geometry", "")
+        self.geometry(_geo if _geo else "1440x860")
         self.minsize(1100, 700)
 
         self.telop_list: list[TelopEntry] = []
@@ -3992,6 +4707,30 @@ class DavinTelopApp(tk.Tk):
 
         # ショートカット (デフォルト + 保存済みで上書き)
         self._shortcuts: dict = {**self._DEFAULT_SHORTCUTS, **cfg.get("shortcuts", {})}
+        # 旧既定値 Ctrl+Shift+S は「名前を付けて保存」と衝突していたので移行
+        if self._shortcuts.get("export_srt") == "Control-Shift-S":
+            self._shortcuts["export_srt"] = self._DEFAULT_SHORTCUTS["export_srt"]
+        if not self._shortcuts.get("dlg_submit"):
+            self._shortcuts["dlg_submit"] = self._DEFAULT_SHORTCUTS["dlg_submit"]
+
+        # 新規テロップ作成設定
+        self._new_telop_cfg: dict = {**self._NEW_TELOP_DEFAULTS,
+                                     **cfg.get("new_telop", {})}
+
+        # 表示設定
+        self._show_timeline = tk.BooleanVar(value=cfg.get("show_timeline", True))
+        self._show_quick_add = tk.BooleanVar(value=cfg.get("show_quick_add", False))
+        self._style_clipboard: Optional[dict] = None
+        self._pv_entry: Optional[TelopEntry] = None
+        self._insp_text_job = None
+        # CSV 読み込み設定（読込メニューから変更）
+        self._encoding_var = tk.StringVar(value="auto")
+        self._delim_var = tk.StringVar(value="auto")
+
+        # Undo / Redo (テロップリストのスナップショット)
+        self._undo_stack: list = []
+        self._redo_stack: list = []
+        self._last_snapshot = None
         self._bound_keys: list = []
 
         # PNG ファイル名オプション
@@ -4010,6 +4749,8 @@ class DavinTelopApp(tk.Tk):
         self._project_dirty = False
         self._suppress_dirty = True   # 起動・読込中は変更マークを抑制
         self.after(800, self._enable_dirty_tracking)
+        self.after(1200, lambda: self._toggle_tc_sync() if getattr(self, "_tc_sync", None) is not None
+                   and self._tc_sync.get() and getattr(self, "_tc_session", None) is None else None)
         # オートセーブ／復元
         self.after(900, self._check_autosave_restore)
         self.after(self._AUTOSAVE_INTERVAL_MS, self._autosave_tick)
@@ -4064,6 +4805,7 @@ class DavinTelopApp(tk.Tk):
         self._setup_ui()
         self._refresh_preset_menu()
         self._apply_shortcuts()
+        self._reset_undo()
         self._schedule_preview_update()
 
     # ─── スタイル ───────────────────────────────
@@ -4124,6 +4866,12 @@ class DavinTelopApp(tk.Tk):
             except (AttributeError, tk.TclError):
                 pass
 
+        try:
+            self._insp_text.configure(bg=text_bg, fg=text_fg, insertbackground=text_fg)
+            self._timeline.redraw()
+        except (AttributeError, tk.TclError):
+            pass
+
         # テロップリスト Treeview (dark時にTreeviewのBG設定)
         style = ttk.Style(self)
         if self._is_dark.get():
@@ -4173,33 +4921,58 @@ class DavinTelopApp(tk.Tk):
         self._add_recent_menu(file_menu)
         file_menu.add_separator()
         file_menu.add_command(label="CSVをインポート...", command=self.import_csv)
+        file_menu.add_command(label="SRTをインポート...", command=self.import_srt_file)
         file_menu.add_separator()
         file_menu.add_command(label="キーボードショートカット設定...", command=self._open_shortcut_settings)
+        file_menu.add_command(label="テロップ作成設定...", command=self.open_new_telop_settings)
         file_menu.add_separator()
-        file_menu.add_command(label="終了", accelerator="Ctrl+Q", command=self.quit)
+        file_menu.add_command(label="終了", accelerator="Ctrl+Q", command=self._on_close)
         # ショートカット（Win: Control / Mac: Command）
         for mod in ("Control", "Command"):
             self.bind(f"<{mod}-o>", lambda e: self.load_project())
             self.bind(f"<{mod}-s>", lambda e: self.save_project())
             self.bind(f"<{mod}-Shift-S>", lambda e: self.save_project_as())
-            self.bind(f"<{mod}-q>", lambda e: self.quit())
+            self.bind(f"<{mod}-q>", lambda e: self._on_close())
 
         # 編集メニュー
         edit_menu = tk.Menu(mb, tearoff=0)
         mb.add_cascade(label="編集", menu=edit_menu)
-        edit_menu.add_command(label="行を追加", accelerator="⌘N", command=self.add_entry)
-        edit_menu.add_command(label="選択行を編集", accelerator="Return", command=self.edit_selected)
-        edit_menu.add_command(label="選択行を複製", command=self.duplicate_selected)
-        edit_menu.add_command(label="選択行を削除", accelerator="⌫", command=self.delete_selected)
+        edit_menu.add_command(label="元に戻す", command=self.undo)
+        edit_menu.add_command(label="やり直し", command=self.redo)
         edit_menu.add_separator()
-        edit_menu.add_command(label="全選択", accelerator="⌘A", command=self.select_all)
-        edit_menu.add_command(label="有効/無効を切り替え", command=self.toggle_enabled)
+        edit_menu.add_command(label="新規テロップを作成...", command=self.add_entry)
+        edit_menu.add_command(label="選択の直後に挿入...", accelerator="Insert",
+                              command=self.insert_after_selected)
+        edit_menu.add_command(label="選択行をダイアログで編集", accelerator="Enter", command=self.edit_selected)
+        edit_menu.add_command(label="詳細編集でテキストを編集", accelerator="F2",
+                              command=self._insp_focus_text)
+        edit_menu.add_command(label="選択行を複製", accelerator="Ctrl+D", command=self.duplicate_selected)
+        edit_menu.add_command(label="選択行を削除", accelerator="Delete", command=self.delete_selected)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="コピー（TSV）", accelerator="Ctrl+C", command=self.copy_selected)
+        edit_menu.add_command(label="貼り付け（TSV / 台本テキスト）", accelerator="Ctrl+V",
+                              command=self.paste_entries)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="全選択", accelerator="Ctrl+A", command=self.select_all)
+        edit_menu.add_command(label="有効/無効を切り替え", accelerator="Space", command=self.toggle_enabled)
+        edit_menu.add_command(label="無効なテロップを削除", command=self.delete_disabled)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="🔍 検索と置換...", accelerator="Ctrl+Shift+F",
+                              command=self.open_find_replace)
+        edit_menu.add_command(label="🔎 リストを絞り込み", accelerator="Ctrl+F",
+                              command=lambda: self._filter_entry.focus_set())
         edit_menu.add_separator()
         edit_menu.add_command(label="🧹 字幕を自動整形（改行・フィラー除去）...",
                               command=self.open_autoformat)
         edit_menu.add_command(label="🎨 話者の色分け・トラック振り分け...",
                               command=self.open_speaker_rules)
         self.bind("<Command-n>", lambda e: self.add_entry())
+        self.bind("<Command-z>", lambda e: self._guarded(self.undo))
+
+        # 加工メニュー
+        proc_menu = tk.Menu(mb, tearoff=0)
+        mb.add_cascade(label="加工", menu=proc_menu)
+        self._build_process_menu(proc_menu)
 
         # 書き出しメニュー
         export_menu = tk.Menu(mb, tearoff=0)
@@ -4208,6 +4981,7 @@ class DavinTelopApp(tk.Tk):
         export_menu.add_command(label="SRT を書き出し...", command=self.export_srt)
         export_menu.add_command(label="FCPxml を書き出し...", command=self.export_fcpxml)
         export_menu.add_command(label="AAF を書き出し (Avid)...", command=self.export_aaf)
+        export_menu.add_command(label="CSV を書き出し...", command=self.export_csv_file)
         export_menu.add_separator()
         export_menu.add_command(label="🔊 VoiceVox 音声生成...", command=self.export_voicevox)
         export_menu.add_command(label="🎵 全テロップを WAV 書き出し...",
@@ -4223,6 +4997,8 @@ class DavinTelopApp(tk.Tk):
                                  command=self.send_to_resolve)
         resolve_menu.add_command(label="📍 選択テロップを再生ヘッドに配置",
                                  command=self.place_selected_at_playhead)
+        resolve_menu.add_command(label="▶ 再生ヘッドを選択テロップへ移動",
+                                 command=self.jump_to_selected)
         resolve_menu.add_checkbutton(
             label="配置時にテロップTCを再生ヘッドに更新",
             variable=self._playhead_writeback,
@@ -4238,6 +5014,29 @@ class DavinTelopApp(tk.Tk):
         resolve_menu.add_command(label="📁 りぞりぷとの場所を設定...",
                                  command=self.set_rizoripute_path)
 
+        # TeloCut 連携メニュー（動画編集ソフト。起動中なら双方向にやり取りする）
+        tc_menu = tk.Menu(mb, tearoff=0)
+        mb.add_cascade(label="TeloCut", menu=tc_menu)
+        tc_menu.add_command(label="🎬 TeloCut（動画編集）を起動", command=self.launch_telocut)
+        tc_menu.add_separator()
+        cfg = self._load_app_config()
+        self._tc_sync = tk.BooleanVar(value=bool(cfg.get("telocut_sync", False)) or "--telocut-sync" in sys.argv)
+        tc_menu.add_checkbutton(label="🔗 TeloCut とリアルタイム連携（テロップ・デザイン・選択）",
+                                variable=self._tc_sync, command=self._toggle_tc_sync)
+        self._tc_sync_seek = tk.BooleanVar(value=bool(cfg.get("telocut_sync_seek", True)))
+        tc_menu.add_checkbutton(label="　テロップを選んだら TeloCut の再生ヘッドも移動",
+                                variable=self._tc_sync_seek, command=self._save_app_config)
+        tc_menu.add_separator()
+        tc_menu.add_command(label="⬇ TeloCut のテロップを取り込み", command=self.telocut_pull)
+        tc_menu.add_command(label="⬆ テロップを TeloCut に反映（置き換え）", command=self.telocut_push)
+        tc_menu.add_separator()
+        tc_menu.add_command(label="▶ TeloCut の再生ヘッドを選択テロップへ", command=self.telocut_seek_selected)
+        tc_menu.add_command(label="📍 選択テロップを TeloCut の再生ヘッドに配置",
+                            command=self.telocut_place_selected)
+        self._telocut_follow = tk.BooleanVar(value=False)
+        tc_menu.add_checkbutton(label="TeloCut の再生位置のテロップを自動で選択",
+                                variable=self._telocut_follow, command=self._toggle_telocut_follow)
+
         # プリセットメニュー
         self._preset_menu = tk.Menu(mb, tearoff=0)
         mb.add_cascade(label="プリセット", menu=self._preset_menu)
@@ -4251,6 +5050,12 @@ class DavinTelopApp(tk.Tk):
             label="🌙 ダークモード",
             variable=self._is_dark,
             command=self._toggle_theme)
+        win_menu.add_checkbutton(label="タイムラインを表示", variable=self._show_timeline,
+                                 command=self._toggle_timeline)
+        win_menu.add_checkbutton(label="直接入力エリアを表示", variable=self._show_quick_add,
+                                 command=lambda: (self._show_quick_add.set(not self._show_quick_add.get()),
+                                                  self._toggle_quick_add()))
+        win_menu.add_command(label="パネル幅を初期状態に戻す", command=self._init_main_sashes)
         win_menu.add_separator()
         win_menu.add_command(label="🎬 テロッププレビュー ウィンドウ",
                              command=self._toggle_telop_preview_window)
@@ -4290,83 +5095,278 @@ class DavinTelopApp(tk.Tk):
     # ─── メインUI ────────────────────────────────
 
     def _setup_ui(self):
-        # メインペイン (左: リスト / 中央: デザイン+プレビュー / 右: テロップPV+テンプレート)
-        self._main_pane = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
-        self._main_pane.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        # ツールバー（上）とステータスバー（下）を先に pack して、ウィンドウを
+        # 縮めても見切れないようにする
+        self._setup_toolbar()
+        self._setup_bottom_bar()
+
+        # 縦ペイン: 上=メイン3列 / 下=タイムライン
+        self._root_pane = ttk.PanedWindow(self, orient=tk.VERTICAL)
+        self._root_pane.pack(fill=tk.BOTH, expand=True, padx=6, pady=(2, 2))
+
+        # メインペイン (左: リスト / 中央: デザイン+プレビュー / 右: 合成+VoiceVox)
+        self._main_pane = ttk.PanedWindow(self._root_pane, orient=tk.HORIZONTAL)
+        self._root_pane.add(self._main_pane, weight=1)
 
         self._left_frame = ttk.Frame(self._main_pane)
-        self._main_pane.add(self._left_frame, weight=1)
+        self._main_pane.add(self._left_frame, weight=3)
 
         right_mid = ttk.Frame(self._main_pane)
-        self._main_pane.add(right_mid, weight=2)
+        self._main_pane.add(right_mid, weight=4)
 
         self._right2_frame = ttk.Frame(self._main_pane)
-        self._main_pane.add(self._right2_frame, weight=1)
+        self._main_pane.add(self._right2_frame, weight=2)
 
         self._setup_left_panel(self._left_frame)
         self._setup_right_panel(right_mid)
         self._setup_right2_panel(self._right2_frame)
-        self._setup_bottom_bar()
+
+        self._timeline = TimelineView(self._root_pane, self)
+        if self._show_timeline.get():
+            self._root_pane.add(self._timeline, weight=0)
+        self.after(250, self._init_main_sashes)
+
+    def _init_main_sashes(self):
+        """3列の初期幅: 左 36% / 中央 36% / 右 28%。リスト:詳細編集 = 6:4。"""
+        try:
+            self.update_idletasks()
+            w = self._main_pane.winfo_width()
+            if w > 600:
+                self._main_pane.sashpos(0, int(w * 0.36))
+                self._main_pane.sashpos(1, int(w * 0.72))
+            h = self._list_pane.winfo_height()
+            if h > 300:
+                self._list_pane.sashpos(0, max(200, h - 250))
+            self._right_pane.sashpos(0, 230)
+        except tk.TclError:
+            pass
+
+    def _toggle_timeline(self):
+        panes = [str(p) for p in self._root_pane.panes()]
+        shown = str(self._timeline) in panes
+        if self._show_timeline.get() and not shown:
+            self._root_pane.add(self._timeline, weight=0)
+            self.after(50, self._timeline.redraw)
+        elif not self._show_timeline.get() and shown:
+            self._root_pane.forget(self._timeline)
+        self._save_app_config()
+
+    # ─── ツールバー ─────────────────────────────
+
+    def _setup_toolbar(self):
+        tb = ttk.Frame(self, padding=(6, 4, 6, 0))
+        tb.pack(fill='x', side='top')
+        self._toolbar = tb
+
+        def btn(text, cmd, tip=None, width=None):
+            b = ttk.Button(tb, text=text, command=cmd)
+            if width:
+                b.configure(width=width)
+            b.pack(side='left', padx=1)
+            if tip:
+                _Tooltip(b, tip)
+            return b
+
+        def sep():
+            ttk.Separator(tb, orient='vertical').pack(side='left', fill='y', padx=6, pady=2)
+
+        def menubtn(text, builder, tip=None):
+            mb = ttk.Menubutton(tb, text=text)
+            m = tk.Menu(mb, tearoff=0)
+            builder(m)
+            mb.configure(menu=m)
+            mb.pack(side='left', padx=1)
+            if tip:
+                _Tooltip(mb, tip)
+            return mb
+
+        btn("📄", self.new_project, "新規プロジェクト", 3)
+        btn("📂", self.load_project, "プロジェクトを開く (Ctrl+O)", 3)
+        btn("💾", self.save_project, "上書き保存 (Ctrl+S)", 3)
+        sep()
+        btn("↶", self.undo, "元に戻す (Ctrl+Z)", 3)
+        btn("↷", self.redo, "やり直し (Ctrl+Y)", 3)
+        sep()
+        btn("＋ テロップ", self.add_entry, "新規テロップ作成 (Ctrl+N)\nTCは自動入力・Enterで作成")
+        menubtn("✏ 加工", self._build_process_menu,
+                "選択テロップのテキスト・タイミング・スタイルを一括加工\n（未選択時は全テロップ）")
+        btn("🔍", self.open_find_replace, "検索と置換 (Ctrl+Shift+F)", 3)
+        sep()
+        menubtn("📥 読込", self._build_import_menu, "CSV / SRT / クリップボードから読み込み")
+        menubtn("📤 書出", self._build_export_menu, "PNG / SRT / FCPxml / AAF / CSV に書き出し")
+        sep()
+        btn("⚡ Resolve送信", self.send_to_resolve, "全テロップを Resolve のタイムラインに配置 (Ctrl+Enter)")
+        btn("📍 再生ヘッド配置", self.place_selected_at_playhead,
+            "選択テロップを Resolve の再生ヘッド位置に配置 (Ctrl+Shift+Enter)")
+        btn("▶", self.jump_to_selected, "Resolve の再生ヘッドを選択テロップへ移動 (Ctrl+J)", 3)
+        sep()
+        btn("🔊", self.export_voicevox, "VoiceVox 音声生成", 3)
+        btn("🎭", self.export_lipsync, "口パク生成", 3)
+
+        self._theme_btn = ttk.Button(
+            tb, text="🌙" if not self._is_dark.get() else "☀️",
+            width=3, command=self._toggle_theme_btn)
+        self._theme_btn.pack(side='right', padx=1)
+        _Tooltip(self._theme_btn, "ダーク / ライト切替")
+        b = ttk.Button(tb, text="⌨", width=3, command=self._open_shortcut_settings)
+        b.pack(side='right', padx=1)
+        _Tooltip(b, "キーボードショートカット設定")
+        b = ttk.Button(tb, text="⚙", width=3, command=self.open_new_telop_settings)
+        b.pack(side='right', padx=1)
+        _Tooltip(b, "テロップ作成設定（既定の尺・TCの自動入力）")
+        b = ttk.Button(tb, text="📁", width=3, command=self._toggle_template_window)
+        b.pack(side='right', padx=1)
+        _Tooltip(b, "テンプレート ウィンドウ")
+        b = ttk.Button(tb, text="🎬", width=3, command=self._toggle_telop_preview_window)
+        b.pack(side='right', padx=1)
+        _Tooltip(b, "テロッププレビュー ウィンドウ")
+
+    def _build_import_menu(self, m):
+        m.add_command(label="CSV を読み込み...", command=self.import_csv)
+        m.add_command(label="SRT を読み込み...", command=self.import_srt_file)
+        m.add_separator()
+        m.add_command(label="クリップボードから貼り付け（TSV / 台本）", command=self.paste_entries)
+        m.add_separator()
+        enc = tk.Menu(m, tearoff=0)
+        for v in ("auto", "utf-8", "utf-8-sig", "cp932", "shift_jis", "euc_jp"):
+            enc.add_radiobutton(label="自動判別" if v == "auto" else v, value=v,
+                                variable=self._encoding_var)
+        m.add_cascade(label="CSV 文字コード", menu=enc)
+        dl = tk.Menu(m, tearoff=0)
+        for v, lab in (("auto", "自動判別"), (",", "カンマ ,"), ("\t", "タブ"),
+                       (";", "セミコロン ;"), ("|", "パイプ |")):
+            dl.add_radiobutton(label=lab, value=v, variable=self._delim_var)
+        m.add_cascade(label="CSV 区切り文字", menu=dl)
+
+    def _build_export_menu(self, m):
+        m.add_command(label="PNG を書き出し...", command=self.export_png)
+        m.add_command(label="SRT を書き出し...", command=self.export_srt)
+        m.add_command(label="FCPxml を書き出し...", command=self.export_fcpxml)
+        m.add_command(label="AAF を書き出し (Avid)...", command=self.export_aaf)
+        m.add_command(label="CSV を書き出し...", command=self.export_csv_file)
+        m.add_separator()
+        m.add_checkbutton(label="PNG ファイル名にテキストを含める",
+                          variable=self._include_text_in_filename,
+                          command=self._save_app_config)
+        m.add_separator()
+        m.add_command(label="🐍 Resolveスクリプトを生成...", command=self.export_resolve_script)
+        m.add_command(label="🎵 全テロップを WAV 書き出し...", command=self.export_wav_all)
+        m.add_command(label="🎵 選択テロップを WAV 書き出し...", command=self.export_wav_selected)
+
+    def _build_process_menu(self, m):
+        """加工メニュー（メニューバー・ツールバー・右クリックで共用）。"""
+        from core import textfmt as tf
+        T = self._apply_text_op
+
+        txt = tk.Menu(m, tearoff=0)
+        txt.add_command(label="2行に均等改行", command=lambda: T(lambda t: tf.balanced_break(t, 2), "2行に均等改行"))
+        txt.add_command(label="3行に均等改行", command=lambda: T(lambda t: tf.balanced_break(t, 3), "3行に均等改行"))
+        txt.add_command(label="N文字で自動改行...", command=self.wrap_by_chars)
+        txt.add_command(label="改行を削除して1行に", command=lambda: T(tf.join_lines, "1行に"))
+        txt.add_separator()
+        txt.add_command(label="空白・空行を整理", command=lambda: T(tf.normalize_spaces, "空白整理"))
+        txt.add_command(label="句読点を削除", command=lambda: T(tf.remove_punct, "句読点削除"))
+        txt.add_command(label="句読点を全角スペースに", command=lambda: T(lambda t: tf.remove_punct(t, "　"), "句読点→空白"))
+        txt.add_command(label="文末の「。」を削除", command=lambda: T(tf.remove_trailing_period, "文末の。削除"))
+        txt.add_command(label="「...」「・・・」を「……」に統一", command=lambda: T(tf.normalize_ellipsis, "三点リーダー統一"))
+        txt.add_command(label="フィラー（えー・あの 等）を除去", command=lambda: T(tf.remove_fillers, "フィラー除去"))
+        txt.add_separator()
+        txt.add_command(label="英数字・記号を半角に", command=lambda: T(tf.to_halfwidth_alnum, "半角化"))
+        txt.add_command(label="英数字・記号を全角に", command=lambda: T(tf.to_fullwidth_alnum, "全角化"))
+        txt.add_command(label="半角カナを全角に", command=lambda: T(tf.halfkana_to_fullkana, "全角カナ化"))
+        txt.add_separator()
+        br = tk.Menu(txt, tearoff=0)
+        for l, r in (("「", "」"), ("『", "』"), ("（", "）"), ("【", "】"), ("“", "”"), ("＜", "＞")):
+            br.add_command(label=f"{l} … {r}",
+                           command=lambda l=l, r=r: T(lambda t: tf.add_brackets(t, l, r), f"{l}{r}で囲む"))
+        br.add_separator()
+        br.add_command(label="外側の括弧を外す", command=lambda: T(tf.strip_brackets, "括弧を外す"))
+        txt.add_cascade(label="括弧で囲む", menu=br)
+        txt.add_command(label="先頭・末尾に文字を追加...", command=self.add_prefix_suffix)
+        txt.add_command(label="話者名を分離して話者欄へ（名前: 本文）", command=self.extract_speakers)
+        m.add_cascade(label="テキスト", menu=txt)
+
+        tim = tk.Menu(m, tearoff=0)
+        tim.add_command(label="尺を一括設定...", command=self.set_duration_bulk)
+        tim.add_command(label="最小の尺を確保（短すぎる尺を延長）...", command=self.ensure_min_duration)
+        tim.add_command(label="尺を文字数から再計算", command=self.recalc_duration_by_chars)
+        tim.add_separator()
+        tim.add_command(label="隙間なく連続配置...", command=self.arrange_sequential)
+        tim.add_command(label="隙間を埋める（終了を次の開始まで延長）", command=self.fill_gaps)
+        tim.add_command(label="TC を一括シフト...", command=self.shift_tc_dialog)
+        tim.add_separator()
+        tim.add_command(label="開始を再生ヘッドに", accelerator="I", command=lambda: self.set_in_out('in'))
+        tim.add_command(label="終了を再生ヘッドに", accelerator="O", command=lambda: self.set_in_out('out'))
+        tim.add_command(label="1フレーム前へ", accelerator="[", command=lambda: self.nudge_selected(-1))
+        tim.add_command(label="1フレーム後ろへ", accelerator="]", command=lambda: self.nudge_selected(1))
+        tim.add_command(label="1秒前へ", accelerator="Shift+[", command=lambda: self.nudge_selected(None, -1))
+        tim.add_command(label="1秒後ろへ", accelerator="Shift+]", command=lambda: self.nudge_selected(None, 1))
+        m.add_cascade(label="タイミング", menu=tim)
+
+        st = tk.Menu(m, tearoff=0)
+        st.add_command(label="個別スタイルをコピー", command=self.copy_style)
+        st.add_command(label="個別スタイルを貼り付け", command=self.paste_style)
+        st.add_command(label="個別スタイルを解除（共通デザインに戻す）", command=self.clear_style)
+        st.add_separator()
+        st.add_command(label="話者を一括設定...", command=self.set_speaker_bulk)
+        st.add_command(label="🎨 話者の色分け・トラック振り分け...", command=self.open_speaker_rules)
+        m.add_cascade(label="スタイル・話者", menu=st)
+
+        m.add_separator()
+        m.add_command(label="🔗 選択テロップを結合", command=self.merge_selected)
+        m.add_command(label="✂ 改行でテロップを分割", command=self.split_selected)
+        m.add_command(label="⇅ 開始TC順に並べ替え", command=self.sort_by_tc)
+        m.add_command(label="⚠ タイムコードをチェック", command=self.check_timecodes)
+        m.add_separator()
+        m.add_command(label="🧹 字幕を自動整形（改行・フィラー除去）...", command=self.open_autoformat)
+
+    # ─── 左パネル ────────────────────────────────
 
     def _setup_left_panel(self, parent):
-        # フローティングボタン
         hdr_left = ttk.Frame(parent)
         hdr_left.pack(fill='x', pady=(2, 0))
+        ttk.Label(hdr_left, text="テロップ", font=('', 10, 'bold')).pack(side='left', padx=6)
         ttk.Button(hdr_left, text="↗ 分離", width=7,
                    command=lambda: self._toggle_float_panel(
-                       self._left_frame, self._main_pane, 1, "テロップリスト")
+                       self._left_frame, self._main_pane, 3, "テロップリスト")
                    ).pack(side='right', padx=4)
+        self._qa_toggle_btn = ttk.Button(hdr_left, text="直接入力 ▾", width=10,
+                                         command=self._toggle_quick_add)
+        self._qa_toggle_btn.pack(side='right', padx=2)
 
-        # CSV取り込みセクション
-        csv_frame = ttk.LabelFrame(parent, text="CSVインポート", padding=6)
-        csv_frame.pack(fill='x', padx=4, pady=(4, 2))
-
-        ttk.Button(csv_frame, text="CSVを開く...", command=self.import_csv).grid(row=0, column=0, padx=4, pady=2)
-
-        ttk.Label(csv_frame, text="文字コード:").grid(row=0, column=1, padx=(12, 2))
-        self._encoding_var = tk.StringVar(value="utf-8")
-        enc_combo = ttk.Combobox(csv_frame, textvariable=self._encoding_var, width=10,
-                                  values=["utf-8", "utf-8-sig", "shift_jis", "cp932", "euc_jp"])
-        enc_combo.grid(row=0, column=2, padx=2)
-
-        ttk.Label(csv_frame, text="区切り:").grid(row=0, column=3, padx=(12, 2))
-        self._delim_var = tk.StringVar(value="auto")
-        ttk.Combobox(csv_frame, textvariable=self._delim_var, width=8,
-                     values=["auto", ",", "\t", ";", "|"]).grid(row=0, column=4, padx=2)
-
-        # ── 直接入力エリア ────────────────────────────
+        # ── 直接入力エリア（折りたたみ可） ──────────────
         qa_frame = ttk.LabelFrame(parent, text="直接入力", padding=6)
-        qa_frame.pack(fill='x', padx=4, pady=2)
+        self._qa_frame = qa_frame
+        self._qa_anchor = ttk.Frame(parent)   # 再表示時の位置の目印
+        self._qa_anchor.pack(fill='x')
+        if self._show_quick_add.get():
+            qa_frame.pack(fill='x', padx=4, pady=2, after=self._qa_anchor)
+        else:
+            self._qa_toggle_btn.configure(text="直接入力 ▸")
 
-        # TC テンプレート行
         tmpl_row = ttk.Frame(qa_frame)
         tmpl_row.pack(fill='x', pady=(0, 4))
-        ttk.Label(tmpl_row, text="TCテンプレ:").pack(side='left')
-        for tc_label, tc_val in [("00:00:00:00", "00:00:00:00"),
-                                  ("01:00:00:00", "01:00:00:00"),
-                                  ("10:00:00:00", "10:00:00:00")]:
-            ttk.Button(tmpl_row, text=tc_label, width=11,
+        ttk.Label(tmpl_row, text="TC:").pack(side='left')
+        for tc_label, tc_val in [("00:00", "00:00:00:00"), ("01:00", "01:00:00:00"),
+                                  ("10:00", "10:00:00:00")]:
+            ttk.Button(tmpl_row, text=tc_label, width=6,
                        command=lambda t=tc_val: self._qa_start_var.set(t)
-                       ).pack(side='left', padx=2)
-        ttk.Separator(tmpl_row, orient='vertical').pack(side='left', fill='y', padx=8)
+                       ).pack(side='left', padx=1)
+        ttk.Separator(tmpl_row, orient='vertical').pack(side='left', fill='y', padx=6)
         ttk.Label(tmpl_row, text="尺:").pack(side='left')
-        for dur in [2, 3, 5, 10, 15, 30]:
+        for dur in [2, 3, 5, 10]:
             ttk.Button(tmpl_row, text=f"{dur}秒", width=4,
                        command=lambda d=dur: self._qa_dur_var.set(f"{d:.3f}")
                        ).pack(side='left', padx=1)
 
-        # タイムコード行
         tc_row = ttk.Frame(qa_frame)
         tc_row.pack(fill='x', pady=(0, 4))
-
-        ttk.Label(tc_row, text="開始 TC:").pack(side='left')
+        ttk.Label(tc_row, text="開始:").pack(side='left')
         self._qa_start_var = tk.StringVar(value="00:00:00:00")
-        ttk.Entry(tc_row, textvariable=self._qa_start_var, width=13).pack(side='left', padx=(2, 8))
-
-        ttk.Label(tc_row, text="終了 TC:").pack(side='left')
+        ttk.Entry(tc_row, textvariable=self._qa_start_var, width=12).pack(side='left', padx=(2, 6))
+        ttk.Label(tc_row, text="終了:").pack(side='left')
         self._qa_end_var = tk.StringVar(value="00:00:05:00")
-        ttk.Entry(tc_row, textvariable=self._qa_end_var, width=13).pack(side='left', padx=(2, 8))
-
+        ttk.Entry(tc_row, textvariable=self._qa_end_var, width=12).pack(side='left', padx=(2, 6))
         ttk.Label(tc_row, text="尺:").pack(side='left')
         self._qa_dur_var = tk.StringVar(value="5.000")
         ttk.Entry(tc_row, textvariable=self._qa_dur_var, width=7).pack(side='left', padx=(2, 2))
@@ -4377,10 +5377,8 @@ class DavinTelopApp(tk.Tk):
         self._qa_end_var.trace_add('write', self._qa_on_end_change)
         self._qa_dur_var.trace_add('write', self._qa_on_dur_change)
 
-        # テキスト行
         txt_row = ttk.Frame(qa_frame)
         txt_row.pack(fill='x')
-
         ttk.Label(txt_row, text="テキスト:").pack(side='left')
         self._qa_text_var = tk.StringVar()
         self._qa_text_entry = ttk.Entry(txt_row, textvariable=self._qa_text_var)
@@ -4388,61 +5386,571 @@ class DavinTelopApp(tk.Tk):
         self._qa_text_entry.bind('<Return>', lambda e: self._quick_add())
         ttk.Button(txt_row, text="追加", width=6, command=self._quick_add).pack(side='left')
 
-        # テロップリスト
-        list_frame = ttk.LabelFrame(parent, text="テロップリスト", padding=4)
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=2)
+        # ── リスト + 詳細編集（上下に分割） ──────────────
+        list_pane = ttk.PanedWindow(parent, orient=tk.VERTICAL)
+        list_pane.pack(fill=tk.BOTH, expand=True, padx=4, pady=2)
+        self._list_pane = list_pane
 
-        # ツールバー
+        list_frame = ttk.Frame(list_pane, padding=(0, 2))
+        list_pane.add(list_frame, weight=3)
+
         tb = ttk.Frame(list_frame)
         tb.pack(fill='x', pady=(0, 4))
-        for label, cmd in [("✎ 編集", self.edit_selected),
-                            ("⧉ 複製", self.duplicate_selected), ("✕ 削除", self.delete_selected),
-                            ("↑", self.move_up), ("↓", self.move_down)]:
-            ttk.Button(tb, text=label, width=6, command=cmd).pack(side='left', padx=1)
-        ttk.Separator(tb, orient='vertical').pack(side='left', fill='y', padx=6)
+        for label, cmd, tip in [
+                ("＋", self.add_entry, "新規テロップ (Ctrl+N)"),
+                ("⤓", self.insert_after_selected, "選択の直後に挿入 (Insert)"),
+                ("✎", self.edit_selected, "ダイアログで編集 (Enter / F2)"),
+                ("⧉", self.duplicate_selected, "複製 (Ctrl+D)"),
+                ("✕", self.delete_selected, "削除 (Delete)"),
+                ("↑", self.move_up, "上へ"), ("↓", self.move_down, "下へ"),
+                ("⇅", self.sort_by_tc, "開始TC順に並べ替え"),
+                ("🔗", self.merge_selected, "結合"),
+                ("✂", self.split_selected, "改行で分割")]:
+            b = ttk.Button(tb, text=label, width=3, command=cmd)
+            b.pack(side='left', padx=1)
+            _Tooltip(b, tip)
 
-        # Treeview
-        cols = ("id", "start", "end", "text", "enabled")
+        self._filter_var = tk.StringVar()
+        fe = ttk.Entry(tb, textvariable=self._filter_var, width=14)
+        fe.pack(side='right', fill='x', expand=True, padx=(8, 0))
+        _Tooltip(fe, "🔎 絞り込み (Ctrl+F)  テキスト・話者・メモ・TC で検索")
+        ttk.Label(tb, text="🔎").pack(side='right')
+        self._filter_entry = fe
+        fe.bind('<Escape>', lambda e: self._filter_var.set(""))
+        fe.bind('<Down>', lambda e: (self._tree.focus_set(), self._select_first_visible()))
+        self._filter_var.trace_add('write', lambda *_: self._populate_tree())
+
+        # ステータス（ツリーより先に bottom へ pack しないと横に回り込む）
+        self._status_var = tk.StringVar(value="テロップ: 0 件")
+        ttk.Label(list_frame, textvariable=self._status_var, anchor='w',
+                  foreground='gray').pack(side='bottom', fill='x', pady=(4, 0))
+
+        cols = ("id", "start", "end", "dur", "text", "spk", "chars", "enabled")
         self._tree = ttk.Treeview(list_frame, columns=cols, show='headings', selectmode='extended')
-        self._tree.heading("id",      text="No.")
-        self._tree.heading("start",   text="開始")
-        self._tree.heading("end",     text="終了")
-        self._tree.heading("text",    text="テキスト")
-        self._tree.heading("enabled", text="有効")
-        self._tree.column("id",      width=40,  anchor='center', stretch=False)
-        self._tree.column("start",   width=110, anchor='center', stretch=False)
-        self._tree.column("end",     width=110, anchor='center', stretch=False)
-        self._tree.column("text",    width=200, anchor='w')
-        self._tree.column("enabled", width=42,  anchor='center', stretch=False)
+        for c, label, w, anchor, stretch in [
+                ("id", "No.", 44, 'center', False), ("start", "開始", 92, 'center', False),
+                ("end", "終了", 92, 'center', False), ("dur", "尺", 46, 'e', False),
+                ("text", "テキスト", 160, 'w', True), ("spk", "話者", 60, 'w', False),
+                ("chars", "字数", 38, 'e', False), ("enabled", "有効", 38, 'center', False)]:
+            self._tree.heading(c, text=label)
+            self._tree.column(c, width=w, anchor=anchor, stretch=stretch)
+        self._tree.tag_configure('disabled', foreground='gray')
+        self._tree.tag_configure('error',    foreground='#E5484D')
+        self._tree.tag_configure('overlap',  foreground='#E8890C')
 
         scroll_y = ttk.Scrollbar(list_frame, orient='vertical', command=self._tree.yview)
         self._tree.configure(yscrollcommand=scroll_y.set)
-        self._tree.pack(side='left', fill=tk.BOTH, expand=True)
         scroll_y.pack(side='right', fill='y')
+        self._tree.pack(side='left', fill=tk.BOTH, expand=True)
 
-        self._tree.bind('<Double-1>', lambda e: self.edit_selected())
-        self._tree.bind('<Return>',   lambda e: self.edit_selected())
-        self._tree.bind('<Delete>',   lambda e: self.delete_selected())
-        self._tree.bind('<<TreeviewSelect>>', self._on_select)
+        t = self._tree
+        t.bind('<Double-1>', self._on_tree_double)
+        t.bind('<Return>',   lambda e: self.edit_selected())
+        t.bind('<Delete>',   lambda e: self.delete_selected())
+        t.bind('<F2>',       lambda e: self._insp_focus_text())
+        t.bind('<Insert>',   lambda e: self.insert_after_selected())
+        t.bind('<space>',    lambda e: (self.toggle_enabled(), 'break')[1])
+        t.bind('<Control-d>', lambda e: (self.duplicate_selected(), 'break')[1])
+        t.bind('<Control-c>', lambda e: (self.copy_selected(), 'break')[1])
+        t.bind('<Control-v>', lambda e: (self.paste_entries(), 'break')[1])
+        t.bind('<Control-a>', lambda e: (self.select_all(), 'break')[1])
+        t.bind('<Key-i>', lambda e: self.set_in_out('in'))
+        t.bind('<Key-o>', lambda e: self.set_in_out('out'))
+        t.bind('<bracketleft>',  lambda e: (self.nudge_selected(-1), 'break')[1])
+        t.bind('<bracketright>', lambda e: (self.nudge_selected(1), 'break')[1])
+        t.bind('<braceleft>',    lambda e: (self.nudge_selected(None, -1), 'break')[1])
+        t.bind('<braceright>',   lambda e: (self.nudge_selected(None, 1), 'break')[1])
+        t.bind('<Alt-Up>',   lambda e: (self.move_up(), 'break')[1])
+        t.bind('<Alt-Down>', lambda e: (self.move_down(), 'break')[1])
+        t.bind('<<TreeviewSelect>>', self._on_select)
+        # ドラッグで並べ替え
+        t.bind('<ButtonPress-1>', self._tree_drag_start, add='+')
+        t.bind('<B1-Motion>', self._tree_drag_motion, add='+')
+        t.bind('<ButtonRelease-1>', self._tree_drag_end, add='+')
+        self._tree_drag = None
 
         # 右クリックメニュー
         self._ctx_menu = tk.Menu(self._tree, tearoff=0)
-        self._ctx_menu.add_command(label="編集", command=self.edit_selected)
-        self._ctx_menu.add_command(label="複製", command=self.duplicate_selected)
-        self._ctx_menu.add_separator()
-        self._ctx_menu.add_command(label="有効/無効", command=self.toggle_enabled)
-        self._ctx_menu.add_separator()
-        self._ctx_menu.add_command(label="📍 再生ヘッドに配置 (Resolve)",
-                                   command=self.place_selected_at_playhead)
-        self._ctx_menu.add_separator()
-        self._ctx_menu.add_command(label="削除", command=self.delete_selected)
-        self._tree.bind('<Button-2>', self._show_context_menu)
-        self._tree.bind('<Control-Button-1>', self._show_context_menu)
+        cm = self._ctx_menu
+        cm.add_command(label="ダイアログで編集", accelerator="Enter", command=self.edit_selected)
+        cm.add_command(label="直後に新規挿入...", accelerator="Insert", command=self.insert_after_selected)
+        cm.add_command(label="複製", accelerator="Ctrl+D", command=self.duplicate_selected)
+        cm.add_separator()
+        cm.add_command(label="コピー", accelerator="Ctrl+C", command=self.copy_selected)
+        cm.add_command(label="貼り付け", accelerator="Ctrl+V", command=self.paste_entries)
+        cm.add_separator()
+        cm.add_command(label="有効/無効", accelerator="Space", command=self.toggle_enabled)
+        proc = tk.Menu(cm, tearoff=0)
+        self._build_process_menu(proc)
+        cm.add_cascade(label="✏ 加工", menu=proc)
+        cm.add_separator()
+        cm.add_command(label="▶ Resolve再生ヘッドをここへ移動", command=self.jump_to_selected)
+        cm.add_command(label="📍 再生ヘッドに配置 (Resolve)", command=self.place_selected_at_playhead)
+        cm.add_separator()
+        cm.add_command(label="削除", accelerator="Delete", command=self.delete_selected)
+        t.bind('<Button-3>', self._show_context_menu)
+        t.bind('<Button-2>', self._show_context_menu)
+        if sys.platform == 'darwin':
+            t.bind('<Control-Button-1>', self._show_context_menu)
 
-        # ステータスラベル
-        self._status_var = tk.StringVar(value="テロップ: 0 件")
-        ttk.Label(list_frame, textvariable=self._status_var, anchor='w').pack(
-            fill='x', pady=(4, 0))
+        # 詳細編集パネル
+        insp = ttk.LabelFrame(list_pane, text="詳細編集", padding=6)
+        list_pane.add(insp, weight=1)
+        self._build_inspector(insp)
+
+    def _toggle_quick_add(self):
+        show = not self._show_quick_add.get()
+        self._show_quick_add.set(show)
+        if show:
+            self._qa_frame.pack(fill='x', padx=4, pady=2, after=self._qa_anchor)
+            self._qa_toggle_btn.configure(text="直接入力 ▾")
+            self._qa_text_entry.focus_set()
+        else:
+            self._qa_frame.pack_forget()
+            self._qa_toggle_btn.configure(text="直接入力 ▸")
+        self._save_app_config()
+
+    def _select_first_visible(self):
+        ch = self._tree.get_children()
+        if ch and not self._tree.selection():
+            self._tree.selection_set(ch[0])
+            self._tree.focus(ch[0])
+
+    def _on_tree_double(self, event):
+        # 見出しのダブルクリックは無視
+        if self._tree.identify_region(event.x, event.y) != 'cell':
+            return
+        col = self._tree.identify_column(event.x)
+        if col == '#5':                    # テキスト列 → 詳細編集で直接編集
+            self._insp_focus_text()
+            return 'break'
+        self.edit_selected()
+        return 'break'
+
+    # ─── ツリーのドラッグ並べ替え ─────────────────
+
+    def _tree_drag_start(self, event):
+        row = self._tree.identify_row(event.y)
+        if not row or event.state & 0x5 or self._tree.identify_region(event.x, event.y) != 'cell':
+            self._tree_drag = None
+            return
+        self._tree_drag = {"y": event.y, "row": row, "active": False}
+
+    def _tree_drag_motion(self, event):
+        d = self._tree_drag
+        if not d or self._filter_var.get().strip():
+            return
+        if not d["active"] and abs(event.y - d["y"]) < 8:
+            return
+        d["active"] = True
+        self._tree.configure(cursor='sb_v_double_arrow')
+        return 'break'
+
+    def _tree_drag_end(self, event):
+        d = self._tree_drag
+        self._tree_drag = None
+        self._tree.configure(cursor='')
+        if not d or not d["active"]:
+            return
+        target = self._tree.identify_row(event.y)
+        sel = self._get_selected_entries()
+        if not sel:
+            return
+        rest = [e for e in self.telop_list if e not in sel]
+        if target:
+            tid = int(target)
+            tgt = next((e for e in self.telop_list if e.id == tid), None)
+            if tgt in sel:
+                return
+            idx = rest.index(tgt)
+            # 下方向へのドラッグは対象の後ろへ
+            if self.telop_list.index(tgt) > self.telop_list.index(sel[0]):
+                idx += 1
+        else:
+            idx = len(rest) if event.y > 10 else 0
+        self.telop_list = rest[:idx] + sel + rest[idx:]
+        self._refresh_tree()
+        self._progress_var.set(f"{len(sel)} 件を移動しました")
+
+    # ─── 詳細編集パネル（インスペクタ） ─────────────
+
+    _STYLE_POS = [("", "既定"), ("top", "上"), ("middle", "中央"), ("bottom", "下")]
+
+    def _build_inspector(self, f):
+        self._insp_ids: tuple = ()
+        self._insp_loading = False
+        self._insp_text_job = None
+        f.columnconfigure(1, weight=1)
+
+        self._insp_title = tk.StringVar(value="テロップを選択してください")
+        head = ttk.Frame(f)
+        head.grid(row=0, column=0, columnspan=4, sticky='ew')
+        ttk.Label(head, textvariable=self._insp_title, foreground='gray').pack(side='left')
+
+        # テキスト + クイック加工
+        tf_ = ttk.Frame(f)
+        tf_.grid(row=1, column=0, columnspan=4, sticky='nsew', pady=(2, 4))
+        tf_.columnconfigure(0, weight=1)
+        tf_.rowconfigure(0, weight=1)
+        f.rowconfigure(1, weight=1)
+        self._insp_text = tk.Text(tf_, height=2, wrap='word', undo=True,
+                                  bg=_tc("text_bg"), fg=_tc("text_fg"),
+                                  insertbackground=_tc("text_fg"), relief='flat',
+                                  font=('', 11), padx=6, pady=4)
+        self._insp_text.grid(row=0, column=0, sticky='nsew')
+        self._insp_text.bind('<KeyRelease>', self._insp_on_text_key)
+        self._insp_text.bind('<FocusOut>', lambda e: self._insp_commit_text())
+        self._insp_text.bind('<Escape>', lambda e: (self._tree.focus_set(), 'break')[1])
+        self._insp_text.bind('<Control-Return>', lambda e: (self._insp_commit_text(),
+                                                            self._tree.focus_set(), 'break')[2])
+        qb = head
+        from core import textfmt as tfm
+        for label, fn, tip in [
+                ("整", tfm.normalize_spaces, "空白・空行を整理"),
+                ("「」", lambda t: tfm.add_brackets(t, "「", "」"), "「」で囲む"),
+                ("1行", tfm.join_lines, "改行を削除して1行に"),
+                ("2行", lambda t: tfm.balanced_break(t, 2), "2行に均等改行")]:
+            b = ttk.Button(qb, text=label, width=4, command=lambda fn=fn, tip=tip: self._apply_text_op(fn, tip))
+            b.pack(side='right', padx=1)
+            _Tooltip(b, tip)
+        self._insp_count = tk.StringVar(value="")
+        ttk.Label(f, textvariable=self._insp_count, foreground='gray',
+                  font=('', 8)).grid(row=2, column=0, columnspan=4, sticky='e')
+
+        # タイミング
+        r = ttk.Frame(f)
+        r.grid(row=3, column=0, columnspan=4, sticky='w', pady=2)
+        ttk.Label(r, text="開始").pack(side='left')
+        self._insp_start = tk.StringVar()
+        self._insp_start_e = ttk.Entry(r, textvariable=self._insp_start, width=12)
+        self._insp_start_e.pack(side='left', padx=(2, 0))
+        b = ttk.Button(r, text="I", width=2, command=lambda: self.set_in_out('in'))
+        b.pack(side='left', padx=(1, 6))
+        _Tooltip(b, "開始を Resolve の再生ヘッドに (I)")
+        ttk.Label(r, text="終了").pack(side='left')
+        self._insp_end = tk.StringVar()
+        self._insp_end_e = ttk.Entry(r, textvariable=self._insp_end, width=12)
+        self._insp_end_e.pack(side='left', padx=(2, 0))
+        b = ttk.Button(r, text="O", width=2, command=lambda: self.set_in_out('out'))
+        b.pack(side='left', padx=(1, 6))
+        _Tooltip(b, "終了を Resolve の再生ヘッドに (O)")
+        ttk.Label(r, text="尺").pack(side='left')
+        self._insp_dur = tk.StringVar()
+        self._insp_dur_e = ttk.Entry(r, textvariable=self._insp_dur, width=6)
+        self._insp_dur_e.pack(side='left', padx=(2, 0))
+        ttk.Label(r, text="秒").pack(side='left', padx=(1, 6))
+        for txt, fr, sec, tip in (("◀", -1, 0, "1フレーム前へ ["), ("▶", 1, 0, "1フレーム後ろへ ]")):
+            b = ttk.Button(r, text=txt, width=2, command=lambda fr=fr: self.nudge_selected(fr))
+            b.pack(side='left')
+            _Tooltip(b, tip)
+        for ent in (self._insp_start_e, self._insp_end_e):
+            ent.bind('<Return>', lambda e: self._insp_commit_tc())
+            ent.bind('<FocusOut>', lambda e: self._insp_commit_tc())
+            ent.bind('<Up>',   lambda e, w=ent: self._insp_nudge_field(w, 1))
+            ent.bind('<Down>', lambda e, w=ent: self._insp_nudge_field(w, -1))
+        self._insp_dur_e.bind('<Return>', lambda e: self._insp_commit_dur())
+        self._insp_dur_e.bind('<FocusOut>', lambda e: self._insp_commit_dur())
+
+        # 話者・メモ・有効
+        r2 = ttk.Frame(f)
+        r2.grid(row=4, column=0, columnspan=4, sticky='ew', pady=2)
+        ttk.Label(r2, text="話者").pack(side='left')
+        self._insp_spk = tk.StringVar()
+        self._insp_spk_cb = ttk.Combobox(r2, textvariable=self._insp_spk, width=10)
+        self._insp_spk_cb.pack(side='left', padx=(2, 8))
+        self._insp_spk_cb.bind('<<ComboboxSelected>>', lambda e: self._insp_commit_field('speaker'))
+        self._insp_spk_cb.bind('<Return>', lambda e: self._insp_commit_field('speaker'))
+        self._insp_spk_cb.bind('<FocusOut>', lambda e: self._insp_commit_field('speaker'))
+        ttk.Label(r2, text="メモ").pack(side='left')
+        self._insp_note = tk.StringVar()
+        ne = ttk.Entry(r2, textvariable=self._insp_note, width=14)
+        ne.pack(side='left', padx=(2, 8), fill='x', expand=True)
+        ne.bind('<Return>', lambda e: self._insp_commit_field('note'))
+        ne.bind('<FocusOut>', lambda e: self._insp_commit_field('note'))
+        self._insp_enabled = tk.BooleanVar(value=True)
+        ttk.Checkbutton(r2, text="有効", variable=self._insp_enabled,
+                        command=lambda: self._insp_commit_field('enabled')).pack(side='left')
+
+        # 個別スタイル
+        sf = ttk.LabelFrame(f, text="個別スタイル（このテロップだけ変更）", padding=(6, 2))
+        sf.grid(row=5, column=0, columnspan=4, sticky='ew', pady=(4, 0))
+        self._insp_style_frame = sf
+        s1 = ttk.Frame(sf)
+        s1.pack(fill='x')
+        ttk.Label(s1, text="文字色").pack(side='left')
+        self._insp_fc = ColorButton(s1, color="#FFFFFF",
+                                    command=lambda c: self._insp_set_style('font_color', c))
+        self._insp_fc.pack(side='left', padx=(2, 6))
+        ttk.Label(s1, text="縁色").pack(side='left')
+        self._insp_sc = ColorButton(s1, color="#000000",
+                                    command=lambda c: self._insp_set_style('stroke_color', c))
+        self._insp_sc.pack(side='left', padx=(2, 6))
+        ttk.Label(s1, text="サイズ").pack(side='left')
+        self._insp_size = tk.StringVar()
+        sp = ttk.Spinbox(s1, from_=8, to=300, textvariable=self._insp_size, width=5,
+                         command=lambda: self._insp_set_style('font_size', self._insp_size.get()))
+        sp.pack(side='left', padx=(2, 6))
+        sp.bind('<Return>', lambda e: self._insp_set_style('font_size', self._insp_size.get()))
+        ttk.Label(s1, text="位置").pack(side='left')
+        self._insp_pos = tk.StringVar(value="既定")
+        pc = ttk.Combobox(s1, textvariable=self._insp_pos, width=5, state='readonly',
+                          values=[lab for _, lab in self._STYLE_POS])
+        pc.pack(side='left', padx=(2, 6))
+        pc.bind('<<ComboboxSelected>>', lambda e: self._insp_set_style(
+            'position_v', dict((lab, v) for v, lab in self._STYLE_POS)[self._insp_pos.get()]))
+        self._insp_style_info = tk.StringVar(value="")
+        self._insp_style_info.trace_add('write', lambda *_: sf.configure(
+            text="個別スタイル — " + (self._insp_style_info.get() or "このテロップだけ変更")))
+        for txt, cmd, tip in (("✕", self.clear_style, "個別スタイルを解除（共通デザインに戻す）"),
+                              ("📋", self.paste_style, "コピーしたスタイルを貼り付け"),
+                              ("⧉", self.copy_style, "このテロップのスタイルをコピー")):
+            b = ttk.Button(s1, text=txt, width=3, command=cmd)
+            b.pack(side='right', padx=1)
+            _Tooltip(b, tip)
+        self._insp_set_enabled(False)
+
+    def _insp_set_enabled(self, on: bool, multi: bool = False):
+        state = 'normal' if on else 'disabled'
+        try:
+            self._insp_text.configure(state='normal' if (on and not multi) else 'disabled')
+            for w in (self._insp_start_e, self._insp_end_e):
+                w.configure(state='normal' if (on and not multi) else 'disabled')
+            self._insp_dur_e.configure(state=state)
+            self._set_children_state(self._insp_style_frame, state)
+        except tk.TclError:
+            pass
+
+    def _insp_load(self, force: bool = False):
+        """選択テロップを詳細編集パネルに表示（フォーカス中の欄は上書きしない）。"""
+        sel = self._get_selected_entries()
+        ids = tuple(e.id for e in sel)
+        focus = self.focus_get()
+        same = ids == self._insp_ids and not force
+        self._insp_ids = ids
+        self._insp_loading = True
+        try:
+            if not sel:
+                self._insp_title.set("テロップを選択してください")
+                self._insp_text.configure(state='normal')
+                self._insp_text.delete('1.0', 'end')
+                for v in (self._insp_start, self._insp_end, self._insp_dur,
+                          self._insp_spk, self._insp_note, self._insp_size):
+                    v.set("")
+                self._insp_count.set("")
+                self._insp_style_info.set("")
+                self._insp_set_enabled(False)
+                return
+            e = sel[0]
+            multi = len(sel) > 1
+            self._insp_set_enabled(True, multi)
+            self._insp_title.set(
+                f"{len(sel)} 件を選択中 — 話者・尺・有効・スタイルをまとめて変更できます"
+                if multi else f"No.{e.id}   ({self.telop_list.index(e) + 1} / {len(self.telop_list)})")
+            if not (same and focus is self._insp_text):
+                self._insp_text.configure(state='normal')
+                self._insp_text.delete('1.0', 'end')
+                self._insp_text.insert('1.0', "（複数選択中）" if multi else e.text)
+                self._insp_text.edit_reset()
+                if multi:
+                    self._insp_text.configure(state='disabled')
+            fps = self._current_fps()
+            if focus is not self._insp_start_e:
+                self._insp_start.set("" if multi else e.start_time)
+            if focus is not self._insp_end_e:
+                self._insp_end.set("" if multi else e.end_time)
+            if focus is not self._insp_dur_e:
+                try:
+                    durs = {round(parse_timecode(x.end_time, fps) - parse_timecode(x.start_time, fps), 3)
+                            for x in sel}
+                    self._insp_dur.set(f"{durs.pop():.3f}" if len(durs) == 1 else "")
+                except ValueError:
+                    self._insp_dur.set("")
+            if focus is not self._insp_spk_cb:
+                spks = {x.speaker for x in sel}
+                self._insp_spk.set(spks.pop() if len(spks) == 1 else "")
+            self._insp_spk_cb.configure(values=sorted({x.speaker for x in self.telop_list if x.speaker}))
+            self._insp_note.set("" if multi else e.note)
+            self._insp_enabled.set(all(x.enabled for x in sel))
+            self._insp_update_count()
+            # スタイル
+            d = self._collect_design()
+            st = e.style or {}
+            self._insp_fc.set(st.get('font_color', d.font_color))
+            self._insp_sc.set(st.get('stroke_color', d.stroke_color))
+            self._insp_size.set(str(st.get('font_size', d.font_size)))
+            self._insp_pos.set(dict(self._STYLE_POS).get(st.get('position_v', ''), "既定"))
+            names = {'font_color': '文字色', 'stroke_color': '縁色', 'font_size': 'サイズ',
+                     'position_v': '位置', 'offset_y': 'Y位置'}
+            self._insp_style_info.set(
+                "変更中: " + "・".join(names.get(k, k) for k in st) if st else "共通デザインを使用中")
+        finally:
+            self._insp_loading = False
+
+    def _insp_entries(self) -> list:
+        ids = set(self._insp_ids)
+        return [e for e in self.telop_list if e.id in ids]
+
+    def _insp_focus_text(self):
+        if len(self._get_selected_entries()) == 1:
+            self._insp_text.focus_set()
+            self._insp_text.mark_set('insert', 'end-1c')
+
+    def _insp_update_count(self):
+        t = self._insp_text.get('1.0', 'end-1c')
+        if len(self._insp_ids) != 1:
+            self._insp_count.set("")
+            return
+        lines = t.split('\n')
+        self._insp_count.set(f"{len(t.replace(chr(10), ''))} 文字 / {len(lines)} 行"
+                             f"（最長 {max((len(l) for l in lines), default=0)}）   "
+                             "Ctrl+Enter: 確定 / Esc: リストへ")
+
+    def _insp_on_text_key(self, event=None):
+        if self._insp_loading:
+            return
+        self._insp_update_count()
+        if self._insp_text_job:
+            self.after_cancel(self._insp_text_job)
+        self._insp_text_job = self.after(600, self._insp_commit_text)
+
+    def _insp_commit_text(self):
+        self._insp_text_job = None
+        ents = self._insp_entries()
+        if len(ents) != 1 or str(self._insp_text.cget('state')) == 'disabled':
+            return
+        new = self._insp_text.get('1.0', 'end-1c').strip()
+        if new and new != ents[0].text:
+            ents[0].text = new
+            self._refresh_tree()
+            self._preview_text_var.set(new)
+            self.show_telop_preview(ents[0])
+
+    def _insp_commit_tc(self):
+        ents = self._insp_entries()
+        if len(ents) != 1 or self._insp_loading:
+            return
+        e = ents[0]
+        fps = self._current_fps()
+        try:
+            st = normalize_timecode(self._insp_start.get(), fps)
+            en = normalize_timecode(self._insp_end.get(), fps)
+        except ValueError:
+            self._progress_var.set("⚠ タイムコードが不正です")
+            return
+        if parse_timecode(en, fps) <= parse_timecode(st, fps):
+            self._progress_var.set("⚠ 終了TCは開始TCより後にしてください")
+            return
+        self._insp_start.set(st)
+        self._insp_end.set(en)
+        if (st, en) != (e.start_time, e.end_time):
+            e.start_time, e.end_time = st, en
+            self._refresh_tree()
+            self._insp_load(force=True)
+
+    def _insp_nudge_field(self, widget, frames: int):
+        var = self._insp_start if widget is self._insp_start_e else self._insp_end
+        try:
+            var.set(shift_timecode(var.get() or "00:00:00:00", frames, self._current_fps()))
+        except ValueError:
+            pass
+        return 'break'
+
+    def _insp_commit_dur(self):
+        if self._insp_loading or not self._insp_dur.get().strip():
+            return
+        try:
+            dur = float(self._insp_dur.get())
+        except ValueError:
+            return
+        if dur <= 0:
+            return
+        fps = self._current_fps()
+        changed = False
+        for e in self._insp_entries():
+            try:
+                st = parse_timecode(e.start_time, fps)
+            except ValueError:
+                continue
+            new_end = seconds_to_timecode(st + dur, fps)
+            if new_end != e.end_time:
+                e.end_time = new_end
+                changed = True
+        if changed:
+            self._refresh_tree()
+            self._insp_load(force=True)
+
+    def _insp_commit_field(self, field: str):
+        if self._insp_loading:
+            return
+        ents = self._insp_entries()
+        if not ents:
+            return
+        if field == 'speaker':
+            val = self._insp_spk.get().strip()
+            if len(ents) > 1 and not val:
+                return
+        elif field == 'note':
+            if len(ents) != 1:
+                return
+            val = self._insp_note.get().strip()
+        else:
+            val = bool(self._insp_enabled.get())
+        changed = False
+        for e in ents:
+            if getattr(e, field) != val:
+                setattr(e, field, val)
+                changed = True
+        if changed:
+            self._refresh_tree()
+
+    def _insp_set_style(self, key: str, value):
+        if self._insp_loading:
+            return
+        ents = self._insp_entries()
+        if not ents:
+            return
+        d = self._collect_design()
+        if key == 'font_size':
+            try:
+                value = int(float(value))
+            except (TypeError, ValueError):
+                return
+        for e in ents:
+            st = dict(e.style or {})
+            if value in ("", None) or value == getattr(d, key):
+                st.pop(key, None)           # 共通デザインと同じなら上書き不要
+            else:
+                st[key] = value
+            e.style = st
+        self._refresh_tree()
+        self._insp_load(force=True)
+        self._schedule_preview_update()
+
+    # ─── ステータスバー（下部） ───────────────────
+
+    def _setup_bottom_bar(self):
+        bar = ttk.Frame(self, padding=(8, 3))
+        bar.pack(fill='x', side='bottom')
+        ttk.Separator(self, orient='horizontal').pack(fill='x', side='bottom')
+
+        self._progress_var = tk.StringVar(value="")
+        ttk.Label(bar, textvariable=self._progress_var, style='Progress.TLabel').pack(
+            side='left', padx=4, fill='x', expand=True)
+
+        # 右側: 保存先・トラック
+        ttk.Button(bar, text="開く", width=4,
+                   command=self._open_save_dir).pack(side='right', padx=(0, 2))
+        ttk.Button(bar, text="📂", width=3,
+                   command=self._pick_resolve_out_dir).pack(side='right', padx=(0, 2))
+        save_entry = ttk.Entry(bar, textvariable=self._resolve_out_dir, width=34)
+        save_entry.pack(side='right', padx=(2, 2))
+        save_entry.bind('<FocusOut>', lambda e: self._save_app_config())
+        save_entry.bind('<Return>',   lambda e: self._save_app_config())
+        ttk.Label(bar, text="📁 PNG保存先:").pack(side='right')
+        ttk.Separator(bar, orient='vertical').pack(side='right', fill='y', padx=8)
+        ttk.Spinbox(bar, from_=1, to=20, textvariable=self._resolve_track,
+                    width=3).pack(side='right')
+        ttk.Label(bar, text="配置トラック V").pack(side='right', padx=(0, 2))
 
     def _setup_right_panel(self, parent):
         self._right_pane = ttk.PanedWindow(parent, orient=tk.VERTICAL)
@@ -4560,7 +6068,7 @@ class DavinTelopApp(tk.Tk):
         from core.renderer import render_telop_image
         try:
             design = self._collect_design()
-            img    = render_telop_image(entry.text, design)
+            img    = render_telop_image(entry.text, design.with_overrides(entry.style))
             W, H   = design.canvas_width, design.canvas_height
             bg     = _make_checker_bg(W, H)
             bg.paste(img, (0, 0), img)
@@ -5816,71 +7324,6 @@ class DavinTelopApp(tk.Tk):
         except Exception as ex:
             messagebox.showerror("エラー", f"削除に失敗しました:\n{ex}", parent=self)
 
-    def _setup_bottom_bar(self):
-        bar = ttk.Frame(self, relief='groove', padding=(8, 6))
-        bar.pack(fill='x', side='bottom', padx=6, pady=(0, 6))
-
-        # 書き出しボタン群
-        ttk.Button(bar, text="PNG 書き出し", command=self.export_png).pack(side='left', padx=4)
-        ttk.Button(bar, text="SRT 書き出し", command=self.export_srt).pack(side='left', padx=4)
-        ttk.Button(bar, text="FCPxml 書き出し", command=self.export_fcpxml).pack(side='left', padx=4)
-        ttk.Button(bar, text="AAF 書き出し", command=self.export_aaf).pack(side='left', padx=4)
-        ttk.Checkbutton(bar, text="ファイル名にテキスト",
-                        variable=self._include_text_in_filename,
-                        command=self._save_app_config).pack(side='left', padx=(2, 0))
-
-        ttk.Separator(bar, orient='vertical').pack(side='left', fill='y', padx=8)
-
-        # ── テロップ保存先設定 ──────────────────────────
-        ttk.Label(bar, text="📁 保存先:").pack(side='left')
-        save_entry = ttk.Entry(bar, textvariable=self._resolve_out_dir, width=30)
-        save_entry.pack(side='left', padx=(2, 2))
-        # フォーカスアウトで自動保存
-        save_entry.bind('<FocusOut>', lambda e: self._save_app_config())
-        save_entry.bind('<Return>',   lambda e: self._save_app_config())
-        ttk.Button(bar, text="📂", width=3,
-                   command=self._pick_resolve_out_dir).pack(side='left', padx=(0, 2))
-        ttk.Button(bar, text="開く", width=4,
-                   command=self._open_save_dir).pack(side='left', padx=(0, 6))
-
-        ttk.Label(bar, text="V:").pack(side='left')
-        ttk.Spinbox(bar, from_=1, to=20, textvariable=self._resolve_track,
-                    width=3).pack(side='left', padx=(0, 8))
-
-        ttk.Button(bar, text="🐍 Resolveスクリプト生成",
-                   command=self.export_resolve_script).pack(side='left', padx=4)
-        ttk.Button(bar, text="⚡ Resolve API送信",
-                   command=self.send_to_resolve).pack(side='left', padx=4)
-        ttk.Button(bar, text="📍 再生ヘッド配置",
-                   command=self.place_selected_at_playhead).pack(side='left', padx=4)
-
-        ttk.Separator(bar, orient='vertical').pack(side='left', fill='y', padx=8)
-
-        ttk.Button(bar, text="🔊 VoiceVox",
-                   command=self.export_voicevox).pack(side='left', padx=4)
-        ttk.Button(bar, text="🎭 口パク",
-                   command=self.export_lipsync).pack(side='left', padx=4)
-
-        ttk.Separator(bar, orient='vertical').pack(side='left', fill='y', padx=8)
-
-        # テロッププレビュー・テンプレート呼び出しボタン
-        ttk.Button(bar, text="🎬 テロッププレビュー",
-                   command=self._toggle_telop_preview_window).pack(side='left', padx=4)
-        ttk.Button(bar, text="📁 テンプレート",
-                   command=self._toggle_template_window).pack(side='left', padx=4)
-
-        ttk.Separator(bar, orient='vertical').pack(side='left', fill='y', padx=8)
-
-        self._progress_var = tk.StringVar(value="")
-        ttk.Label(bar, textvariable=self._progress_var, style='Progress.TLabel').pack(
-            side='left', padx=4)
-
-        # テーマ切替ボタン（右端）
-        self._theme_btn = ttk.Button(
-            bar, text="🌙" if not self._is_dark.get() else "☀️",
-            width=3, command=self._toggle_theme_btn)
-        self._theme_btn.pack(side='right', padx=6)
-
     def _toggle_theme_btn(self):
         self._toggle_theme()
         self._theme_btn.configure(
@@ -5902,8 +7345,21 @@ class DavinTelopApp(tk.Tk):
             delimiter = "\t"
 
         try:
-            entries = import_csv(path, encoding=encoding, delimiter=delimiter,
-                                  start_id=self._next_id)
+            if encoding == "auto":
+                last_err = None
+                for enc in ("utf-8-sig", "cp932", "euc_jp", "utf-16"):
+                    try:
+                        entries = import_csv(path, encoding=enc, delimiter=delimiter,
+                                             start_id=self._next_id)
+                        encoding = enc
+                        break
+                    except (UnicodeDecodeError, UnicodeError) as ex:
+                        last_err = ex
+                else:
+                    raise last_err or UnicodeDecodeError
+            else:
+                entries = import_csv(path, encoding=encoding, delimiter=delimiter,
+                                     start_id=self._next_id)
             if not entries:
                 messagebox.showwarning("CSVインポート", "テロップデータが見つかりませんでした。\nヘッダ行と列構成を確認してください。")
                 return
@@ -5986,82 +7442,202 @@ class DavinTelopApp(tk.Tk):
         self._qa_text_entry.focus_set()
 
     def _quick_telop_popup(self):
-        """ショートカットキーで呼び出すクイックテロップ入力ポップアップ。"""
+        """ショートカットキーで呼び出す新規テロップ入力（add_entry と同じ）。"""
+        self.add_entry()
+
+    # ─── 新規テロップの TC 自動計算 ─────────────────
+
+    def _current_fps(self) -> float:
         try:
-            fps = self._fps_var.get()
-        except tk.TclError:
-            fps = 29.97
-        start = self._qa_start_var.get().strip()
-        end   = self._qa_end_var.get().strip()
-        dlg = QuickTelopDialog(self, start_tc=start, end_tc=end,
-                               fps=fps, design=self._collect_design())
-        if dlg.result:
-            entry = TelopEntry(id=self._next_id, **dlg.result)
-            self._next_id += 1
-            self.telop_list.append(entry)
-            self._refresh_tree()
-            self._select_last()
-            # QA エリアも連動して次の入力に備える
-            prev_dur = self._qa_dur_var.get()
-            self._qa_start_var.set(dlg.result["end_time"])
-            self._qa_dur_var.set(prev_dur)
-            self._progress_var.set(f"テロップを追加しました: {entry.text[:30]}")
+            return float(self._fps_var.get()) or 29.97
+        except (tk.TclError, ValueError, AttributeError):
+            return 29.97
+
+    def _get_playhead_tc(self) -> Optional[str]:
+        """Resolve の再生ヘッド TC を返す（未接続なら接続を試みる）。失敗時 None。"""
+        try:
+            tc = self._resolve.get_current_timecode()
+            if not tc and self._resolve.connect():
+                tc = self._resolve.get_current_timecode()
+            return tc or None
+        except Exception:
+            return None
+
+    def _latest_end_entry(self) -> Optional[TelopEntry]:
+        """終了TCが最も遅いテロップ。"""
+        fps = self._current_fps()
+        best, best_s = None, -1.0
+        for e in self.telop_list:
+            try:
+                s = parse_timecode(e.end_time, fps)
+            except ValueError:
+                continue
+            if s > best_s:
+                best, best_s = e, s
+        return best
+
+    def _next_new_telop_tc(self, after: Optional[TelopEntry] = None) -> tuple[str, str]:
+        """新規テロップの (開始TC, 終了TC) を設定に従って求める。"""
+        fps = self._current_fps()
+        cfg = self._new_telop_cfg
+        gap = int(cfg.get("gap_frames", 0) or 0)
+        mode = cfg.get("start_mode", "auto")
+        start = None
+
+        if mode == "playhead" and after is None:
+            tc = self._get_playhead_tc()
+            if tc:
+                try:
+                    start = normalize_timecode(tc, fps)
+                except ValueError:
+                    start = None
+        if start is None and mode == "qa" and after is None:
+            try:
+                start = normalize_timecode(self._qa_start_var.get(), fps)
+            except ValueError:
+                start = None
+        if start is None:
+            base = None
+            if after is not None:
+                base = after.end_time
+            elif mode == "auto" and self._get_selected_entries():
+                base = self._get_selected_entries()[-1].end_time
+            else:
+                last = self._latest_end_entry()
+                base = last.end_time if last else None
+            try:
+                if base:
+                    start = shift_timecode(base, gap, fps)
+                else:
+                    start = normalize_timecode(self._qa_start_var.get() or "00:00:00:00", fps)
+            except ValueError:
+                start = "00:00:00:00"
+
+        dur = float(cfg.get("default_dur", 3.0) or 3.0)
+        end = seconds_to_timecode(parse_timecode(start, fps) + dur, fps)
+        return start, end
+
+    def _dialog_keys(self) -> tuple[str, str]:
+        return (self._shortcuts.get("dlg_submit") or "Return",
+                self._shortcuts.get("dlg_newline") or "")
 
     # ─── テロップリスト操作 ──────────────────────
 
-    def add_entry(self):
-        dlg = TelopEditDialog(self, design=self.design)
-        if dlg.result:
-            entry = TelopEntry(
-                id=self._next_id,
-                **dlg.result,
-            )
+    def add_entry(self, after: Optional[TelopEntry] = None, start_tc: Optional[str] = None):
+        """新規テロップ作成ダイアログ。開始/終了TCは自動反映、Enterで作成。"""
+        fps = self._current_fps()
+        if after is None and self._new_telop_cfg.get("start_mode", "auto") == "auto":
+            sel = self._get_selected_entries()
+            after = sel[-1] if sel else None
+        start, end = self._next_new_telop_tc(after)
+        if start_tc:
+            start = start_tc
+            end = seconds_to_timecode(parse_timecode(start, fps)
+                                      + float(self._new_telop_cfg.get("default_dur", 3.0)), fps)
+            after = None
+            # 開始TCが前後するテロップの間に挿入
+            for i, e in enumerate(self.telop_list):
+                try:
+                    if parse_timecode(e.start_time, fps) <= parse_timecode(start, fps):
+                        after = e
+                except ValueError:
+                    pass
+        submit_key, newline_key = self._dialog_keys()
+        state = {"anchor": after}
+
+        def on_submit(result: dict):
+            entry = TelopEntry(id=self._next_id, **result)
             self._next_id += 1
-            self.telop_list.append(entry)
+            anchor = state["anchor"]
+            if anchor is not None and anchor in self.telop_list:
+                self.telop_list.insert(self.telop_list.index(anchor) + 1, entry)
+                state["anchor"] = entry
+            else:
+                self.telop_list.append(entry)
             self._refresh_tree()
-            self._select_last()
+            self._select_entries([entry])
+            # 直接入力欄も次の入力位置に追従
+            gap = int(self._new_telop_cfg.get("gap_frames", 0) or 0)
+            nxt = shift_timecode(result["end_time"], gap, fps)
+            prev_dur = self._qa_dur_var.get()
+            self._qa_start_var.set(nxt)
+            self._qa_dur_var.set(prev_dur)
+            self._progress_var.set(f"テロップを追加しました: {entry.text[:30]}")
+            return (nxt, "")
+
+        dlg = TelopEditDialog(
+            self, design=self._collect_design(), start_tc=start, end_tc=end,
+            submit_key=submit_key, newline_key=newline_key,
+            on_submit=on_submit, continuous=bool(self._new_telop_cfg.get("continuous")),
+            get_playhead=self._get_playhead_tc,
+            chars_per_sec=self._new_telop_cfg.get("cps", 6.0),
+            min_duration=self._new_telop_cfg.get("min_dur", 1.0))
+        cont = bool(dlg.continuous_var.get())
+        if cont != bool(self._new_telop_cfg.get("continuous")):
+            self._new_telop_cfg["continuous"] = cont
+            self._save_app_config()
+
+    def insert_after_selected(self):
+        sel = self._get_selected_entries()
+        self.add_entry(after=sel[-1] if sel else None)
 
     def edit_selected(self):
         sel = self._get_selected_entries()
         if not sel:
             return
         entry = sel[0]
-        dlg = TelopEditDialog(self, entry, design=self.design)
+        submit_key, newline_key = self._dialog_keys()
+        dlg = TelopEditDialog(
+            self, entry, design=self._collect_design().with_overrides(entry.style),
+            submit_key=submit_key, newline_key=newline_key,
+            get_playhead=self._get_playhead_tc,
+            chars_per_sec=self._new_telop_cfg.get("cps", 6.0),
+            min_duration=self._new_telop_cfg.get("min_dur", 1.0))
         if dlg.result:
-            idx = self.telop_list.index(entry)
             for k, v in dlg.result.items():
-                setattr(self.telop_list[idx], k, v)
+                setattr(entry, k, v)
             self._refresh_tree()
+            self.show_telop_preview(entry)
 
     def duplicate_selected(self):
+        import dataclasses
+        new_entries = []
         for entry in self._get_selected_entries():
-            new_entry = TelopEntry(
-                id=self._next_id,
-                start_time=entry.start_time,
-                end_time=entry.end_time,
-                text=entry.text,
-                enabled=entry.enabled,
-                note=entry.note,
-            )
+            new_entry = dataclasses.replace(entry, id=self._next_id, style=dict(entry.style))
             self._next_id += 1
             idx = self.telop_list.index(entry)
             self.telop_list.insert(idx + 1, new_entry)
+            new_entries.append(new_entry)
         self._refresh_tree()
+        self._select_entries(new_entries)
 
     def delete_selected(self):
         sel = self._get_selected_entries()
         if not sel:
             return
         if len(sel) > 1:
-            if not messagebox.askyesno("確認", f"{len(sel)} 件のテロップを削除しますか？"):
+            if not messagebox.askyesno("確認", f"{len(sel)} 件のテロップを削除しますか？\n（Ctrl+Z で元に戻せます）"):
                 return
+        # 削除後は直後の行を選択して連続操作しやすくする
+        idx = self.telop_list.index(sel[-1])
         for entry in sel:
             self.telop_list.remove(entry)
         self._refresh_tree()
+        if self.telop_list:
+            self._select_entries([self.telop_list[min(idx - len(sel) + 1, len(self.telop_list) - 1)]])
+
+    def delete_disabled(self):
+        dis = [e for e in self.telop_list if not e.enabled]
+        if not dis:
+            self._progress_var.set("無効なテロップはありません")
+            return
+        if not messagebox.askyesno("確認", f"無効なテロップ {len(dis)} 件を削除しますか？"):
+            return
+        self.telop_list = [e for e in self.telop_list if e.enabled]
+        self._refresh_tree()
 
     def select_all(self):
-        for iid in self._tree.get_children():
-            self._tree.selection_add(iid)
+        self._tree.selection_set(self._tree.get_children())
 
     def toggle_enabled(self):
         for entry in self._get_selected_entries():
@@ -6072,36 +7648,484 @@ class DavinTelopApp(tk.Tk):
         sel = self._get_selected_entries()
         for entry in sel:
             idx = self.telop_list.index(entry)
-            if idx > 0:
+            if idx > 0 and self.telop_list[idx - 1] not in sel:
                 self.telop_list[idx - 1], self.telop_list[idx] = \
                     self.telop_list[idx], self.telop_list[idx - 1]
         self._refresh_tree()
 
     def move_down(self):
-        sel = list(reversed(self._get_selected_entries()))
-        for entry in sel:
+        sel = self._get_selected_entries()
+        for entry in reversed(sel):
             idx = self.telop_list.index(entry)
-            if idx < len(self.telop_list) - 1:
+            if idx < len(self.telop_list) - 1 and self.telop_list[idx + 1] not in sel:
                 self.telop_list[idx], self.telop_list[idx + 1] = \
                     self.telop_list[idx + 1], self.telop_list[idx]
         self._refresh_tree()
 
+    def sort_by_tc(self):
+        fps = self._current_fps()
+
+        def key(e):
+            try:
+                return (0, parse_timecode(e.start_time, fps))
+            except ValueError:
+                return (1, 0.0)
+        self.telop_list.sort(key=key)   # 安定ソート
+        self._refresh_tree()
+        self._progress_var.set("開始TC順に並べ替えました")
+
+    # ─── 一括編集 ────────────────────────────────
+
+    def _targets(self) -> list[TelopEntry]:
+        """選択があれば選択、なければ全テロップ。"""
+        return self._get_selected_entries() or list(self.telop_list)
+
+    def shift_tc_dialog(self):
+        targets = self._targets()
+        if not targets:
+            return
+        scope = "選択中" if self._get_selected_entries() else "全"
+        s = simpledialog.askstring(
+            "TCを一括シフト",
+            f"{scope} {len(targets)} 件の開始・終了TCをずらします。\n\n"
+            "例:  +2 (秒)  /  -0.5 (秒)  /  +15f (フレーム)  /  -00:00:01:00",
+            parent=self)
+        if not s:
+            return
+        fps = self._current_fps()
+        t = s.strip().replace(' ', '')
+        sign = -1 if t.startswith('-') else 1
+        body = t.lstrip('+-')
+        try:
+            if body.lower().endswith('f'):
+                delta = sign * int(body[:-1])
+            elif ':' in body:
+                delta = sign * timecode_to_frames(body, fps)
+            else:
+                delta = sign * int(round(float(body) * fps))
+        except ValueError:
+            messagebox.showwarning("入力エラー", f"シフト量を解釈できません: {s}", parent=self)
+            return
+        clamped = 0
+        for e in targets:
+            try:
+                if timecode_to_frames(e.start_time, fps) + delta < 0:
+                    clamped += 1
+                e.start_time = shift_timecode(e.start_time, delta, fps)
+                e.end_time = shift_timecode(e.end_time, delta, fps)
+            except ValueError:
+                continue
+        self._refresh_tree()
+        msg = f"{len(targets)} 件を {delta:+d} フレームシフトしました"
+        if clamped:
+            msg += f"（{clamped} 件は 00:00:00:00 で頭打ち）"
+        self._progress_var.set(msg)
+
+    def merge_selected(self):
+        sel = self._get_selected_entries()
+        if len(sel) < 2:
+            self._progress_var.set("結合するには 2 件以上選択してください")
+            return
+        fps = self._current_fps()
+        try:
+            starts = [parse_timecode(e.start_time, fps) for e in sel]
+            ends = [parse_timecode(e.end_time, fps) for e in sel]
+        except ValueError:
+            messagebox.showwarning("結合", "不正なタイムコードを含むため結合できません。", parent=self)
+            return
+        first = sel[0]
+        first.text = "\n".join(e.text for e in sel)
+        first.start_time = seconds_to_timecode(min(starts), fps)
+        first.end_time = seconds_to_timecode(max(ends), fps)
+        for e in sel[1:]:
+            self.telop_list.remove(e)
+        self._refresh_tree()
+        self._select_entries([first])
+        self._progress_var.set(f"{len(sel)} 件を結合しました")
+
+    def split_selected(self):
+        """改行を含むテロップを行ごとに分割（尺は文字数比で按分）。"""
+        fps = self._current_fps()
+        made = 0
+        for entry in list(self._get_selected_entries()):
+            lines = [l for l in entry.text.split('\n') if l.strip()]
+            if len(lines) < 2:
+                continue
+            try:
+                sf = timecode_to_frames(entry.start_time, fps)
+                ef = timecode_to_frames(entry.end_time, fps)
+            except ValueError:
+                continue
+            total = max(len(lines), ef - sf)
+            weights = [max(1, len(l)) for l in lines]
+            wsum = sum(weights)
+            idx = self.telop_list.index(entry)
+            cur = sf
+            acc = 0
+            from core.timecode import frames_to_timecode
+            for i, (line, w) in enumerate(zip(lines, weights)):
+                acc += w
+                nxt = ef if i == len(lines) - 1 else sf + round(total * acc / wsum)
+                if i == 0:
+                    entry.text, entry.start_time = line, frames_to_timecode(cur, fps)
+                    entry.end_time = frames_to_timecode(nxt, fps)
+                else:
+                    import dataclasses
+                    ne = dataclasses.replace(entry, id=self._next_id, text=line,
+                                             style=dict(entry.style),
+                                             start_time=frames_to_timecode(cur, fps),
+                                             end_time=frames_to_timecode(nxt, fps))
+                    self._next_id += 1
+                    self.telop_list.insert(idx + i, ne)
+                cur = nxt
+            made += 1
+        if not made:
+            self._progress_var.set("改行を含むテロップを選択してください")
+            return
+        self._refresh_tree()
+        self._progress_var.set(f"{made} 件のテロップを分割しました")
+
+    def fill_gaps(self):
+        """TC順で各テロップの終了を次テロップの開始(−間隔)まで延長する。"""
+        fps = self._current_fps()
+        gap = int(self._new_telop_cfg.get("gap_frames", 0) or 0)
+        items = []
+        for e in self._targets():
+            try:
+                items.append((timecode_to_frames(e.start_time, fps), e))
+            except ValueError:
+                continue
+        items.sort(key=lambda t: t[0])
+        changed = 0
+        for (sf, e), (nsf, _ne) in zip(items, items[1:]):
+            try:
+                ef = timecode_to_frames(e.end_time, fps)
+            except ValueError:
+                continue
+            target = nsf - gap
+            if target > ef and target > sf:
+                from core.timecode import frames_to_timecode
+                e.end_time = frames_to_timecode(target, fps)
+                changed += 1
+        self._refresh_tree()
+        self._progress_var.set(f"{changed} 件の終了TCを延長しました")
+
+    def recalc_duration_by_chars(self):
+        targets = self._targets()
+        if not targets:
+            return
+        cps = float(self._new_telop_cfg.get("cps", 6.0) or 6.0)
+        mn = float(self._new_telop_cfg.get("min_dur", 1.0) or 0.0)
+        if not messagebox.askyesno(
+                "尺を文字数から再計算",
+                f"{len(targets)} 件の終了TCを「{cps:g} 文字/秒・最小 {mn:g} 秒」で再計算します。\n"
+                "よろしいですか？（Ctrl+Z で元に戻せます）", parent=self):
+            return
+        fps = self._current_fps()
+        for e in targets:
+            try:
+                st = parse_timecode(e.start_time, fps)
+            except ValueError:
+                continue
+            n = len(e.text.replace('\n', '').strip())
+            e.end_time = seconds_to_timecode(st + max(mn, n / cps), fps)
+        self._refresh_tree()
+
+    def open_find_replace(self):
+        dlg = getattr(self, '_find_dlg', None)
+        try:
+            if dlg is not None and dlg.winfo_exists():
+                dlg.lift()
+                dlg._find_entry.focus_set()
+                return
+        except tk.TclError:
+            pass
+        self._find_dlg = FindReplaceDialog(self)
+
+    def find_replace_apply(self, find: str, repl: str, use_regex: bool,
+                           selected_only: bool, case: bool) -> int:
+        import re as _re
+        if not find:
+            return 0
+        targets = self._get_selected_entries() if selected_only else list(self.telop_list)
+        flags = 0 if case else _re.IGNORECASE
+        try:
+            pat = _re.compile(find if use_regex else _re.escape(find), flags)
+        except _re.error as ex:
+            messagebox.showwarning("正規表現エラー", str(ex))
+            return -1
+        total = 0
+        for e in targets:
+            new, n = pat.subn(repl.replace('\\n', '\n') if not use_regex else repl, e.text)
+            if n:
+                e.text = new
+                total += n
+        if total:
+            self._refresh_tree()
+        return total
+
+    def find_matches(self, find: str, use_regex: bool, case: bool) -> list[TelopEntry]:
+        import re as _re
+        if not find:
+            return []
+        try:
+            pat = _re.compile(find if use_regex else _re.escape(find), 0 if case else _re.IGNORECASE)
+        except _re.error:
+            return []
+        return [e for e in self.telop_list if pat.search(e.text)]
+
+    # ─── クリップボード ─────────────────────────
+
+    def copy_selected(self):
+        import csv as _csv, io
+        sel = self._get_selected_entries()
+        if not sel:
+            return
+        buf = io.StringIO()
+        w = _csv.writer(buf, delimiter='\t', lineterminator='\n')
+        for e in sel:
+            w.writerow([e.start_time, e.end_time, e.text])
+        self.clipboard_clear()
+        self.clipboard_append(buf.getvalue())
+        self._progress_var.set(f"{len(sel)} 件をコピーしました（TSV）")
+
+    def paste_entries(self):
+        """TSV（開始/終了/テキスト）またはテキスト行を貼り付け。
+        テキストのみの場合は1行=1テロップとして既定の尺で TC を自動割当。"""
+        import csv as _csv, io
+        try:
+            data = self.clipboard_get()
+        except tk.TclError:
+            return
+        data = data.replace('\r\n', '\n').strip('\n')
+        if not data.strip():
+            return
+        fps = self._current_fps()
+        new_entries: list[TelopEntry] = []
+        rows = list(_csv.reader(io.StringIO(data), delimiter='\t'))
+        is_tsv = rows and all(len(r) >= 3 for r in rows)
+        if is_tsv:
+            for r in rows:
+                try:
+                    st = normalize_timecode(r[0], fps)
+                    en = normalize_timecode(r[1], fps)
+                except ValueError:
+                    continue
+                new_entries.append(TelopEntry(id=0, start_time=st, end_time=en,
+                                              text=r[2].replace('\\n', '\n')))
+        if not new_entries:
+            lines = [l.strip() for l in data.split('\n') if l.strip()]
+            if len(lines) > 200 and not messagebox.askyesno(
+                    "貼り付け", f"{len(lines)} 行を貼り付けます。よろしいですか？", parent=self):
+                return
+            sel = self._get_selected_entries()
+            start, _ = self._next_new_telop_tc(sel[-1] if sel else None)
+            gap = int(self._new_telop_cfg.get("gap_frames", 0) or 0)
+            cps = float(self._new_telop_cfg.get("cps", 6.0) or 6.0)
+            mn = float(self._new_telop_cfg.get("min_dur", 1.0) or 0.0)
+            for line in lines:
+                dur = max(mn, len(line) / cps)
+                end = seconds_to_timecode(parse_timecode(start, fps) + dur, fps)
+                new_entries.append(TelopEntry(id=0, start_time=start, end_time=end, text=line))
+                start = shift_timecode(end, gap, fps)
+        if not new_entries:
+            return
+        for e in new_entries:
+            e.id = self._next_id
+            self._next_id += 1
+        sel = self._get_selected_entries()
+        if sel:
+            idx = self.telop_list.index(sel[-1]) + 1
+            self.telop_list[idx:idx] = new_entries
+        else:
+            self.telop_list.extend(new_entries)
+        self._refresh_tree()
+        self._select_entries(new_entries)
+        self._progress_var.set(f"{len(new_entries)} 件を貼り付けました")
+
+    # ─── Resolve 再生ヘッド移動 ─────────────────
+
+    def jump_to_selected(self):
+        sel = self._get_selected_entries()
+        if not sel:
+            return
+        if not self._resolve.get_current_timecode() and not self._resolve.connect():
+            messagebox.showerror("接続エラー", self._resolve.error, parent=self)
+            return
+        if self._resolve.set_current_timecode(sel[0].start_time):
+            self._progress_var.set(f"▶ 再生ヘッドを {sel[0].start_time} へ移動しました")
+        else:
+            self._progress_var.set("⚠ 再生ヘッドを移動できませんでした（Resolve 18 以降が必要）")
+
+    # ─── タイムコードチェック ────────────────────
+
+    def _validate_entries(self) -> dict:
+        """id -> 'error' | 'overlap' の問題マップを返す。"""
+        fps = self._current_fps()
+        issues: dict = {}
+        spans = []
+        for e in self.telop_list:
+            try:
+                s = parse_timecode(e.start_time, fps)
+                t = parse_timecode(e.end_time, fps)
+            except ValueError:
+                issues[e.id] = 'error'
+                continue
+            if t <= s:
+                issues[e.id] = 'error'
+                continue
+            if e.enabled:
+                spans.append((s, t, e))
+        spans.sort(key=lambda x: x[0])
+        max_end, max_e = -1.0, None
+        for s, t, e in spans:
+            # 同じトラック指定同士のみ重なり扱い（話者別トラックは除外）
+            if max_e is not None and s < max_end - 1e-6 and \
+                    (e.track or 0) == (max_e.track or 0):
+                issues.setdefault(e.id, 'overlap')
+                issues.setdefault(max_e.id, 'overlap')
+            if t > max_end:
+                max_end, max_e = t, e
+        return issues
+
+    def check_timecodes(self):
+        issues = self._validate_entries()
+        if not issues:
+            messagebox.showinfo("タイムコードチェック",
+                                "問題は見つかりませんでした。", parent=self)
+            return
+        errs = [e for e in self.telop_list if issues.get(e.id) == 'error']
+        ovs = [e for e in self.telop_list if issues.get(e.id) == 'overlap']
+        lines = []
+        if errs:
+            lines.append(f"■ 不正なTC / 終了≦開始: {len(errs)} 件")
+            lines += [f"   No.{e.id}  {e.start_time} → {e.end_time}  {e.text[:16]}" for e in errs[:15]]
+        if ovs:
+            lines.append(f"■ 時間が重なっている: {len(ovs)} 件")
+            lines += [f"   No.{e.id}  {e.start_time} → {e.end_time}  {e.text[:16]}" for e in ovs[:15]]
+        self._filter_var.set("")
+        self._select_entries(errs + ovs)
+        messagebox.showwarning("タイムコードチェック",
+                               "\n".join(lines) + "\n\n該当テロップを選択しました。", parent=self)
+
+    # ─── ツリー表示 ──────────────────────────────
+
+    def _snapshot(self) -> tuple:
+        return (tuple(tuple(sorted(e.to_dict().items())) for e in self.telop_list),
+                self._next_id)
+
+    def _capture_undo(self):
+        """前回スナップショットから変化していれば Undo スタックに積む。"""
+        snap = self._snapshot()
+        if self._last_snapshot is not None and snap != self._last_snapshot:
+            self._undo_stack.append(self._last_snapshot)
+            if len(self._undo_stack) > self._UNDO_LIMIT:
+                del self._undo_stack[0]
+            self._redo_stack.clear()
+        self._last_snapshot = snap
+
+    def _restore_snapshot(self, snap: tuple):
+        rows, next_id = snap
+        self.telop_list = [TelopEntry.from_dict(dict(r)) for r in rows]
+        self._next_id = next_id
+        self._last_snapshot = snap
+        self._populate_tree()
+        self._mark_dirty()
+
+    def _reset_undo(self):
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+        self._last_snapshot = self._snapshot()
+
+    def _guarded(self, func):
+        """テキスト入力中はアプリの Undo 等を発動させない。"""
+        w = self.focus_get()
+        if isinstance(w, (tk.Entry, tk.Text, ttk.Entry, tk.Spinbox, ttk.Spinbox, ttk.Combobox)):
+            return
+        func()
+        return "break"
+
+    def undo(self):
+        if not self._undo_stack:
+            self._progress_var.set("元に戻す操作はありません")
+            return
+        self._redo_stack.append(self._snapshot())
+        self._restore_snapshot(self._undo_stack.pop())
+        self._progress_var.set(f"元に戻しました（残り {len(self._undo_stack)}）")
+
+    def redo(self):
+        if not self._redo_stack:
+            self._progress_var.set("やり直す操作はありません")
+            return
+        self._undo_stack.append(self._snapshot())
+        self._restore_snapshot(self._redo_stack.pop())
+        self._progress_var.set("やり直しました")
+
     def _refresh_tree(self):
+        """テロップリスト変更後に呼ぶ: Undo 記録・再描画・変更マーク。"""
+        self._capture_undo()
+        self._populate_tree()
+        self._mark_dirty()
+
+    def _populate_tree(self):
+        prev_sel = set(self._tree.selection())
         for iid in self._tree.get_children():
             self._tree.delete(iid)
+        fps = self._current_fps()
+        query = self._filter_var.get().strip().lower() if hasattr(self, '_filter_var') else ""
+        issues = self._validate_entries()
+        total_s = 0.0
+        shown = 0
         for entry in self.telop_list:
+            try:
+                dur_s = parse_timecode(entry.end_time, fps) - parse_timecode(entry.start_time, fps)
+                dur = f"{dur_s:.1f}"
+                if entry.enabled and dur_s > 0:
+                    total_s += dur_s
+            except ValueError:
+                dur = "?"
+            if query and query not in entry.text.lower() and \
+                    query not in entry.note.lower() and query not in entry.speaker.lower() \
+                    and query not in entry.start_time:
+                continue
             check = "✓" if entry.enabled else "—"
-            text_preview = entry.text.replace('\n', ' ')[:40]
-            self._tree.insert('', 'end', iid=str(entry.id),
-                              values=(entry.id, entry.start_time, entry.end_time,
-                                      text_preview, check))
+            text_preview = entry.text.replace('\n', ' ⏎ ')[:60]
+            chars = len(entry.text.replace('\n', ''))
+            tags = []
             if not entry.enabled:
-                self._tree.tag_configure('disabled', foreground='gray')
-                self._tree.item(str(entry.id), tags=('disabled',))
+                tags.append('disabled')
+            if entry.id in issues:
+                tags.append(issues[entry.id])
+            self._tree.insert('', 'end', iid=str(entry.id),
+                              values=(("🎨" if entry.style else "") + str(entry.id),
+                                      entry.start_time, entry.end_time, dur,
+                                      text_preview, entry.speaker, chars, check),
+                              tags=tuple(tags))
+            shown += 1
+        keep = [iid for iid in prev_sel if self._tree.exists(iid)]
+        if keep:
+            self._tree.selection_set(keep)
         count = len(self.telop_list)
         enabled = sum(1 for e in self.telop_list if e.enabled)
-        self._status_var.set(f"テロップ: {count} 件  (有効: {enabled} 件)")
-        self._mark_dirty()
+        m, sec = divmod(int(total_s), 60)
+        status = f"テロップ: {count} 件  (有効: {enabled} 件)  合計尺 {m}:{sec:02d}"
+        if query:
+            status += f"  ／ 絞り込み: {shown} 件"
+        n_err = sum(1 for v in issues.values() if v == 'error')
+        n_ov = sum(1 for v in issues.values() if v == 'overlap')
+        if n_err or n_ov:
+            status += f"  ⚠ 不正 {n_err} / 重なり {n_ov}"
+        self._status_var.set(status)
+        tl = getattr(self, '_timeline', None)
+        if tl is not None:
+            tl.redraw()
+
+    def _select_entries(self, entries: list):
+        iids = [str(e.id) for e in entries if self._tree.exists(str(e.id))]
+        if iids:
+            self._tree.selection_set(iids)
+            self._tree.focus(iids[-1])
+            self._tree.see(iids[-1])
 
     def _select_last(self):
         children = self._tree.get_children()
@@ -6110,17 +8134,306 @@ class DavinTelopApp(tk.Tk):
             self._tree.see(children[-1])
 
     def _on_select(self, event=None):
+        self._tc_send_selection()
         sel = self._get_selected_entries()
+        self._pv_entry = sel[0] if sel else None
         if sel:
             self._preview_text_var.set(sel[0].text)
             self.show_telop_preview(sel[0])
+        self._schedule_preview_update()
+        if hasattr(self, '_insp_text'):
+            self._insp_load()
+        tl = getattr(self, '_timeline', None)
+        if tl is not None:
+            tl.redraw()
 
     def _get_selected_entries(self) -> list[TelopEntry]:
         selected_ids = {int(iid) for iid in self._tree.selection()}
         return [e for e in self.telop_list if e.id in selected_ids]
 
     def _show_context_menu(self, event):
+        row = self._tree.identify_row(event.y)
+        if row and row not in self._tree.selection():
+            self._tree.selection_set(row)
         self._ctx_menu.tk_popup(event.x_root, event.y_root)
+
+    # ─── 加工: テキスト ──────────────────────────
+
+    def _apply_text_op(self, func, label: str):
+        """選択（未選択なら全件）のテキストに func を適用。"""
+        # 詳細編集中の未確定テキストを先に反映
+        if self._insp_text_job:
+            self.after_cancel(self._insp_text_job)
+            self._insp_commit_text()
+        targets = self._targets()
+        if not targets:
+            return
+        changed = 0
+        for e in targets:
+            try:
+                new = func(e.text)
+            except Exception:
+                continue
+            if new and new != e.text:
+                e.text = new
+                changed += 1
+        if changed:
+            self._refresh_tree()
+            self._insp_load(force=True)
+            self._on_select()
+        scope = "選択" if self._get_selected_entries() else "全"
+        self._progress_var.set(f"{label}: {scope} {len(targets)} 件中 {changed} 件を加工しました"
+                               + ("（Ctrl+Z で元に戻せます）" if changed else ""))
+
+    def wrap_by_chars(self):
+        from core.textfmt import wrap_text
+        n = simpledialog.askinteger("N文字で自動改行", "1行の最大文字数:", parent=self,
+                                    initialvalue=self._new_telop_cfg.get("wrap_chars", 16),
+                                    minvalue=2, maxvalue=200)
+        if not n:
+            return
+        self._new_telop_cfg["wrap_chars"] = n
+        self._apply_text_op(lambda t: wrap_text(t, max_chars=n, max_lines=0), f"{n}文字で改行")
+
+    def add_prefix_suffix(self):
+        dlg = _PrefixSuffixDialog(self)
+        if dlg.result:
+            pre, suf = dlg.result
+            self._apply_text_op(lambda t: f"{pre}{t}{suf}", "先頭・末尾に追加")
+
+    def extract_speakers(self):
+        from core.textfmt import split_speaker
+        n = 0
+        for e in self._targets():
+            spk, body = split_speaker(e.text)
+            if spk and body:
+                e.speaker, e.text = spk, body
+                n += 1
+        if n:
+            self._refresh_tree()
+            self._insp_load(force=True)
+        self._progress_var.set(f"{n} 件の話者名を分離しました")
+
+    # ─── 加工: タイミング ─────────────────────────
+
+    def set_duration_bulk(self):
+        targets = self._targets()
+        if not targets:
+            return
+        dur = simpledialog.askfloat("尺を一括設定", f"{len(targets)} 件の尺（秒）:", parent=self,
+                                    initialvalue=self._new_telop_cfg.get("default_dur", 3.0),
+                                    minvalue=0.04, maxvalue=3600)
+        if not dur:
+            return
+        fps = self._current_fps()
+        for e in targets:
+            try:
+                e.end_time = seconds_to_timecode(parse_timecode(e.start_time, fps) + dur, fps)
+            except ValueError:
+                continue
+        self._refresh_tree()
+        self._insp_load(force=True)
+        self._progress_var.set(f"{len(targets)} 件の尺を {dur:g} 秒にしました")
+
+    def ensure_min_duration(self):
+        targets = self._targets()
+        mn = simpledialog.askfloat("最小の尺を確保", "これより短いテロップを延長（秒）:",
+                                   parent=self, initialvalue=self._new_telop_cfg.get("min_dur", 1.0),
+                                   minvalue=0.04, maxvalue=600)
+        if not mn:
+            return
+        fps = self._current_fps()
+        n = 0
+        for e in targets:
+            try:
+                s = parse_timecode(e.start_time, fps)
+                t = parse_timecode(e.end_time, fps)
+            except ValueError:
+                continue
+            if t - s < mn:
+                e.end_time = seconds_to_timecode(s + mn, fps)
+                n += 1
+        self._refresh_tree()
+        self._progress_var.set(f"{n} 件の尺を {mn:g} 秒に延長しました")
+
+    def arrange_sequential(self):
+        """リスト順に、先頭の開始TCから尺を保ったまま隙間なく並べ直す。"""
+        targets = self._targets()
+        if len(targets) < 2:
+            self._progress_var.set("2 件以上のテロップが必要です")
+            return
+        gap = simpledialog.askinteger(
+            "隙間なく連続配置",
+            f"{len(targets)} 件をリスト順に並べ直します（先頭の開始TCを基準・尺は維持）。\n\n"
+            "テロップ間の間隔（フレーム）:", parent=self,
+            initialvalue=int(self._new_telop_cfg.get("gap_frames", 0) or 0), minvalue=0, maxvalue=600)
+        if gap is None:
+            return
+        fps = self._current_fps()
+        from core.timecode import frames_to_timecode
+        try:
+            cur = timecode_to_frames(targets[0].start_time, fps)
+        except ValueError:
+            return
+        for e in targets:
+            try:
+                dur = timecode_to_frames(e.end_time, fps) - timecode_to_frames(e.start_time, fps)
+            except ValueError:
+                continue
+            dur = max(1, dur)
+            e.start_time = frames_to_timecode(cur, fps)
+            e.end_time = frames_to_timecode(cur + dur, fps)
+            cur += dur + gap
+        self._refresh_tree()
+        self._insp_load(force=True)
+        self._progress_var.set(f"{len(targets)} 件を連続配置しました")
+
+    def set_in_out(self, which: str):
+        """選択テロップの開始(I)/終了(O)を Resolve の再生ヘッドに合わせる。"""
+        sel = self._get_selected_entries()
+        if not sel:
+            return
+        tc = self._get_playhead_tc()
+        if not tc:
+            self._progress_var.set("⚠ Resolve の再生ヘッドを取得できませんでした")
+            return
+        fps = self._current_fps()
+        try:
+            ph = normalize_timecode(tc, fps)
+        except ValueError:
+            return
+        e = sel[0]
+        try:
+            s = parse_timecode(e.start_time, fps)
+            t = parse_timecode(e.end_time, fps)
+        except ValueError:
+            s = t = 0.0
+        p = parse_timecode(ph, fps)
+        if which == 'in':
+            e.start_time = ph
+            if t <= p:   # 尺を保って終了も移動
+                e.end_time = seconds_to_timecode(p + max(t - s, 0.5), fps)
+        else:
+            if p <= s:
+                self._progress_var.set("⚠ 再生ヘッドが開始TCより前です")
+                return
+            e.end_time = ph
+        self._refresh_tree()
+        self._insp_load(force=True)
+        self._progress_var.set(f"{'開始' if which == 'in' else '終了'}を {ph} にしました")
+
+    def nudge_selected(self, frames: Optional[int], secs: int = 0):
+        sel = self._get_selected_entries()
+        if not sel:
+            return
+        fps = self._current_fps()
+        delta = frames if frames is not None else secs * _nominal_fps(fps)
+        for e in sel:
+            try:
+                if timecode_to_frames(e.start_time, fps) + delta < 0:
+                    return
+            except ValueError:
+                return
+        for e in sel:
+            e.start_time = shift_timecode(e.start_time, delta, fps)
+            e.end_time = shift_timecode(e.end_time, delta, fps)
+        self._refresh_tree()
+        self._insp_load(force=True)
+
+    # ─── 加工: スタイル・話者 ─────────────────────
+
+    def copy_style(self):
+        sel = self._get_selected_entries()
+        if not sel:
+            return
+        self._style_clipboard = dict(sel[0].style or {})
+        self._progress_var.set("個別スタイルをコピーしました" if self._style_clipboard
+                               else "（共通デザイン）をコピーしました")
+
+    def paste_style(self):
+        clip = getattr(self, '_style_clipboard', None)
+        sel = self._get_selected_entries()
+        if clip is None or not sel:
+            self._progress_var.set("先に個別スタイルをコピーしてください")
+            return
+        for e in sel:
+            e.style = dict(clip)
+        self._refresh_tree()
+        self._insp_load(force=True)
+        self._schedule_preview_update()
+        self._progress_var.set(f"{len(sel)} 件にスタイルを貼り付けました")
+
+    def clear_style(self):
+        sel = self._targets()
+        n = sum(1 for e in sel if e.style)
+        for e in sel:
+            e.style = {}
+        self._refresh_tree()
+        self._insp_load(force=True)
+        self._schedule_preview_update()
+        self._progress_var.set(f"{n} 件の個別スタイルを解除しました")
+
+    def set_speaker_bulk(self):
+        targets = self._targets()
+        if not targets:
+            return
+        name = simpledialog.askstring("話者を一括設定",
+                                      f"{len(targets)} 件の話者名（空欄で解除）:", parent=self)
+        if name is None:
+            return
+        for e in targets:
+            e.speaker = name.strip()
+        self._refresh_tree()
+        self._insp_load(force=True)
+
+    def add_entry_at(self, tc: str):
+        """指定TC（タイムラインのダブルクリック位置）に新規テロップ。"""
+        self.add_entry(start_tc=tc)
+
+    # ─── ファイル入出力（追加） ───────────────────
+
+    def import_srt_file(self):
+        path = filedialog.askopenfilename(
+            title="SRTファイルを開く",
+            filetypes=[("SRT 字幕", "*.srt"), ("すべて", "*")])
+        if not path:
+            return
+        try:
+            entries = import_srt(path, fps=self._current_fps(), start_id=self._next_id)
+        except Exception as ex:
+            messagebox.showerror("エラー", f"SRTの読み込みに失敗しました:\n{ex}")
+            return
+        if not entries:
+            messagebox.showwarning("SRTインポート", "字幕が見つかりませんでした。")
+            return
+        self.telop_list.extend(entries)
+        self._next_id = max(e.id for e in self.telop_list) + 1
+        self._refresh_tree()
+        self._progress_var.set(f"SRT から {len(entries)} 件を読み込みました")
+
+    def export_csv_file(self):
+        if not self.telop_list:
+            messagebox.showwarning("警告", "テロップがありません。")
+            return
+        path = filedialog.asksaveasfilename(
+            title="CSV を保存", defaultextension=".csv",
+            initialfile="telops.csv", filetypes=[("CSV", "*.csv")])
+        if not path:
+            return
+        try:
+            export_csv(self.telop_list, path)
+            self._progress_var.set(f"CSV を書き出しました: {Path(path).name}")
+        except Exception as ex:
+            messagebox.showerror("エラー", f"CSV の書き出しに失敗しました:\n{ex}")
+
+    # ─── テロップ作成設定 ───────────────────────
+
+    def open_new_telop_settings(self):
+        dlg = NewTelopSettingsDialog(self, self._new_telop_cfg)
+        if dlg.result:
+            self._new_telop_cfg.update(dlg.result)
+            self._save_app_config()
+            self._progress_var.set("テロップ作成設定を保存しました")
 
     # ─── デザイン設定 ─────────────────────────────
 
@@ -6302,6 +8615,9 @@ class DavinTelopApp(tk.Tk):
 
         try:
             s = self._collect_design()
+            pv = getattr(self, '_pv_entry', None)
+            if pv is not None and pv.text == preview_text and pv in self.telop_list:
+                s = s.with_overrides(pv.style)
             img = render_telop_image(preview_text, s)
 
             # チェッカーボード背景に合成してプレビュー (透過確認)
@@ -6571,7 +8887,14 @@ class DavinTelopApp(tk.Tk):
             "export_fcpxml":         self.export_fcpxml,
             "export_resolve_script": self.export_resolve_script,
             "place_at_playhead":     self.place_selected_at_playhead,
+            "new_telop":             self.add_entry,
             "new_telop_quick":       self._quick_telop_popup,
+            "undo":                  lambda: self._guarded(self.undo),
+            "redo":                  lambda: self._guarded(self.redo),
+            "find_replace":          self.open_find_replace,
+            "focus_search":          lambda: (self._filter_entry.focus_set(),
+                                              self._filter_entry.select_range(0, 'end')),
+            "jump_playhead":         self.jump_to_selected,
             "move_left":             lambda: self._move_telop_step(-1, 0),
             "move_right":            lambda: self._move_telop_step(1,  0),
             "move_up":               lambda: self._move_telop_step(0, -1),
@@ -6598,7 +8921,7 @@ class DavinTelopApp(tk.Tk):
             if binding and action in actions:
                 try:
                     self.bind(f"<{binding}>",
-                              lambda e, a=action: actions[a]())
+                              lambda e, a=action: (actions[a](), "break")[1])
                     self._bound_keys.append(binding)
                 except Exception:
                     pass
@@ -7030,6 +9353,377 @@ class DavinTelopApp(tk.Tk):
             self._save_app_config()
         return p
 
+    # ─── TeloCut 連携 ─────────────────────────────
+
+    def launch_telocut(self):
+        import subprocess
+        from core import telocut_link as TL
+        if TL.is_running():
+            self._progress_var.set("TeloCut は起動しています")
+            return
+        if getattr(sys, "frozen", False):
+            exe = Path(sys.executable).with_name("TeloCut.exe")
+            cmd = [str(exe)] if exe.exists() else None
+        else:
+            cmd = [sys.executable, str(Path(__file__).resolve().parent / "telocut.py")]
+        if not cmd:
+            messagebox.showerror("TeloCut", "TeloCut.exe が見つかりません（DavinTelop と同じフォルダに置いてください）。",
+                                 parent=self)
+            return
+        subprocess.Popen(cmd)
+        self._progress_var.set("TeloCut を起動しました（起動したら自動でリアルタイム連携します）")
+        if not self._tc_sync.get():
+            self._tc_sync.set(True)
+            self._toggle_tc_sync()
+
+    def _telocut_call(self, fn, *args):
+        try:
+            return fn(*args)
+        except Exception as ex:
+            messagebox.showerror("TeloCut 連携", str(ex), parent=self)
+            return None
+
+    def telocut_pull(self):
+        from core import telocut_link as TL
+        d = self._telocut_call(TL.get_telops)
+        if d is None:
+            return
+        if self.telop_list and not messagebox.askyesno(
+                "TeloCut から取り込み",
+                f"TeloCut のシーケンス「{d.get('sequence', '')}」のテロップ {len(d['telops'])} 件で\n"
+                "今のテロップ一覧を置き換えます。よろしいですか？（元に戻せます）", parent=self):
+            return
+        self.telop_list = []
+        for t in d["telops"]:
+            self.telop_list.append(TelopEntry(id=self._next_id, start_time=t["start_time"], end_time=t["end_time"],
+                                              text=t.get("text", ""), style=dict(t.get("style") or {})))
+            self._next_id += 1
+        if d.get("design"):
+            try:
+                self.design = DesignSettings.from_dict(d["design"])
+                self._apply_design_to_ui(self.design)
+            except Exception:
+                pass
+        self._refresh_tree()
+        self._mark_dirty()
+        self._progress_var.set(f"TeloCut から {len(self.telop_list)} 件のテロップを取り込みました")
+
+    def telocut_push(self):
+        from core import telocut_link as TL
+        n = len([e for e in self.telop_list if e.enabled])
+        if not messagebox.askyesno("TeloCut に反映",
+                                   f"TeloCut の開いているシーケンスのテロップを、この {n} 件で置き換えます。\n"
+                                   "（TeloCut 側で 1 回の「元に戻す」で戻せます）\n\n"
+                                   "テロップの共通デザインも送りますか？ → はい / いいえ どちらでも反映されます",
+                                   parent=self):
+            return
+        r = self._telocut_call(TL.put_telops, self.telop_list, self._collect_design().to_dict())
+        if r is not None:
+            self._progress_var.set(f"TeloCut に {n} 件のテロップを反映しました")
+
+    def telocut_seek_selected(self):
+        from core import telocut_link as TL
+        sel = self._get_selected_entries()
+        if sel and self._telocut_call(TL.seek, sel[0].start_time) is not None:
+            self._progress_var.set(f"TeloCut の再生ヘッドを {sel[0].start_time} へ移動しました")
+
+    def telocut_place_selected(self):
+        from core import telocut_link as TL
+        sel = self._get_selected_entries()
+        if not sel:
+            return
+        tc = self._telocut_call(TL.playhead)
+        if not tc:
+            return
+        fps = self._current_fps()
+        try:
+            dur = parse_timecode(sel[0].end_time, fps) - parse_timecode(sel[0].start_time, fps)
+        except ValueError:
+            dur = 3.0
+        sel[0].start_time = tc
+        sel[0].end_time = seconds_to_timecode(parse_timecode(tc, fps) + max(dur, 1.0 / fps), fps)
+        self._refresh_tree()
+        self._mark_dirty()
+        self._progress_var.set(f"No.{sel[0].id} を {tc} に配置しました")
+
+    def _toggle_telocut_follow(self):
+        from core import telocut_link as TL
+        f = getattr(self, "_telocut_follower", None)
+        if f is not None:
+            f.stop()
+            self._telocut_follower = None
+        if self._telocut_follow.get() and not (getattr(self, "_tc_session", None) is not None):
+            self._telocut_follower = TL.PlayheadFollower(lambda tc: self.after(0, self._on_telocut_tc, tc))
+            self._progress_var.set("TeloCut の再生位置に追従します")
+
+    def _on_telocut_tc(self, tc: str):
+        fps = self._current_fps()
+        try:
+            t = parse_timecode(tc, fps)
+        except ValueError:
+            return
+        for e in self.telop_list:
+            try:
+                if parse_timecode(e.start_time, fps) <= t < parse_timecode(e.end_time, fps):
+                    if self._get_selected_entries()[:1] != [e]:
+                        self._tc_remote_sel = {str(e.id)}
+                        self._select_entries([e])
+                    return
+            except ValueError:
+                continue
+
+    # ─── TeloCut リアルタイム連携 ─────────────────────
+    # TeloCut のブリッジにつなぎっぱなしにして、
+    #   受信: sync（テロップ・デザインの全体）/ selection / playhead
+    #   送信: 0.3 秒ごとに自分の状態のハッシュを見て、変わっていたら sync_put（0.25 秒落ち着いてから）
+    # 反映した状態のハッシュを覚えておくので、同じ内容が行ったり来たりしない。
+
+    def _toggle_tc_sync(self):
+        from core import telocut_link as TL
+        sess = getattr(self, "_tc_session", None)
+        if sess is not None:
+            sess.stop()
+            self._tc_session = None
+            self._tc_gen = getattr(self, "_tc_gen", 0) + 1
+        self._save_app_config()
+        if not self._tc_sync.get():
+            self._tc_set_status(None)
+            return
+        self._tc_hash = None           # 最後に そろえた 状態のハッシュ
+        self._tc_pending = False
+        self._tc_changed_at = None
+        self._tc_remote_sel = set()
+        self._tc_ready = False
+        f = getattr(self, "_telocut_follower", None)
+        if f is not None:
+            f.stop()
+            self._telocut_follower = None
+        import queue
+        self._tc_q = queue.Queue()        # 受信スレッド → 画面のスレッド（Tk は別スレッドから触れない）
+        # 古いセッション（切った直後のもの）から遅れて届く通知は無視する（世代番号で見分ける）
+        self._tc_gen = getattr(self, "_tc_gen", 0) + 1
+        gen, q = self._tc_gen, self._tc_q
+        self._tc_session = TL.Session(
+            lambda ev: q.put((lambda e=ev: self._tc_gen == gen and self._on_tc_event(e), ())),
+            lambda up: q.put((lambda u=up: self._tc_gen == gen and self._on_tc_state(u), ())))
+        self._tc_set_status(False)
+        self._tc_tick = 0
+        self.after(50, self._tc_poll)
+
+    def _tc_set_status(self, connected):
+        self._tc_title_suffix = "" if connected is None else (
+            "  ［🔗 TeloCut と連携中］" if connected else "  ［TeloCut を待っています…］")
+        self._update_title()
+
+    def _on_tc_state(self, up: bool):
+        self._tc_set_status(up)
+        self._tc_ready = False
+        if up:
+            self._progress_var.set("TeloCut とつながりました。テロップをそろえています…")
+            self._tc_async(lambda: __import__("core.telocut_link", fromlist=["x"]).sync_get(), self._tc_initial)
+        else:
+            self._progress_var.set("TeloCut との接続が切れました（起動すると自動でつながります）")
+
+    def _tc_async(self, fn, done=None):
+        """TeloCut への問い合わせを別スレッドで（画面を止めない）。"""
+        import threading
+
+        gen, q = getattr(self, "_tc_gen", 0), self._tc_q
+
+        def work():
+            try:
+                r = fn()
+            except Exception as ex:
+                q.put((self._progress_var.set, (f"TeloCut 連携: {ex}",)))
+                return
+            if done:
+                q.put((lambda: self._tc_gen == gen and done(r), ()))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _tc_local(self):
+        from core import telocut_link as TL
+        items = [TL.entry_item(e) for e in self.telop_list]
+        try:
+            design = self._collect_design().to_dict()
+        except Exception:
+            design = self.design.to_dict()
+        return items, design, TL.state_hash(items, design)
+
+    def _tc_initial(self, remote: dict):
+        from core import telocut_link as TL
+        items, design, h = self._tc_local()
+        if h == remote["hash"]:
+            self._tc_hash = h
+        elif not remote["items"] and self.telop_list:
+            self._tc_push()                         # TeloCut が空 → こちらを送る
+        elif not self.telop_list or not self._project_dirty and not self._current_project_path:
+            self._tc_apply(remote)                  # こちらが空 → TeloCut に合わせる
+        else:
+            ans = messagebox.askyesnocancel(
+                "TeloCut とリアルタイム連携",
+                f"TeloCut（{remote.get('sequence', '')}: {len(remote['items'])} 件）と、"
+                f"この DavinTelop（{len(self.telop_list)} 件）のテロップが違います。\n\n"
+                "はい　　= TeloCut のテロップに合わせる\n"
+                "いいえ　= この DavinTelop のテロップで TeloCut を上書き\n"
+                "キャンセル = 連携をやめる", parent=self)
+            if ans is None:
+                self._tc_sync.set(False)
+                self._toggle_tc_sync()
+                return
+            if ans:
+                self._tc_apply(remote)
+            else:
+                self._tc_push()
+        self._tc_ready = True
+        self._progress_var.set("🔗 TeloCut とリアルタイム連携中（テロップ・デザイン・選択）")
+
+    def _tc_apply(self, remote: dict):
+        """TeloCut の状態を反映（同じテロップは uid で対応づけて、ID・メモ・色はそのまま）。"""
+        from core import telocut_link as TL
+        matched = TL.match_items(remote["items"], self.telop_list)
+        new_list = []
+        for it, e in zip(remote["items"], matched):
+            if e is None:
+                e = TelopEntry(id=self._next_id, start_time=it["start"], end_time=it["end"], text=it["text"])
+                self._next_id += 1
+            e.uid, e.start_time, e.end_time, e.text = it["uid"], it["start"], it["end"], it["text"]
+            e.style, e.speaker, e.enabled, e.track = dict(it.get("style") or {}), it.get("speaker", ""), \
+                bool(it.get("enabled", True)), int(it.get("track") or 0)
+            new_list.append(e)
+        sel = {str(e.id) for e in self._get_selected_entries()}
+        self.telop_list = new_list
+        # デザイン（キャンバスの大きさ・fps は TeloCut のシーケンスに合わせる）
+        cur = self._tc_local()[1]
+        want = {**cur, **TL.design_part(remote.get("design"))}
+        want.update({"canvas_width": remote.get("width", cur.get("canvas_width")),
+                     "canvas_height": remote.get("height", cur.get("canvas_height")),
+                     "frame_rate": remote.get("fps", cur.get("frame_rate"))})
+        if want != cur:
+            self.design = DesignSettings.from_dict(want)
+            try:
+                self._apply_design_to_ui(self.design)
+            except Exception:
+                pass
+        self._refresh_tree()
+        keep = [e for e in self.telop_list if str(e.id) in sel]
+        if keep:
+            self._tc_remote_sel = {str(e.id) for e in keep}
+            self._select_entries(keep)
+        self._tc_hash = self._tc_local()[2]
+
+    def _tc_push(self):
+        from core import telocut_link as TL
+        items, design, h = self._tc_local()
+        self._tc_pending = True
+        self._tc_changed_at = None
+
+        def done(remote):
+            self._tc_pending = False
+            # 新しく足したテロップに TeloCut の uid を付ける（重複した uid も直る）
+            for it, e in zip(remote["items"], TL.match_items(remote["items"], self.telop_list)):
+                if e is not None:
+                    e.uid = it["uid"]
+            now = self._tc_local()[2]
+            if now == remote["hash"]:
+                self._tc_hash = now
+            elif self._tc_local()[2] == TL.state_hash(items, design):
+                # 送った後に手を加えていなければ、TeloCut 側の表記（TC の書き方など）に合わせる
+                self._tc_apply(remote)
+            else:
+                self._tc_hash = h                      # 送った後にまた変わった → 次の確認で送る
+
+        def fail():
+            self._tc_pending = False
+
+        import threading
+
+        gen, q = self._tc_gen, self._tc_q
+
+        def work():
+            try:
+                r = TL.sync_put(items, design)
+            except Exception as ex:
+                q.put((fail, ()))
+                q.put((self._progress_var.set, (f"TeloCut に送れませんでした: {ex}",)))
+                return
+            q.put((lambda: done(r) if self._tc_gen == gen else fail(), ()))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _tc_poll(self):
+        if getattr(self, "_tc_session", None) is None or not self._tc_sync.get():
+            return
+        try:
+            self._tc_poll_once()
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            try:
+                with open(_LOG_PATH, "a", encoding="utf-8") as f:
+                    f.write("\n===== TeloCut 連携 =====\n" + traceback.format_exc())
+            except Exception:
+                pass
+        finally:
+            self.after(50, self._tc_poll)      # 何があっても次の確認を予約する
+
+    def _tc_poll_once(self):
+        import queue
+        import time as _t
+        while True:                       # 受信したものを画面のスレッドで処理
+            try:
+                fn, args = self._tc_q.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                fn(*args)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+        self._tc_tick += 1
+        if self._tc_tick % 6 == 0 and self._tc_session.connected and self._tc_ready and not self._tc_pending:
+            h = self._tc_local()[2]
+            if h != self._tc_hash:
+                if self._tc_changed_at is None:
+                    self._tc_changed_at = _t.time()
+                elif _t.time() - self._tc_changed_at >= 0.25:     # 打ち込みが落ち着いてから送る
+                    self._tc_push()
+            else:
+                self._tc_changed_at = None
+
+    def _on_tc_event(self, ev: dict):
+        kind = ev.get("event")
+        if kind == "playhead":
+            if self._telocut_follow.get():
+                self._on_telocut_tc(ev.get("tc", ""))
+            return
+        if not self._tc_ready:
+            return
+        if kind == "sync":
+            if self._tc_pending or ev.get("hash") == self._tc_hash:
+                return
+            if self._tc_changed_at is not None:
+                return          # こちらで編集中 → こちらの変更を先に送る（後から TeloCut の結果が届く）
+            self._tc_apply(ev)
+        elif kind == "selection":
+            uids = set(ev.get("uids") or [])
+            ents = [e for e in self.telop_list if e.uid in uids]
+            if ents and {str(e.id) for e in ents} != set(self._tree.selection()):
+                self._tc_remote_sel = {str(e.id) for e in ents}
+                self._select_entries(ents)
+
+    def _tc_send_selection(self):
+        if getattr(self, "_tc_session", None) is None or not self._tc_session.connected or not self._tc_ready:
+            return
+        cur = set(self._tree.selection())
+        if cur == getattr(self, "_tc_remote_sel", set()):
+            return              # TeloCut から来た選択（送り返さない）
+        self._tc_remote_sel = set()
+        uids = [e.uid for e in self._get_selected_entries() if e.uid]
+        if not uids:
+            return
+        from core import telocut_link as TL
+        seek = self._tc_sync_seek.get()
+        self._tc_async(lambda: TL.select(uids, seek))
+
     def launch_rizoripute(self):
         """りぞりぷと(Resolve_Script) のランチャーを起動する。"""
         import subprocess
@@ -7235,7 +9929,7 @@ class DavinTelopApp(tk.Tk):
             png_paths = export_png(self.telop_list, s, png_dir, callback=callback,
                                    include_text_in_filename=inc)
         except Exception as ex:
-            self.after(0, lambda: messagebox.showerror("PNG書き出しエラー", str(ex)))
+            self.after(0, lambda ex=ex: messagebox.showerror("PNG書き出しエラー", str(ex)))
             return
 
         ok = self._resolve.import_pngs_to_timeline(
@@ -7305,7 +9999,7 @@ class DavinTelopApp(tk.Tk):
         # 単一PNGを書き出し
         try:
             callback(1, 1, entry.text[:20])
-            img = render_telop_image(entry.text, s)
+            img = render_telop_image(entry.text, s.with_overrides(entry.style))
             out_dir = Path(png_dir)
             out_dir.mkdir(parents=True, exist_ok=True)
             png_path = str(out_dir / f"telop_playhead_{entry.id:04d}.png")
@@ -7390,7 +10084,9 @@ class DavinTelopApp(tk.Tk):
                 self._playhead_writeback.set(st["playhead_writeback"])
         except Exception:
             pass
-        self._refresh_tree()
+        self._populate_tree()
+        self._reset_undo()
+        self._mark_dirty()
         self._schedule_preview_update()
 
     def _write_project(self, path: str) -> bool:
@@ -7458,7 +10154,8 @@ class DavinTelopApp(tk.Tk):
         self.telop_list = []
         self._next_id = 1
         self._current_project_path = None
-        self._refresh_tree()
+        self._populate_tree()
+        self._reset_undo()
         self._schedule_preview_update()
         self._project_dirty = False
         self._update_title()
@@ -7495,7 +10192,8 @@ class DavinTelopApp(tk.Tk):
         name = (Path(self._current_project_path).name
                 if self._current_project_path else "無題")
         mark = "*" if self._project_dirty else ""
-        self.title(f"DavinTelop — {mark}{name}  (テロップ作成 for DaVinci Resolve)")
+        self.title(f"DavinTelop — {mark}{name}  (テロップ作成 for DaVinci Resolve)"
+                   + getattr(self, "_tc_title_suffix", ""))
 
     # 最近使ったプロジェクト
     def _recent_projects(self) -> list:
@@ -7617,6 +10315,11 @@ class DavinTelopApp(tk.Tk):
                 "playhead_writeback":        self._playhead_writeback.get(),
                 "rizoripute_path":           self._rizoripute_path.get(),
                 "speaker_rules":             getattr(self, "_speaker_rules", {}),
+                "new_telop":                 getattr(self, "_new_telop_cfg", {}),
+                "show_timeline":             self._show_timeline.get(),
+                "show_quick_add":            self._show_quick_add.get(),
+                "telocut_sync":              self._tc_sync.get() if hasattr(self, "_tc_sync") else False,
+                "telocut_sync_seek":         self._tc_sync_seek.get() if hasattr(self, "_tc_sync_seek") else True,
             })
             with open(self._CONFIG_PATH, 'w', encoding='utf-8') as f:
                 json.dump(cfg, f, ensure_ascii=False, indent=2)
@@ -7629,7 +10332,7 @@ class DavinTelopApp(tk.Tk):
         self._progress_var.set(msg)
 
         def callback(current, total, text):
-            self._progress_var.set(f"{msg} {current}/{total}: {text}")
+            self.after(0, lambda: self._progress_var.set(f"{msg} {current}/{total}: {text}"))
 
         def run():
             try:
@@ -7653,6 +10356,14 @@ class DavinTelopApp(tk.Tk):
         if not self._confirm_discard():
             return
         self._clear_autosave()   # 正常終了時は自動保存を消す
+        try:
+            if self.state() == 'normal':
+                cfg = self._load_app_config()
+                cfg["window_geometry"] = self.geometry()
+                with open(self._CONFIG_PATH, 'w', encoding='utf-8') as f:
+                    json.dump(cfg, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
         self._stop_bg_capture()
         self._stop_fg_source()
         sender = getattr(self, '_ndi_sender', None)

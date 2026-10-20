@@ -12,3 +12,7 @@ pygrabber==0.1
 # 自動字幕起こし (faster-whisper / ローカル音声認識)
 faster-whisper
 tokenizers==0.13.3
+
+# DavinEdit（動画編集 / python -m editor）
+PyQt6>=6.5
+av>=10.0

@@ -60,6 +60,27 @@ class DesignSettings:
     def copy(self) -> "DesignSettings":
         return copy.copy(self)
 
+    def with_overrides(self, overrides: Optional[dict]) -> "DesignSettings":
+        """テロップ個別スタイル (部分的な設定辞書) を上書きしたコピーを返す。"""
+        if not overrides:
+            return self
+        d = self.copy()
+        for k, v in overrides.items():
+            if k not in self.__dataclass_fields__ or v is None or v == "":
+                continue
+            cur = getattr(d, k)
+            try:
+                if isinstance(cur, bool):
+                    v = bool(v)
+                elif isinstance(cur, int):
+                    v = int(v)
+                elif isinstance(cur, float):
+                    v = float(v)
+            except (TypeError, ValueError):
+                continue
+            setattr(d, k, v)
+        return d
+
 
 @dataclass
 class TelopEntry:
@@ -73,6 +94,8 @@ class TelopEntry:
     speaker: str = ""        # 話者名（話者別色分け用）
     track: int = 0           # 配置ビデオトラック（0=既定を使用）
     color: str = ""          # Resolve クリップカラー（""=既定）
+    style: dict = field(default_factory=dict)   # 個別スタイル (DesignSettings の部分上書き)
+    uid: str = ""            # TeloCut のテキストクリップ ID（リアルタイム連携で同じテロップを対応づける）
 
     def to_dict(self) -> dict:
         return asdict(self)
