@@ -92,7 +92,7 @@ class Features4Mixin:
         help_menu = mb.actions()[-1]
         from .features import QMenu_before
         t = QMenu_before(mb, help_menu, "テロップ")
-        for c in ("telop_editor", None, "telop_pos", "telop_style_all", "telop_speaker_colors", None,
+        for c in ("telop_editor", "telop_template", "telop_template_save", None, "telop_pos", "telop_style_all", "telop_speaker_colors", None,
                   "telop_from_text", "telop_dict", None, "telop_auto_len", "telop_shift", "telop_fit_audio", None,
                   "markers_to_telops", "telops_to_markers"):
             t.addSeparator() if c is None else self._a(t, c)

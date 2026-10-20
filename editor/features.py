@@ -116,7 +116,7 @@ class FeaturesMixin:
         mb = self.menuBar()
         help_menu = mb.actions()[-1]
         yt = QMenu_before(mb, help_menu, "YouTube")
-        for c in ("auto_clip", None, "voice_panel", "launch_voice", "script_gen", "character_new", "regen_line", None,
+        for c in ("auto_clip", "biim_layout", "biim_split", None, "voice_panel", "launch_voice", "script_gen", "character_new", "regen_line", None,
                   "telop_editor", "transcribe_subs", "cps_check", None,
                   "thumbnail", "make_shorts", "description", "loudness", None, "slideshow", "bgm_loop",
                   "toggle_duck", None, "add_band", "add_progress", None, "se_pad", "preset_panel"):

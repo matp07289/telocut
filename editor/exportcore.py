@@ -11,9 +11,26 @@ from . import mediacodecs as MC
 from .media import DecoderPool, SAMPLE_RATE
 
 
+def _stamp(arr: np.ndarray, text: str) -> np.ndarray:
+    """右下に小さな透かし（無料版）。"""
+    from PIL import Image, ImageDraw, ImageFont
+    im = Image.fromarray(arr)
+    H = im.height
+    try:
+        f = ImageFont.truetype("arialbd.ttf", max(10, H // 36))
+    except Exception:
+        f = ImageFont.load_default()
+    d = ImageDraw.Draw(im, "RGBA")
+    tw = d.textlength(text, font=f)
+    x, y = im.width - tw - H // 40, H - H // 36 * 1.6 - H // 50
+    d.rounded_rectangle([x - 8, y - 4, x + tw + 8, y + H // 36 * 1.4], radius=6, fill=(0, 0, 0, 110))
+    d.text((x, y), text, font=f, fill=(255, 255, 255, 200) if im.mode == "RGBA" else (255, 255, 255))
+    return np.asarray(im)
+
+
 def render_to_file(project, a: int, b: int, path: str, preset_id: str, quality: int = 18, alpha: bool = False,
                    video: bool = True, audio: bool = True, progress: Optional[Callable[[int, int], None]] = None,
-                   cancel: Optional[threading.Event] = None) -> str:
+                   cancel: Optional[threading.Event] = None, watermark: str = "") -> str:
     """project.sequence の [a, b) を preset で path に書き出す。video / audio で片方だけも可（分割レンダリング用）。"""
     import av
     from . import render
@@ -45,12 +62,17 @@ def render_to_file(project, a: int, b: int, path: str, preset_id: str, quality: 
                     if arr.shape[:2] != (H, W):
                         from PIL import Image
                         arr = np.asarray(Image.fromarray(arr, "RGBA").resize((W, H)))
+                    if watermark:
+                        arr = _stamp(arr, watermark)
                     vf = av.VideoFrame.from_ndarray(np.ascontiguousarray(arr), format="rgba")
                 else:
                     im = render.render_frame(seq, f, project, pool, 1.0)
                     if im.size != (W, H):
                         im = im.resize((W, H))
-                    vf = av.VideoFrame.from_ndarray(np.asarray(im), format="rgb24")
+                    arr = np.asarray(im)
+                    if watermark:
+                        arr = _stamp(arr, watermark)
+                    vf = av.VideoFrame.from_ndarray(arr, format="rgb24")
                 vf = vf.reformat(format=preset.pix_fmt)
                 vf.pts = i
                 for pkt in vs.encode(vf):

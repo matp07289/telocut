@@ -212,6 +212,9 @@ class FarmMixin:
     def farm_submit_export(self, a: int, b: int, preset: str, local_path: str = "", alpha: bool = False,
                            quality: int = 18, chunks: int = 0, name: str = "", priority: int = 0) -> Optional[dict]:
         """今のシーケンスをファームの書き出しジョブとして送る（待たずに編集を続けられる）。"""
+        from . import license as LIC
+        if not LIC.require(self, "farm"):
+            return None
         url = self._farm_server()
         if not url:
             return None
@@ -231,6 +234,9 @@ class FarmMixin:
 
     # ── 変換ジョブ（この PC のファイル）──
     def farm_submit_transcode(self, media, preset: str, size: str, dst_dir: str, how: str) -> list:
+        from . import license as LIC
+        if not LIC.require(self, "farm"):
+            return []
         url = self._farm_server()
         if not url:
             return []

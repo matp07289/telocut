@@ -160,7 +160,7 @@ def main():
         sys.exit(selftest(res))
 
     from PyQt6.QtWidgets import QApplication
-    from editor.theme import QSS
+    from editor import theme as TH
     from editor.mainwindow import MainWindow
     from editor.assets import app_icon
 
@@ -173,11 +173,15 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("TeloCut")
     app.setStyle("Fusion")
-    app.setStyleSheet(QSS)
+    TH.apply(app)                      # ユーザー設定の配色
     app.setWindowIcon(app_icon())
     w = MainWindow()
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     projects = [a for a in args if a.lower().endswith((".tcut", ".dvep"))]
+    from editor.settings import SETTINGS as _S
+    if not projects and _S.open_last_project and _S.last_project and os.path.exists(_S.last_project) \
+            and "--select" not in sys.argv:
+        projects = [_S.last_project]   # ユーザー設定「前回のプロジェクトを開く」
     if projects:
         w.open_project(projects[0])
     elif "--no-select" not in sys.argv:

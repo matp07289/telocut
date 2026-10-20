@@ -275,6 +275,9 @@ class Features7Mixin:
 
     # ─────────────────────────── トランスコード ───────────────────────────
     def transcode_dialog(self, media: Optional[List[M.MediaItem]] = None):
+        from . import license as LIC
+        if not LIC.require(self, "transcode"):
+            return None
         if media is None:
             ids = self.bin.selected_ids() or list({c.media_id for c in self._sel7() if c.media_id})
             media = [m for m in self.project.media if m.id in ids]

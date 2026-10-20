@@ -258,6 +258,42 @@ COMMANDS = [
     ("match_loudness", "選んだ音声のラウドネスをそろえる", "クリップ", "LUFS="),
     ("compare_seq", "シーケンスを比較", "クリップ", "比較"),
     ("collect_files", "ファイルの収集（素材をプロジェクトに集める）", "クリップ", "収集"),
+    # ── 設定・テンプレート・ライセンス ──
+    ("user_settings", "ユーザー設定（配色・キーボード・プリセット・ユーザー切り替え）", "設定", "User"),
+    ("project_settings", "プロジェクト設定（形式・テロップ・書き出し・メモ・作業時間）", "設定", "Proj"),
+    ("license", "ライセンス（無料版 / Pro / Studio）", "設定", "Lic"),
+    ("telop_template", "テロップのテンプレートから置く", "テロップ", "Tmpl"),
+    ("telop_template_save", "選んだテロップをテンプレートとして保存", "テロップ", "Tmpl+"),
+    ("project_template_save", "このプロジェクトをテンプレートとして保存", "設定", "PTmpl"),
+    ("biim_layout", "素材の配置テンプレート（biim 式・実況ワイプ・比較）", "YouTube", "biim"),
+    ("biim_split", "区間を追加（RTA タイマーの区間名・区間タイム）", "YouTube", "区間"),
+    ("text3d_edit", "3D テロップを直す（Blender）", "3D・MMD", "3D直"),
+    # ── 便利 ──
+    ("mixdown_video", "ビデオミックスダウン（IN〜OUT を 1 本の映像に）", "便利", "MixV"),
+    ("mixdown_audio", "オーディオミックスダウン（IN〜OUT の音を 1 本に）", "便利", "MixA"),
+    ("contact_sheet", "コンタクトシート（カットの絵を 1 枚に）", "便利", "Sheet"),
+    ("shot_list", "ショットリスト（HTML・サムネイル付き）", "便利", "Shots"),
+    ("export_ass", "ASS 字幕を書き出し（スタイル付き）", "便利", "ASS"),
+    ("export_vtt", "WebVTT 字幕を書き出し", "便利", "VTT"),
+    ("review_upload", "確認用に書き出してサーバーへ（URL をコピー）", "便利", "Review"),
+    ("telop_font_all", "テロップのフォントを一括変更", "便利", "Font"),
+    ("telop_fit_width", "はみ出すテロップを画面に収める", "便利", "Fit字"),
+    ("guides_grid", "三分割のガイドを表示", "便利", "Grid"),
+    ("copy_frame", "今のフレームをクリップボードにコピー", "便利", "Copy絵"),
+    ("next_marker_color", "同じ色の次のマーカーへ", "便利", "◆→"),
+    ("prev_marker_color", "同じ色の前のマーカーへ", "便利", "←◆"),
+    ("rename_clips", "クリップ名を連番に", "便利", "連番"),
+    ("lock_clips", "クリップの位置をロック / 解除", "便利", "🔒"),
+    ("swap_clips", "2 つのクリップの位置を入れ替え", "便利", "⇄"),
+    ("select_kind", "種類で選択（テロップ・画像・音声など）", "便利", "種選"),
+    ("media_to_bin", "選んだクリップの素材を新しいビンに", "便利", "→Bin"),
+    ("audio_mono", "音声をモノラルに", "便利", "Mono"),
+    ("audio_swap", "音声の左右を入れ替え", "便利", "L⇄R"),
+    ("place_by_date", "ビンの素材を撮影順に並べる", "便利", "日付順"),
+    ("remove_empty_tracks", "空のトラックを削除", "便利", "空削"),
+    ("conform_sequence", "シーケンスの形式を変える（解像度・fps）", "便利", "形式"),
+    ("split_by_markers", "マーカーごとに別のシーケンスに分ける", "便利", "◆分"),
+    ("join_sequences", "シーケンスをつなげて 1 本に", "便利", "結合"),
     # ── 自動切り抜き ──
     ("auto_clip", "自動切り抜き（見どころ・無音カット・字幕・書き出し）", "YouTube", "切抜"),
     # ── ファーム ──
@@ -301,7 +337,7 @@ NEW_COMMAND_KEYS = {"command_palette": ["Ctrl+Shift+P"], "drag_zoom": ["Ctrl+Alt
                     "next_gap": ["Ctrl+Alt+Right"], "prev_gap": ["Ctrl+Alt+Left"],
                     "marker_panel": ["Ctrl+Alt+M"], "snapshot": ["Ctrl+Alt+S"],
                     "graph_editor": ["Shift+F3"], "motion_panel": ["Ctrl+Alt+G"],
-                    "select_at_playhead": ["D"], "auto_clip": ["Ctrl+Alt+A"], "take_next": ["Ctrl+Alt+T"], "nest": ["Ctrl+Alt+N"]}
+                    "select_at_playhead": ["D"], "auto_clip": ["Ctrl+Alt+A"], "telop_template": ["Ctrl+Shift+E"], "copy_frame": ["Ctrl+Alt+C"], "biim_split": ["Ctrl+Alt+B"], "take_next": ["Ctrl+Alt+T"], "nest": ["Ctrl+Alt+N"]}
 
 COMMAND_INFO = OrderedDict((c[0], c) for c in COMMANDS)
 CATEGORIES = list(OrderedDict.fromkeys(c[2] for c in COMMANDS))

@@ -265,6 +265,7 @@ class Project:
     characters: List[dict] = field(default_factory=list)   # 立ち絵（ゆっくり等）
     speakers: List[dict] = field(default_factory=list)     # 話者設定（声・字幕色・キャラ）
     watch_folders: List[str] = field(default_factory=list) # 監視フォルダ（新しいファイルを自動取り込み）
+    settings: dict = field(default_factory=dict)           # プロジェクト設定（Avid の「プロジェクト設定」: 形式・書き出し・メモ・作業時間など）
 
     @property
     def sequence(self) -> Sequence:
@@ -322,7 +323,8 @@ class Project:
                 bins=[Bin(**{k: v for k, v in b.items() if k in Bin.__dataclass_fields__})
                       for b in d.get("bins", [])],
                 name=d.get("name", ""), characters=d.get("characters", []),
-                speakers=d.get("speakers", []), watch_folders=d.get("watch_folders", []))
+                speakers=d.get("speakers", []), watch_folders=d.get("watch_folders", []),
+                settings=d.get("settings", {}) or {})
         p.ensure_bins()
         return p
 

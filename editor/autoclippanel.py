@@ -655,7 +655,13 @@ class AutoClipDialog(QDialog):
 
     def _export(self, wait: bool = False):
         from . import mediacodecs as MC
+        from . import license as LIC
         pid = self.fmt.currentData()
+        if pid not in ("h264", "h264_mov", "h265") and not LIC.allowed("export_pro_codecs"):
+            pid = "h264"                                  # 無料版は H.264 で
+        if self.farm.isChecked() and not LIC.allowed("farm"):
+            self.farm.setChecked(False)
+        wm = LIC.watermark_text()
         ext = MC.BY_ID[pid].ext
         d = self.out_dir()
         files = []
@@ -687,7 +693,7 @@ class AutoClipDialog(QDialog):
             for i, (sid, path) in enumerate(jobs):
                 proj.current = next(k for k, s in enumerate(proj.sequences) if s.id == sid)
                 sq = proj.sequence
-                EC.render_to_file(proj, 0, sq.duration, path, pid,
+                EC.render_to_file(proj, 0, sq.duration, path, pid, watermark=wm,
                                   progress=lambda a, n, i=i: task.progress.emit(a, n, f"書き出し {i + 1} / {len(jobs)}"))
             return [p for _s, p in jobs]
         if wait:

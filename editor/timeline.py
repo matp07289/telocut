@@ -638,6 +638,11 @@ class TimelineCanvas(QWidget):
             mode = "move"
         if mode is None:
             return
+        # 位置をロックしたクリップは動かさない（クリップ → ロック）
+        locked = [x for x in (self.seq.find(i)[1] for i in self.selected) if x is not None and x.props.get("pos_locked")]
+        if locked:
+            self.mw.status.showMessage(f"🔒 ロックしたクリップがあるので動かせません（{locked[0].name or locked[0].kind}）", 4000)
+            return
         self.mw.begin_edit()
         self._drag = {"mode": mode, "x": pos.x(), "y": pos.y(), "clip": clip.id,
                       "f0": self.x0 + (pos.x() - HW) / self.ppf,

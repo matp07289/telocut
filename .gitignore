@@ -54,3 +54,7 @@ editor/telocut.png
 # サーバー配布時の一時フォルダ
 /fonts/
 .telocut_history/
+
+# ライセンスの秘密鍵（絶対に入れない）
+*signing_key*
+*.license_key

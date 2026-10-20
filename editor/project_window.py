@@ -214,6 +214,11 @@ class NewProjectDialog(QDialog):
         f.addRow("フレームレート", self.fps)
         self.tc = QLineEdit("01:00:00:00")
         f.addRow("開始タイムコード", self.tc)
+        from . import templates as TP
+        self.tmpl = QComboBox()
+        for t in TP.project_templates():
+            self.tmpl.addItem(("★ " if t.get("_user") else "") + t["name"], t)
+        f.addRow("テンプレート", self.tmpl)
         note = QLabel("フレームレートは後から変更できません（Avid と同じ）。ラスターはシーケンスごとに変更できます。")
         note.setObjectName("info")
         note.setWordWrap(True)
@@ -236,7 +241,7 @@ class NewProjectDialog(QDialog):
             tc = normalize_timecode(self.tc.text(), self.fps.currentData())
         except ValueError:
             tc = "01:00:00:00"
-        return self.name.text().strip(), w, h, self.fps.currentData(), tc
+        return self.name.text().strip(), w, h, self.fps.currentData(), tc, self.tmpl.currentData()
 
 
 class SelectProjectDialog(QDialog):
@@ -392,7 +397,7 @@ class SelectProjectDialog(QDialog):
         dlg = NewProjectDialog(self, folder)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        name, w, h, fps, tc = dlg.values()
+        name, w, h, fps, tc, tmpl = dlg.values()
         pdir = Path(folder) / name
         path = pdir / f"{name}.tcut"
         if path.exists():
@@ -401,5 +406,5 @@ class SelectProjectDialog(QDialog):
         self._save_user()
         SETTINGS.last_project = str(path)
         SETTINGS.save()
-        self.result_action = ("new", str(path), name, w, h, fps, tc)
+        self.result_action = ("new", str(path), name, w, h, fps, tc, tmpl)
         self.accept()

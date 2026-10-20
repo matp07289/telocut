@@ -288,6 +288,9 @@ def _shape_image(seq: Sequence, clip: Clip, cf: int, W: int, H: int) -> Image.Im
         cxx = (box[0] + box[2]) / 2
         d.rectangle([cxx - tw / 2 - pad, box[1], cxx + tw / 2 + pad, box[1] + fh * 1.3], fill=(0, 0, 0, max(fo, 160)))
         d.text((cxx - tw / 2, box[1] + fh * 0.12), txt, font=f, fill=rgb + (255,))
+    elif shape == "rta_timer":
+        from .biim import draw_timer
+        draw_timer(d, seq, clip, cf, box, W, H)
     elif shape == "letterbox":
         # シネスコの黒帯（rect の高さ = 上下それぞれの帯の高さ %）
         bh = H * h / 100
@@ -525,6 +528,9 @@ def frame_signature(seq: Sequence, frame: int, project: Project, scale: float, u
                 item.append(int(np.ceil((c.end - L.cf) / seq.fps)))
             elif c.prop("shape") == "timecode":
                 item += [L.cf, c.prop("tc_label", ""), seq.start_tc]
+            elif c.prop("shape") == "rta_timer":
+                item += [L.cf, [(m.frame, m.name) for m in seq.markers], c.props.get("timer_start"),
+                         c.props.get("timer_rate"), c.props.get("timer_ms")]
         if c.kind == "text" and (c.prop("text_anim") or c.prop("karaoke") or c.prop("text_anim_out")):
             item += [c.prop("text_anim"), c.prop("karaoke"), c.prop("text_anim_out"), L.cf - c.start, c.end - L.cf]
         if any(fx.get("name") == "shake" for fx in (c.prop("effects") or [])):
@@ -1280,6 +1286,12 @@ def mix_audio(seq: Sequence, project: Project, pool: DecoderPool,
                 base = np.arange(raw.shape[0])
                 for ch in range(CHANNELS):
                     buf[:, ch] = np.interp(idx, base, raw[:, ch])
+            if c.props.get("mono") or c.props.get("swap_lr"):
+                buf = np.array(buf, dtype=np.float32, copy=True)
+                if c.props.get("mono"):
+                    buf[:] = buf.mean(axis=1, keepdims=True)          # 左右を混ぜて真ん中に
+                if c.props.get("swap_lr"):
+                    buf = buf[:, ::-1].copy()                         # 左と右を入れ替える
             gain = 10 ** (float(c.prop("volume_db", 0.0)) / 20.0) * t_gain
             fi = int(c.prop("fade_in", 0) or 0) * spf
             fo = int(c.prop("fade_out", 0) or 0) * spf

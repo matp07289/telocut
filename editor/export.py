@@ -221,6 +221,18 @@ class ExportDialog(QDialog):
         self.enc_note = QLabel("")
         self.enc_note.setObjectName("info")
         f.addRow("", self.enc_note)
+        from .settings import SETTINGS as _S
+        prow = QHBoxLayout()
+        self.preset_cb = QComboBox()
+        self.preset_cb.addItem("（プリセット）", None)
+        for p in _S.export_presets:
+            self.preset_cb.addItem(p.get("name", "プリセット"), p)
+        self.preset_cb.activated.connect(lambda _i: self.apply_preset(self.preset_cb.currentData()))
+        sv = QPushButton("今の設定を保存...")
+        sv.clicked.connect(self.save_preset)
+        prow.addWidget(self.preset_cb, 1)
+        prow.addWidget(sv)
+        f.addRow("プリセット", prow)
         self.range = QComboBox()
         self.range.addItems(["シーケンス全体", "IN 点から OUT 点"])
         if seq.mark_in >= 0 and seq.mark_out > seq.mark_in:
@@ -257,7 +269,44 @@ class ExportDialog(QDialog):
         self.cancel_btn.clicked.connect(self._cancel)
         lay.addWidget(self.btns)
         self.worker = None
+        st = mw.project.settings
+        if st.get("export_preset"):
+            i = next((k for k in range(self.enc.count()) if self.enc.itemData(k)[0] == st["export_preset"]), -1)
+            if i >= 0:
+                self.enc.setCurrentIndex(i)
+        if st.get("export_folder"):
+            self.path.setText(os.path.join(st["export_folder"], f"{seq.name}{self.enc.currentData()[1]}"))
         self._on_enc(self.enc.currentIndex())
+
+    def apply_preset(self, p):
+        if not p:
+            return
+        i = self.enc.findData(next((d for d in (self.enc.itemData(k) for k in range(self.enc.count()))
+                                    if d and d[0] == p.get("preset")), None))
+        if i >= 0:
+            self.enc.setCurrentIndex(i)
+        self.q.setValue(int(p.get("quality", self.q.value())))
+        self.alpha.setChecked(bool(p.get("alpha")))
+        self.range.setCurrentIndex(1 if p.get("range") == "inout" else 0)
+        if p.get("mode"):
+            self.mode.setCurrentIndex(max(0, self.mode.findData(p["mode"])))
+        if p.get("folder"):
+            self.path.setText(os.path.join(p["folder"], os.path.basename(self.path.text())))
+
+    def save_preset(self, name: str = ""):
+        from PyQt6.QtWidgets import QInputDialog
+        from .settings import SETTINGS as _S
+        if not name:
+            name, ok = QInputDialog.getText(self, "書き出しプリセット", "名前:", text=self.enc.currentText()[:20])
+            if not ok or not name.strip():
+                return None
+        p = {"name": name.strip(), "preset": self.enc.currentData()[0], "quality": self.q.value(),
+             "alpha": self.alpha.isChecked(), "range": "inout" if self.range.currentIndex() == 1 else "all",
+             "mode": self.mode.currentData(), "folder": os.path.dirname(self.path.text())}
+        _S.export_presets = [x for x in _S.export_presets if x.get("name") != p["name"]] + [p]
+        _S.save()
+        self.preset_cb.addItem(p["name"], p)
+        return p
 
     def _on_mode(self):
         m = self.mode.currentData()
@@ -298,6 +347,15 @@ class ExportDialog(QDialog):
         mode = self.mode.currentData()
         codec = self.enc.currentData()[0]
         self.mw.settings.setValue("export_mode", mode)
+        from . import license as LIC
+        if codec not in ("h264", "h264_mov", "h265", "h264_nvenc") and not LIC.require(self.mw, "export_pro_codecs"):
+            return
+        if max(seq.width, seq.height) > 1920 and min(seq.width, seq.height) > 1080 and not LIC.require(self.mw, "export_4k"):
+            return
+        if self.alpha.isChecked() and self.alpha.isEnabled() and not LIC.require(self.mw, "export_alpha"):
+            return
+        if mode == "farmjob" and not LIC.require(self.mw, "farm"):
+            return
         if mode == "farmjob":
             if codec not in MC.BY_ID:
                 QMessageBox.warning(self, "ファーム", "この形式（NVENC）はファームでは書き出せません。")

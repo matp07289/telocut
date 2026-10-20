@@ -26,6 +26,8 @@ from .features6 import Features6Mixin
 from .features7 import Features7Mixin
 from .farmpanel import FarmMixin as FarmUIMixin
 from .autoclippanel import AutoClipMixin
+from .settingsui import StudioMixin
+from .features8 import Features8Mixin
 from .dualdisplay import DualDisplayMixin
 from . import media as MD
 from . import render as R
@@ -87,7 +89,8 @@ class SequenceDialog(QDialog):
 
 
 class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin, ProductionMixin, Features6Mixin,
-                 Features7Mixin, FarmUIMixin, AutoClipMixin, DualDisplayMixin, QMainWindow):
+                 Features7Mixin, FarmUIMixin, AutoClipMixin, StudioMixin, Features8Mixin, DualDisplayMixin,
+                 QMainWindow):
     def __init__(self):
         super().__init__()
         SETTINGS.ensure_dirs()
@@ -220,6 +223,7 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         self._init_features5()
         self._init_production()
         self._init_farmui()
+        self._init_studio()
         self._init_dual()
         self._build_commands()
         self._build_menus()
@@ -230,6 +234,7 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         self._build_production_menus()
         self._build_feature6_menus()
         self._build_feature7_menus()
+        self._build_feature8_menus()
         self._build_toolbar()
         from .commands import add_new_keys
         self.apply_keymap(add_new_keys(dict(SETTINGS.keymap)) if SETTINGS.keymap else preset_keymap(SETTINGS.keyboard_preset))
@@ -384,6 +389,14 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         self.cmd_fns.update(self._feature7_commands())
         self.cmd_fns.update(self._farmui_commands())
         self.cmd_fns.update(self._autoclip_commands())
+        self.cmd_fns.update(self._studio_commands())
+        self.cmd_fns.update(self._feature8_commands())
+        # エディション（無料版 / Pro / Studio）で使えない機能は、どこから呼んでも案内を出す
+        from . import license as LIC
+        for cid, feat in LIC.GATED_COMMANDS.items():
+            fn = self.cmd_fns.get(cid)
+            if fn is not None:
+                self.cmd_fns[cid] = (lambda fn=fn, feat=feat: fn() if LIC.require(self, feat) else None)
         for i in range(4):
             self.cmd_fns[f"toggle_v{i + 1}"] = lambda i=i: self.toggle_track("video", i)
             self.cmd_fns[f"toggle_a{i + 1}"] = lambda i=i: self.toggle_track("audio", i)
@@ -480,6 +493,9 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         f.addSeparator()
         self._a(f, "keyboard_settings")
         self._a(f, "preferences")
+        sm = self.menuBar().addMenu("設定")
+        for c in ("user_settings", "project_settings", "preferences", None, "license"):
+            sm.addSeparator() if c is None else self._a(sm, c)
         f.addSeparator()
         f.addAction("終了", QKeySequence("Ctrl+Q"), self.close)
 
@@ -715,7 +731,10 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
     def _update_title(self):
         name = Path(self.project_path).name if self.project_path else "無題"
         from .version import VERSION
-        self.setWindowTitle(f"{'*' if self.dirty else ''}{name} — {APP_NAME} {VERSION}")
+        from . import license as LIC
+        lic = LIC.current()
+        ed = "" if lic.source == "dev" else f" {lic.label}"
+        self.setWindowTitle(f"{'*' if self.dirty else ''}{name} — {APP_NAME} {VERSION}{ed}")
 
     def _on_selection(self):
         self.inspector.load([c for _, c in self.canvas.selected_clips()])
@@ -1537,8 +1556,10 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         if not ok:
             return
         self.begin_edit()
-        sq = M.Sequence.create(name=name.strip() or "シーケンス", fps=cur.fps, width=cur.width,
-                               height=cur.height, start_tc=cur.start_tc)
+        fmt = self.project.settings.get("format") or {}         # プロジェクト設定の形式（無ければ今のシーケンス）
+        sq = M.Sequence.create(name=name.strip() or "シーケンス", fps=float(fmt.get("fps", cur.fps)),
+                               width=int(fmt.get("width", cur.width)), height=int(fmt.get("height", cur.height)),
+                               start_tc=fmt.get("start_tc", cur.start_tc))
         self.project.sequences.append(sq)
         b = self.project.bin_by_id(bin_id or self.bin.current_bin_id()) or self.project.bins[0]
         b.add("sequence", sq.id)
@@ -1644,17 +1665,22 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         if mids:
             self.remove_media(mids)
 
-    def create_project(self, path: str, name: str, w: int, h: int, fps: float, tc: str) -> bool:
-        """プロジェクトの選択で「新規」: フォルダとプロジェクトファイルを作って開く。"""
+    def create_project(self, path: str, name: str, w: int, h: int, fps: float, tc: str, template: dict = None) -> bool:
+        """プロジェクトの選択で「新規」: フォルダとプロジェクトファイルを作って開く（テンプレートからも）。"""
         try:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         except OSError as ex:
             QMessageBox.critical(self, "新規プロジェクト", str(ex))
             return False
-        proj = M.Project(name=name)
-        proj.sequences = [M.Sequence.create(name="シーケンス 01", fps=fps, width=w, height=h, start_tc=tc)]
-        proj.bins = [M.Bin(M.new_id(), f"{name} ビン")]
-        proj.ensure_bins()
+        if template and template.get("builtin") != "empty":
+            from . import templates as TP
+            proj = TP.project_from_template(template, name, w, h, fps, tc)
+        else:
+            proj = M.Project(name=name)
+            proj.sequences = [M.Sequence.create(name="シーケンス 01", fps=fps, width=w, height=h, start_tc=tc)]
+            proj.bins = [M.Bin(M.new_id(), f"{name} ビン")]
+            proj.settings["format"] = {"width": w, "height": h, "fps": fps, "start_tc": tc}
+            proj.ensure_bins()
         self.lock.release()
         self.read_only = False
         self._load_project(proj, path)
@@ -2578,6 +2604,18 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         """再生ヘッドにテロップ（テキストクリップ）を追加してインスペクタで編集。"""
         seq = self.project.sequence
         f = self.record_player.position if frame is None else frame
+        tmpl = self.default_telop_template() if track is None and hasattr(self, "default_telop_template") else None
+        if tmpl is not None:
+            # テロップのテンプレート（プロジェクト設定 / ユーザー設定）で置く
+            from . import templates as TP
+            self.begin_edit()
+            made = TP.apply_telop(seq, tmpl, f, {p: "テロップ" for p in TP.placeholders(tmpl)})
+            self.end_edit(f"テロップを追加（{tmpl['name']}）")
+            txt = [c for c in made if c.kind == "text"]
+            self.canvas.selected = {(txt or made)[0].id} if made else set()
+            self.canvas.selection_changed.emit()
+            self.show_inspector()
+            return
         dur = int(round(seq.fps * 3))
         if track is None:
             # 一番上の映像トラックから、空いているトラックを探す
@@ -3232,6 +3270,8 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         self._add_recent(path)
 
     def save_project(self, quiet: bool = False) -> bool:
+        if hasattr(self, "_flush_work_time") and self.project_path and not self.read_only:
+            self._flush_work_time()
         if not self.project_path or self.read_only:
             if quiet:
                 return False

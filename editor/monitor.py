@@ -26,6 +26,7 @@ class VideoView(QWidget):
         self._img: Optional[QImage] = None
         self.aspect = 16 / 9
         self.safe_area = False
+        self.grid = False                 # 三分割のガイド
         self.message = ""
         self.setMinimumSize(240, 135)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -88,6 +89,13 @@ class VideoView(QWidget):
             if self.message:
                 p.setPen(QColor(C["dim"]))
                 p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.message)
+        if self.grid:
+            p.setPen(QPen(QColor(255, 255, 255, 80), 1))
+            for k in (1, 2):
+                x = r.x() + r.width() * k // 3
+                y = r.y() + r.height() * k // 3
+                p.drawLine(x, r.y(), x, r.bottom())
+                p.drawLine(r.x(), y, r.right(), y)
         if self.safe_area:
             p.setPen(QPen(QColor(255, 255, 255, 90), 1, Qt.PenStyle.DashLine))
             for f in (0.9, 0.8):
