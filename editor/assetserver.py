@@ -119,6 +119,12 @@ class Store:
             CREATE TABLE IF NOT EXISTS notes(id TEXT PRIMARY KEY, asset_id TEXT, t REAL, user TEXT, text TEXT,
                 created REAL);
             CREATE INDEX IF NOT EXISTS notes_asset ON notes(asset_id);
+            CREATE TABLE IF NOT EXISTS shots(id TEXT PRIMARY KEY, project TEXT DEFAULT '', name TEXT, seq TEXT DEFAULT '',
+                tc_in TEXT DEFAULT '', tc_out TEXT DEFAULT '', status TEXT DEFAULT 'todo', assignee TEXT DEFAULT '',
+                due TEXT DEFAULT '', priority INT DEFAULT 0, note TEXT DEFAULT '', asset_id TEXT DEFAULT '',
+                sort INT DEFAULT 0, created REAL, updated REAL, updated_by TEXT DEFAULT '');
+            CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY AUTOINCREMENT, time REAL, user TEXT, host TEXT,
+                project TEXT DEFAULT '', kind TEXT, target TEXT, text TEXT);
             """)
             cols = [r[1] for r in self.db.execute("PRAGMA table_info(assets)").fetchall()]
             if "label" not in cols:
@@ -519,6 +525,8 @@ class Store:
         with self.lock:
             self.db.execute("INSERT INTO notes VALUES(:id,:asset_id,:t,:user,:text,:created)", n)
             self.db.commit()
+        a = self.get(asset_id) or {}
+        self.add_activity(n["user"], "", "", "note", asset_id, f"{a.get('name', '素材')} にコメント: {n['text'][:80]}")
         return n
 
     def delete_note(self, nid: str) -> dict:
@@ -654,6 +662,102 @@ class Store:
                 except OSError:
                     pass
                 self._proxy_state[i] = {"status": "error", "error": str(ex)[:300]}
+
+    # ── 制作管理（ショット・活動）──
+    SHOT_STATUS = ("todo", "wip", "review", "fix", "done")
+    SHOT_FIELDS = ("project", "name", "seq", "tc_in", "tc_out", "status", "assignee", "due", "priority", "note",
+                   "asset_id", "sort")
+
+    def shots(self, project: str = "") -> list:
+        with self.lock:
+            q = "SELECT * FROM shots" + (" WHERE project=?" if project else "") + " ORDER BY sort, created"
+            return [dict(r) for r in self.db.execute(q, (project,) if project else ())]
+
+    def shot_create(self, d: dict, user: str = "") -> dict:
+        import uuid
+        now = time.time()
+        sh = {k: d.get(k, "") for k in self.SHOT_FIELDS}
+        sh["priority"] = int(d.get("priority") or 0)
+        sh["sort"] = int(d.get("sort") or 0)
+        sh["status"] = d.get("status") if d.get("status") in self.SHOT_STATUS else "todo"
+        sh["name"] = (sh["name"] or "ショット").strip()[:200]
+        sh.update(id=uuid.uuid4().hex[:12], created=now, updated=now, updated_by=user[:40])
+        with self.lock:
+            self.db.execute(f"INSERT INTO shots({','.join(sh)}) VALUES({','.join('?' * len(sh))})", list(sh.values()))
+            self.db.commit()
+        self.add_activity(user, "", sh["project"], "shot", sh["id"], f"ショット「{sh['name']}」を追加")
+        return sh
+
+    def shot_update(self, i: str, d: dict, user: str = "") -> dict:
+        with self.lock:
+            old = self.db.execute("SELECT * FROM shots WHERE id=?", (i,)).fetchone()
+            if old is None:
+                raise ValueError("ショットがありません")
+            old = dict(old)
+            ch = {k: d[k] for k in self.SHOT_FIELDS if k in d}
+            if "status" in ch and ch["status"] not in self.SHOT_STATUS:
+                raise ValueError("状態が正しくありません")
+            if not ch:
+                return old
+            ch.update(updated=time.time(), updated_by=user[:40])
+            self.db.execute(f"UPDATE shots SET {','.join(k + '=?' for k in ch)} WHERE id=?", list(ch.values()) + [i])
+            self.db.commit()
+            new = dict(self.db.execute("SELECT * FROM shots WHERE id=?", (i,)).fetchone())
+        jp = {"todo": "未着手", "wip": "作業中", "review": "レビュー待ち", "fix": "修正", "done": "OK"}
+        if "status" in d and d["status"] != old["status"]:
+            self.add_activity(user, "", new["project"], "status", i,
+                              f"「{new['name']}」{jp.get(old['status'], old['status'])} → {jp.get(new['status'], new['status'])}")
+        elif "assignee" in d and d["assignee"] != old["assignee"]:
+            self.add_activity(user, "", new["project"], "assign", i, f"「{new['name']}」の担当を {new['assignee'] or 'なし'} に")
+        return new
+
+    def shot_delete(self, i: str, user: str = "") -> dict:
+        with self.lock:
+            r = self.db.execute("SELECT name, project FROM shots WHERE id=?", (i,)).fetchone()
+            self.db.execute("DELETE FROM shots WHERE id=?", (i,))
+            self.db.commit()
+        if r:
+            self.add_activity(user, "", r["project"], "shot", i, f"ショット「{r['name']}」を削除")
+        return {"ok": True}
+
+    def add_activity(self, user: str, host: str, project: str, kind: str, target: str, text: str) -> dict:
+        ev = {"time": time.time(), "user": (user or "")[:40], "host": (host or "")[:60], "project": (project or "")[:200],
+              "kind": (kind or "")[:20], "target": (target or "")[:200], "text": (text or "")[:1000]}
+        with self.lock:
+            cur = self.db.execute("INSERT INTO activity(time,user,host,project,kind,target,text) VALUES(?,?,?,?,?,?,?)",
+                                  list(ev.values()))
+            self.db.execute("DELETE FROM activity WHERE id < ?", (cur.lastrowid - 5000,))
+            self.db.commit()
+        ev["id"] = cur.lastrowid
+        return ev
+
+    def activity(self, limit: int = 100, project: str = "", since_id: int = 0) -> list:
+        with self.lock:
+            q = "SELECT * FROM activity WHERE id>?" + (" AND project=?" if project else "") + " ORDER BY id DESC LIMIT ?"
+            args = [int(since_id)] + ([project] if project else []) + [max(1, min(1000, int(limit)))]
+            return [dict(r) for r in self.db.execute(q, args)]
+
+    def dashboard(self, project: str = "") -> dict:
+        sh = self.shots(project)
+        today = time.strftime("%Y-%m-%d")
+        by_status = {k: 0 for k in self.SHOT_STATUS}
+        by_user: dict = {}
+        overdue = []
+        for x in sh:
+            by_status[x["status"]] = by_status.get(x["status"], 0) + 1
+            u = by_user.setdefault(x["assignee"] or "（未割り当て）", {k: 0 for k in self.SHOT_STATUS})
+            u[x["status"]] = u.get(x["status"], 0) + 1
+            if x["due"] and x["due"] < today and x["status"] != "done":
+                overdue.append(x)
+        with self.lock:
+            projects = [r[0] for r in self.db.execute("SELECT DISTINCT project FROM shots WHERE project<>'' ORDER BY project")]
+        nodes = self.nodes()
+        jobs = self.jobs(20)
+        return {"total": len(sh), "by_status": by_status, "by_user": by_user, "overdue": overdue,
+                "done_ratio": (by_status.get("done", 0) / len(sh)) if sh else 0.0, "projects": projects,
+                "nodes_online": sum(1 for n in nodes if n.get("online")), "nodes": len(nodes),
+                "jobs_running": sum(1 for j in jobs if j.get("status") not in ("done", "failed", "cancelled")),
+                "activity": self.activity(30, project)}
 
     # ── フォルダ（NAS と同じ構成）──
     def folders(self, parent: str = "") -> dict:
@@ -1041,6 +1145,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(st.stats())
             if parts[:2] == ["api", "roots"]:
                 return self._json(st.roots_info())
+            if parts[:2] == ["api", "shots"]:
+                return self._json(st.shots(qs.get("project", "")))
+            if parts[:2] == ["api", "activity"]:
+                return self._json(st.activity(int(qs.get("limit", 100)), qs.get("project", ""), int(qs.get("since", 0) or 0)))
+            if parts[:2] == ["api", "dashboard"]:
+                return self._json(st.dashboard(qs.get("project", "")))
             if parts[:2] == ["api", "folders"]:
                 return self._json(st.folders(qs.get("parent", "")))
             if parts[:2] == ["api", "vfolders"]:
@@ -1122,6 +1232,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True})
             if parts[:2] == ["api", "roots"]:
                 return self._json(st.set_roots_info(body))
+            if parts[:2] == ["api", "shots"] and len(parts) == 2:
+                if isinstance(body.get("items"), list):          # まとめて追加（マーカーから など）
+                    return self._json([st.shot_create(x, body.get("user", "")) for x in body["items"][:500]])
+                return self._json(st.shot_create(body, body.get("user", "")))
+            if parts[:2] == ["api", "activity"]:
+                return self._json(st.add_activity(body.get("user", ""), body.get("host", ""), body.get("project", ""),
+                                                  body.get("kind", ""), body.get("target", ""), body.get("text", "")))
             if parts[:3] == ["api", "assets", "bulk"]:
                 return self._json(st.bulk_update(body.get("ids", []), body.get("set", {})))
             if parts[:2] == ["api", "assets"] and len(parts) == 4 and parts[3] == "notes":
@@ -1152,6 +1269,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(self.store.update(parts[2], json.loads(self._body() or b"{}")))
             if parts[:2] == ["api", "vfolders"] and len(parts) == 3:
                 return self._json(self.store.vfolder_update(parts[2], json.loads(self._body() or b"{}")))
+            if parts[:2] == ["api", "shots"] and len(parts) == 3:
+                b = json.loads(self._body() or b"{}")
+                return self._json(self.store.shot_update(parts[2], b, b.get("user", "")))
             self._json({"error": "not found"}, 404)
         except Exception as ex:
             self._json({"error": str(ex)}, 500)
@@ -1164,6 +1284,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(self.store.vfolder_delete(parts[2]))
             if parts[:2] == ["api", "notes"] and len(parts) == 3:
                 return self._json(self.store.delete_note(parts[2]))
+            if parts[:2] == ["api", "shots"] and len(parts) == 3:
+                qs = {k: v[0] for k, v in urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).items()}
+                return self._json(self.store.shot_delete(parts[2], qs.get("user", "")))
             self._json({"error": "not found"}, 404)
         except Exception as ex:
             self._json({"error": str(ex)}, 500)

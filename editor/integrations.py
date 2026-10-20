@@ -258,10 +258,19 @@ class MediaWatcher(QObject):
                 # 書き込み途中の可能性 → 次回も同じなら反映
                 self._sig[m.id] = ("changing", sig)
             else:
+                if old is None and sig is not None:
+                    self._first_seen(m)
                 self._sig[m.id] = sig
         self._check_watch_folders()
 
+    def _first_seen(self, m: M.MediaItem):
+        """見張りを始めた素材の今の版を残しておく（あとで「前の版に戻す」ため）。"""
+        h = getattr(self.mw, "history", None)
+        if h is not None and not m.link_src:
+            threading.Thread(target=h.snapshot, args=(m.id, m.path), daemon=True).start()
+
     def _reload(self, m: M.MediaItem):
+        old_size = m.file_size
         MD.invalidate(m.path)
         st = self._stat(m.path)
         if st:
@@ -271,6 +280,11 @@ class MediaWatcher(QObject):
             m.duration_s, m.width, m.height = info.duration_s or m.duration_s, info.width, info.height
         except Exception:
             pass
+        h = getattr(self.mw, "history", None)
+        if h is not None and not m.link_src:
+            from .history import guess_app, size_delta
+            h.log("update", m.id, m.name, m.path, guess_app(m.path), size_delta(old_size, m.file_size))
+            threading.Thread(target=h.snapshot, args=(m.id, m.path), daemon=True).start()
         self.changed.emit(m.id, f"更新を反映: {m.name}")
 
     def _check_pending(self, m: M.MediaItem):

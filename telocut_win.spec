@@ -19,7 +19,7 @@ from PyInstaller.utils.hooks import collect_submodules  # noqa: E402
 ICON = os.path.abspath(os.path.join('editor', 'telocut.ico'))
 make_ico(ICON)
 
-VERSION = '0.8.0'
+VERSION = '0.9.0'
 VERSION_FILE = os.path.abspath(os.path.join('editor', 'version_info.txt'))
 _v = tuple(int(x) for x in VERSION.split('.')) + (0,)
 with open(VERSION_FILE, 'w', encoding='utf-8') as f:

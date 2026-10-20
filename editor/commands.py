@@ -203,6 +203,8 @@ COMMANDS = [
     ("telops_to_markers", "テロップの位置にマーカー", "テロップ", "T→M"),
     # ── 整理・チェック ──
     ("marker_panel", "マーカー一覧を表示", "整理・チェック", "◆一覧"),
+    ("marker_csv", "マーカーを CSV で書き出し", "整理・チェック", "◆CSV"),
+    ("marker_chapters", "マーカーを YouTube チャプターでコピー", "整理・チェック", "◆章"),
     ("split_at_markers", "マーカーの位置ですべて分割", "整理・チェック", "◆分割"),
     ("next_gap", "次の隙間（黒）へ", "整理・チェック", "隙→"),
     ("prev_gap", "前の隙間（黒）へ", "整理・チェック", "←隙"),
@@ -224,6 +226,24 @@ COMMANDS = [
     ("replace_media", "素材の差し替え（使っている所すべて）", "整理・チェック", "差替"),
     ("seq_stats", "シーケンス情報（長さ・カット数・文字数）", "整理・チェック", "情報"),
     ("in_out_to_seq", "IN〜OUT を新しいシーケンスに", "整理・チェック", "IO→S"),
+    # ── モーション（AE / Blender 風）──
+    ("motion_panel", "モーションパネル（親子付け・3D・マスク・式）", "モーション", "Mo"),
+    ("graph_editor", "グラフエディター（キーフレームの曲線）", "モーション", "Graph"),
+    ("add_shape_layer", "図形（シェイプレイヤー）を追加", "モーション", "図形"),
+    ("add_null", "ヌルを追加（親専用・見えない）", "モーション", "Null"),
+    ("add_camera", "カメラを追加（3D レイヤー用）", "モーション", "Cam"),
+    ("make_3d", "選んだクリップを 3D レイヤーに / 戻す", "モーション", "3D"),
+    ("camera_move", "カメラワークのプリセット", "モーション", "CamM"),
+    ("track_motion", "モーショントラッキング（モニターで囲む）", "モーション", "Trk"),
+    ("parent_to_null", "選んだクリップをヌルにまとめる（親子付け）", "モーション", "親"),
+    ("unparent", "親子付けを外す", "モーション", "親✕"),
+    # ── 連携・管理 ──
+    ("dynlink_import", "Dynamic Link: AE / Blender のファイルをクリップとして置く", "連携・管理", "DL"),
+    ("dynlink_rerender", "Dynamic Link: 選んだクリップをレンダリングし直す", "連携・管理", "DL↻"),
+    ("dynlink_open", "Dynamic Link: 元のアプリで開く", "連携・管理", "DL↗"),
+    ("update_panel", "更新履歴（自動同期・前の版に戻す）", "連携・管理", "履歴"),
+    ("production_panel", "制作管理（ショット・担当・期限）", "連携・管理", "管理"),
+    ("shots_from_markers", "マーカーからショットを作る", "連携・管理", "◆→S"),
 ]
 
 # 後から追加したコマンドの既定キー（プリセットの他のキーと重ならなければ割り当てる）
@@ -232,7 +252,8 @@ NEW_COMMAND_KEYS = {"command_palette": ["Ctrl+Shift+P"], "drag_zoom": ["Ctrl+Alt
                     "telop_editor": ["Ctrl+Shift+T"], "voice_panel": ["Ctrl+Shift+Y"],
                     "node_editor": ["Ctrl+Shift+N"], "preflight": ["Ctrl+Alt+K"],
                     "next_gap": ["Ctrl+Alt+Right"], "prev_gap": ["Ctrl+Alt+Left"],
-                    "marker_panel": ["Ctrl+Alt+M"], "snapshot": ["Ctrl+Alt+S"]}
+                    "marker_panel": ["Ctrl+Alt+M"], "snapshot": ["Ctrl+Alt+S"],
+                    "graph_editor": ["Shift+F3"], "motion_panel": ["Ctrl+Alt+G"]}
 
 COMMAND_INFO = OrderedDict((c[0], c) for c in COMMANDS)
 CATEGORIES = list(OrderedDict.fromkeys(c[2] for c in COMMANDS))

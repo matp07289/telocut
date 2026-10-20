@@ -209,6 +209,11 @@ class FeaturesMixin:
 
     def drag_zoom(self, r):
         """レコードモニターで囲んだ範囲（0〜1）がフレームいっぱいになるよう、選択クリップを拡大・移動する。"""
+        if getattr(self, "_track_mode", False):          # トラッキングの範囲指定
+            self._track_mode = False
+            self.set_drag_zoom(False)
+            self.track_from_rect((r.x(), r.y(), r.width(), r.height()))
+            return
         seq = self.project.sequence
         sel = [(t, c) for t, c in self._sel(("video", "image", "character", "shape", "color"))]
         if not sel:

@@ -52,3 +52,4 @@ editor/telocut.png
 
 # サーバー配布時の一時フォルダ
 /fonts/
+.telocut_history/

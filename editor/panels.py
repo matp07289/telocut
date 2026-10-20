@@ -35,7 +35,9 @@ class MarkerPanel(QWidget):
         for text, fn, tip in (("＋ 追加", mw.add_marker, "再生ヘッドにマーカーを追加"),
                               ("削除", self._delete, "選択したマーカーを削除"),
                               ("◀", lambda: self._jump(-1), "前のマーカーへ"),
-                              ("▶", lambda: self._jump(1), "次のマーカーへ")):
+                              ("▶", lambda: self._jump(1), "次のマーカーへ"),
+                              ("CSV", lambda: mw.export_markers_csv(), "マーカーを CSV で保存"),
+                              ("チャプター", lambda: mw.copy_marker_chapters(), "YouTube のチャプターとしてコピー")):
             b = QToolButton()
             b.setText(text)
             b.setToolTip(tip)

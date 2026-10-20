@@ -198,8 +198,34 @@ def _shape_image(seq: Sequence, clip: Clip, cf: int, W: int, H: int) -> Image.Im
     x, y, w, h = [float(v) for v in (clip.prop("rect") or [0, 78, 100, 22])]
     box = [W * x / 100, H * y / 100, W * (x + w) / 100, H * (y + h) / 100]
     rad = int(float(clip.prop("radius", 0)) * min(W, H) / 100)
+    sw = int(round(float(clip.prop("stroke_width", 0) or 0) * H / 1080))
+    try:
+        srgb = ImageColor.getrgb(clip.prop("stroke_color") or "#FFFFFF")[:3] + (255,)
+    except ValueError:
+        srgb = (255, 255, 255, 255)
+    fill = rgb + (fo,) if fo > 0 else None
+    out_ = srgb if sw > 0 else None
+    cx, cy, rr = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2, min(box[2] - box[0], box[3] - box[1]) / 2
+    from . import motion as MO
     if shape in ("band", "rect"):
-        d.rounded_rectangle(box, radius=rad, fill=rgb + (fo,))
+        d.rounded_rectangle(box, radius=rad, fill=fill, outline=out_, width=max(1, sw))
+    elif shape == "ellipse":
+        d.ellipse(box, fill=fill, outline=out_, width=max(1, sw))
+    elif shape == "star":
+        n = int(clip.prop("sides", 5) or 5)
+        d.polygon(MO.star_points(cx, cy, rr, rr * float(clip.prop("inner", 0.45) or 0.45), n), fill=fill, outline=out_,
+                  width=max(1, sw))
+    elif shape == "polygon":
+        d.polygon(MO.polygon_points(cx, cy, rr, int(clip.prop("sides", 6) or 6)), fill=fill, outline=out_, width=max(1, sw))
+    elif shape in ("line", "arrow"):
+        lw = max(1, sw or int(H / 200))
+        d.line([box[0], box[1], box[2], box[3]], fill=srgb if sw else rgb + (255,), width=lw)
+        if shape == "arrow":
+            ang = math.atan2(box[3] - box[1], box[2] - box[0])
+            hl = lw * 4
+            for da in (2.6, -2.6):
+                d.line([box[2], box[3], box[2] + hl * math.cos(ang + da), box[3] + hl * math.sin(ang + da)],
+                       fill=srgb if sw else rgb + (255,), width=lw)
     elif shape == "progress":
         prog = max(0.0, min(1.0, cf / max(1, seq.duration)))
         d.rectangle(box, fill=(40, 40, 40, int(fo * 0.6)))
@@ -345,7 +371,11 @@ def prop_at(clip: Clip, key: str, cf: int):
 def clip_alpha(clip: Clip, frame: int) -> float:
     """不透明度（アニメーション・フェードイン/アウト込み）。"""
     f = _cf_in(clip, frame)
-    a = float(prop_at(clip, "opacity", f) if prop_at(clip, "opacity", f) is not None else 1.0)
+    a = prop_at(clip, "opacity", f)
+    a = float(a if a is not None else 1.0)
+    if clip.props.get("expr"):
+        from .motion import apply_expr
+        a = float(apply_expr(clip, "opacity", a, f))
     off = f - clip.start
     fi, fo = int(clip.prop("fade_in", 0) or 0), int(clip.prop("fade_out", 0) or 0)
     if fi > 0 and off < fi:
@@ -369,6 +399,8 @@ _SIG_POOL = DecoderPool()
 
 def frame_signature(seq: Sequence, frame: int, project: Project, scale: float, use_proxy: bool) -> str:
     """フレームの見た目を決める情報のハッシュ（レンダーキャッシュのキー）。"""
+    from . import motion as MO
+    MO.FPS[0] = seq.fps
     parts = [round(scale, 4), seq.width, seq.height]
     for L in active_layers(seq, frame):
         c = L.clip
@@ -403,6 +435,13 @@ def frame_signature(seq: Sequence, frame: int, project: Project, scale: float, u
             if is_animated(c.prop("effects")):
                 item.append(("fx_t", L.cf - c.start))
         item.append([prop_at(c, k, L.cf) for k in ("scale", "rotation", "pos_x", "pos_y", "opacity")])
+        if MO.is_dynamic(seq, c):
+            item.append(("xf", [round(v, 3) for v in MO.transform(seq, c, L.cf, scale)]))
+            if c.prop("motion_blur"):
+                item.append(("mb", [round(v, 3) for t_ in (-0.25, 0.25)
+                                    for v in MO.transform(seq, c, L.cf + t_, scale)], c.prop("shutter"), c.prop("mb_samples")))
+        if c.prop("mask"):
+            item.append(("mask", c.prop("mask")))
         item.append({k: c.props[k] for k in ("effects", "crop", "chroma", "blend", "fx_mode", "fx_graph", "keys")
                      if k in c.props})
         if c.prop("fx_mode") == "nodes" and c.prop("fx_graph"):
@@ -676,10 +715,10 @@ def _overlay(out: np.ndarray, project: Project, seq: Sequence, L: Layer,
     alpha = clip_alpha(clip, cf) * L.amul
     if alpha <= 0:
         return
-    s = float(prop_at(clip, "scale", cf) or 1.0)
-    rot = float(prop_at(clip, "rotation", cf) or 0.0)
-    px = float(prop_at(clip, "pos_x", cf) or 0.0) * scale
-    py = float(prop_at(clip, "pos_y", cf) or 0.0) * scale
+    from . import motion as MO
+    s, rot, px, py = MO.transform(seq, clip, cf, scale)
+    if s <= 0:
+        return
     effects = clip.prop("effects") or ([1] if clip.prop("fx_mode") == "nodes" and clip.prop("fx_graph") else [])
     bm = clip.prop("blend") or "normal"
 
@@ -821,24 +860,64 @@ def _overlay(out: np.ndarray, project: Project, seq: Sequence, L: Layer,
     if ck:
         im = _chroma(im, ck)
     im = _crop(im, clip.prop("crop"))
+    if clip.prop("mask"):
+        im = MO.apply_mask(im, clip.prop("mask"), scale)
     if effects:
         im = apply_clip_fx(im, clip, seq, cf, scale)
+    if clip.prop("motion_blur"):
+        if _motion_blur(out, im, seq, clip, cf, scale, W, H, alpha, bm, (s, rot, px, py)):
+            return
+    a, x, y = _place(im, s, rot, px, py, W, H)
+    if alpha < 1.0:
+        a = a.copy()
+        a[..., 3] = (a[..., 3].astype(np.float32) * alpha).astype(np.uint8)
+    _blend(out, a, x, y, mode=bm)
+
+
+def _place(im: Image.Image, s: float, rot: float, px: float, py: float, W: int, H: int):
+    """素材画像を 拡大・回転して、中心 + (px, py) に置いたときの (RGBA 配列, x, y)。"""
     if s != 1.0:
         im = im.resize((max(1, int(im.width * s)), max(1, int(im.height * s))), Image.BILINEAR)
     if rot:
         im = im.rotate(-rot, resample=Image.BILINEAR, expand=True)
-    a = np.asarray(im)
-    if alpha < 1.0:
-        a = a.copy()
-        a[..., 3] = (a[..., 3].astype(np.float32) * alpha).astype(np.uint8)
-    x = int(round((W - im.width) / 2 + px))
-    y = int(round((H - im.height) / 2 + py))
-    _blend(out, a, x, y, mode=bm)
+    return np.asarray(im), int(round((W - im.width) / 2 + px)), int(round((H - im.height) / 2 + py))
+
+
+def _motion_blur(out, im, seq, clip, cf, scale, W, H, alpha, bm, cur) -> bool:
+    """動いている間だけ、シャッターが開いている間の何か所かに置いて平均する（AE のモーションブラー）。"""
+    from . import motion as MO
+    n = max(2, min(32, int(clip.prop("mb_samples", 8) or 8)))
+    sh = max(0.0, min(720.0, float(clip.prop("shutter", 180) or 180))) / 360.0
+    ts = [MO.transform(seq, clip, cf + (i / (n - 1) - 0.5) * sh, scale) for i in range(n)]
+    if all(abs(t[0] - cur[0]) < 1e-4 and abs(t[1] - cur[1]) < 1e-3 and abs(t[2] - cur[2]) < 0.25
+           and abs(t[3] - cur[3]) < 0.25 for t in ts):
+        return False                                    # 止まっている
+    acc = np.zeros((H, W, 4), np.float32)
+    for s_, r_, x_, y_ in ts:
+        if s_ <= 0:
+            continue
+        a, x, y = _place(im, s_, r_, x_, y_, W, H)
+        h, w = a.shape[:2]
+        x0, y0, x1, y1 = max(0, x), max(0, y), min(W, x + w), min(H, y + h)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        sub = a[y0 - y:y1 - y, x0 - x:x1 - x].astype(np.float32)
+        al = sub[..., 3:4] / 255.0
+        acc[y0:y1, x0:x1, :3] += sub[..., :3] * al          # 乗算済みで足す
+        acc[y0:y1, x0:x1, 3:4] += al
+    acc /= len(ts)
+    al = acc[..., 3:4]
+    rgb = np.where(al > 1e-6, acc[..., :3] / np.maximum(al, 1e-6), 0)
+    layer = np.dstack([np.clip(rgb, 0, 255), np.clip(al * 255 * alpha, 0, 255)]).astype(np.uint8)
+    _blend(out, layer, 0, 0, mode=bm)
+    return True
 
 
 def render_frame_np(seq: Sequence, frame: int, project: Project, pool: DecoderPool,
                     scale: float = 1.0) -> np.ndarray:
     """合成フレームを HxWx3 uint8 で返す。"""
+    from .motion import FPS
+    FPS[0] = seq.fps
     W = max(2, int(seq.width * scale)) & ~1
     H = max(2, int(seq.height * scale)) & ~1
     layers = active_layers(seq, frame)
@@ -848,6 +927,10 @@ def render_frame_np(seq: Sequence, frame: int, project: Project, pool: DecoderPo
     if layers:
         L = layers[0]
         c = L.clip
+        if c.props.get("mask") or c.props.get("motion_blur") or c.props.get("parent") or c.props.get("layer3d") \
+                or c.props.get("expr"):
+            L = None
+    if layers and L is not None:
         m0 = project.media_by_id(c.media_id) if c.kind == "video" and c.media_id else None
         dec0 = pool.video(m0.path) if m0 else None
         if _plain(c) and clip_alpha(c, L.cf) >= 1.0 and L.amul >= 1.0 and not getattr(dec0, "has_alpha", False):

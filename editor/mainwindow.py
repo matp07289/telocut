@@ -20,6 +20,8 @@ from . import model as M
 from .features import FeaturesMixin
 from .features3d import Features3DMixin
 from .features4 import Features4Mixin
+from .features5 import Features5Mixin
+from .production import ProductionMixin
 from .dualdisplay import DualDisplayMixin
 from . import media as MD
 from . import render as R
@@ -80,7 +82,8 @@ class SequenceDialog(QDialog):
         f.addRow(bb)
 
 
-class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, DualDisplayMixin, QMainWindow):
+class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin, ProductionMixin, DualDisplayMixin,
+                 QMainWindow):
     def __init__(self):
         super().__init__()
         SETTINGS.ensure_dirs()
@@ -210,12 +213,16 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, DualDisplayMixi
         self._init_features()
         self._init_features3d()
         self._init_features4()
+        self._init_features5()
+        self._init_production()
         self._init_dual()
         self._build_commands()
         self._build_menus()
         self._build_feature_menus()
         self._build_feature3d_menus()
         self._build_feature4_menus()
+        self._build_feature5_menus()
+        self._build_production_menus()
         self._build_toolbar()
         from .commands import add_new_keys
         self.apply_keymap(add_new_keys(dict(SETTINGS.keymap)) if SETTINGS.keymap else preset_keymap(SETTINGS.keyboard_preset))
@@ -364,6 +371,8 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, DualDisplayMixi
         self.cmd_fns.update(self._feature_commands())
         self.cmd_fns.update(self._feature3d_commands())
         self.cmd_fns.update(self._feature4_commands())
+        self.cmd_fns.update(self._feature5_commands())
+        self.cmd_fns.update(self._production_commands())
         for i in range(4):
             self.cmd_fns[f"toggle_v{i + 1}"] = lambda i=i: self.toggle_track("video", i)
             self.cmd_fns[f"toggle_a{i + 1}"] = lambda i=i: self.toggle_track("audio", i)
@@ -2518,6 +2527,11 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, DualDisplayMixi
         if kind == "adjust":
             self.seek_record(frame)
             self.add_adjustment_layer()
+            return
+        if kind in ("shape", "null", "camera"):
+            self.seek_record(frame)
+            {"shape": lambda: self.add_shape_layer(gen.get("shape", "ellipse")), "null": self.add_null,
+             "camera": self.add_camera}[kind]()
             return
         if track is None:
             track = self._target_tracks()[0]

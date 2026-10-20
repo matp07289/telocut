@@ -532,6 +532,11 @@ def effect_catalog():
         ("ジェネレーター（ドラッグで配置）", [
             ("テロップ（テキスト）", {"type": "gen", "kind": "text"}),
             ("調整レイヤー（下のトラック全体にエフェクト）", {"type": "gen", "kind": "adjust"}),
+            ("図形: 楕円", {"type": "gen", "kind": "shape", "shape": "ellipse"}),
+            ("図形: 星", {"type": "gen", "kind": "shape", "shape": "star"}),
+            ("図形: 矢印", {"type": "gen", "kind": "shape", "shape": "arrow"}),
+            ("ヌル（親専用）", {"type": "gen", "kind": "null"}),
+            ("カメラ（3D レイヤー用）", {"type": "gen", "kind": "camera"}),
             ("カラーマット（黒）", {"type": "gen", "kind": "color", "color": "#000000"}),
             ("カラーマット（白）", {"type": "gen", "kind": "color", "color": "#FFFFFF"}),
             ("カラーマット（青）", {"type": "gen", "kind": "color", "color": "#1F3A8A"}),

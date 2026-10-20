@@ -69,12 +69,35 @@ table.det tr.sel td{background:var(--sel)}table.det tr:hover td{background:#2a2a
 /* プロジェクト・ファーム */
 .pad{padding:12px 16px;overflow:auto;flex:1}
 .pad table{border-collapse:collapse;width:100%}.pad td,.pad th{border-bottom:1px solid #333;padding:4px 6px;font-size:12px;text-align:left}
+/* 制作管理 */
+#p4c{display:flex;flex-direction:column;gap:10px}
+.prodbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.chips{display:flex;gap:8px;flex-wrap:wrap}.chip{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font-size:12px}
+.chip b{font-size:16px;margin-right:4px}.chip.warn{border-color:var(--warn);color:var(--warn)}
+.pbar{height:8px;background:#333;border-radius:4px;overflow:hidden;width:160px;display:inline-block;vertical-align:middle}.pbar i{display:block;height:100%;background:#50b060}
+.prodmain{display:flex;gap:10px;min-height:0;flex:1}
+.kanban{flex:1;display:grid;grid-template-columns:repeat(5,minmax(160px,1fr));gap:8px;overflow:auto;align-items:start}
+.col{background:var(--panel);border:1px solid var(--line);border-radius:6px;min-height:120px;display:flex;flex-direction:column}
+.col h4{margin:0;padding:6px 8px;font-size:12px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
+.col.drop{outline:2px dashed var(--acc)}
+.col .cards{padding:6px;display:flex;flex-direction:column;gap:6px;min-height:60px}
+.shot{background:#1f1f22;border:1px solid #3a3a40;border-left:4px solid #666;border-radius:4px;padding:6px 8px;cursor:grab;font-size:12px}
+.shot .t{font-weight:bold;margin-bottom:2px;word-break:break-all}.shot .s{color:var(--dim);font-size:11px;display:flex;gap:6px;flex-wrap:wrap}
+.shot .od{color:#ff7070}
+.feed{width:300px;background:var(--panel);border:1px solid var(--line);border-radius:6px;overflow:auto;max-height:calc(100vh - 200px)}
+.feed h4{margin:0;padding:6px 8px;font-size:12px;border-bottom:1px solid var(--line)}
+.ev{padding:5px 8px;border-bottom:1px solid #2e2e33;font-size:12px}.ev .w{color:var(--dim);font-size:11px}
+#modal{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;z-index:8}
+#modal .box{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:14px;width:min(420px,92vw);display:grid;gap:8px}
+#modal .box label{display:grid;gap:3px;font-size:12px;color:var(--dim)}
+#modal .box .row{display:flex;gap:6px;justify-content:flex-end}
+@media (max-width:900px){.prodmain{flex-direction:column}.feed{width:auto;max-height:300px}.kanban{grid-template-columns:repeat(5,minmax(150px,1fr))}}
 @media (max-width:900px){#side{display:none}#pv{width:300px}}
 @media (max-width:640px){#pv{display:none}#pv.show{display:flex;position:fixed;inset:0;width:auto;z-index:5}}
 </style></head><body>
 <header>
   <h1>TeloCut アセットサーバー</h1>
-  <nav><a id="t1" class="on" onclick="tab(1)">素材</a><a id="t2" onclick="tab(2)">プロジェクト</a><a id="t3" onclick="tab(3)">レンダーファーム</a></nav>
+  <nav><a id="t1" class="on" onclick="tab(1)">素材</a><a id="t2" onclick="tab(2)">プロジェクト</a><a id="t3" onclick="tab(3)">レンダーファーム</a><a id="t4" onclick="tab(4)">制作管理</a></nav>
   <span class="grow"></span>
   <span id="stats"></span>
   <input id="user" placeholder="あなたの名前" style="width:120px" title="お気に入り・コメントに使う名前">
@@ -123,6 +146,8 @@ table.det tr.sel td{background:var(--sel)}table.det tr:hover td{background:#2a2a
 </div>
 <div id="p2" class="page"><div class="pad" id="p2c"></div></div>
 <div id="p3" class="page"><div class="pad" id="p3c"></div></div>
+<div id="p4" class="page"><div class="pad" id="p4c"></div></div>
+<div id="modal"><div class="box" id="mbox"></div></div>
 <div id="toast"></div>
 <div id="upbar"></div>
 
@@ -407,7 +432,41 @@ function upload(files){files=[...files];if(!files.length)return;const bar=$('upb
     x.onload=()=>{i++;next()};x.onerror=()=>{bar.innerHTML='送れませんでした: '+esc(f.name);i++;setTimeout(next,1500)};x.send(f)};next()}
 
 /* ── プロジェクト・レンダーファーム ── */
-function tab(n){for(const i of[1,2,3]){$('p'+i).classList.toggle('on',i==n);$('t'+i).className=i==n?'on':''}if(n==2)projects();if(n==3)farm()}
+function tab(n){for(const i of[1,2,3,4]){$('p'+i).classList.toggle('on',i==n);$('t'+i).className=i==n?'on':''}if(n==2)projects();if(n==3)farm();if(n==4)prod();LS.set('tab',n)}
+
+/* ── 制作管理（ショットの進み具合・担当・期限・活動）── */
+const ST=[['todo','未着手','#777'],['wip','作業中','#4f8fe0'],['review','レビュー待ち','#d8c040'],['fix','修正','#e05050'],['done','OK','#50b060']];
+const STJ=Object.fromEntries(ST.map(x=>[x[0],x[1]])),STC=Object.fromEntries(ST.map(x=>[x[0],x[2]]));
+let P={proj:LS.get('pproj',''),who:'',shots:[],timer:null};
+async function prod(){let d,sh;try{[d,sh]=await Promise.all([api('/api/dashboard?project='+encodeURIComponent(P.proj)),api('/api/shots?project='+encodeURIComponent(P.proj))])}catch(e){$('p4c').innerHTML=`<div class="empty">読み込めませんでした: ${esc(e.message)}</div>`;return}
+  P.shots=sh;const people=[...new Set(sh.map(x=>x.assignee).filter(Boolean))].sort();const today=new Date().toISOString().slice(0,10);
+  const vis=sh.filter(x=>!P.who||(P.who=='-'?!x.assignee:x.assignee==P.who));
+  $('p4c').innerHTML=`<div class="prodbar"><select id="pproj"><option value="">すべてのプロジェクト</option>${d.projects.map(x=>`<option ${x==P.proj?'selected':''}>${esc(x)}</option>`).join('')}</select>
+   <select id="pwho"><option value="">担当: 全員</option><option value="-" ${P.who=='-'?'selected':''}>（未割り当て）</option>${people.map(x=>`<option ${x==P.who?'selected':''}>${esc(x)}</option>`).join('')}</select>
+   <button class="pri" onclick="editShot()">＋ ショット</button><button onclick="prod()">⟳</button><span class="grow"></span><span class="dim small">カードをドラッグで状態を変更・クリックで編集</span></div>
+  <div class="chips"><span class="chip"><b>${d.total}</b>ショット</span><span class="chip">完了 <span class="pbar"><i style="width:${Math.round(d.done_ratio*100)}%"></i></span> ${Math.round(d.done_ratio*100)}%</span>
+   ${ST.map(x=>`<span class="chip" style="border-left:4px solid ${x[2]}"><b>${d.by_status[x[0]]||0}</b>${x[1]}</span>`).join('')}
+   <span class="chip ${d.overdue.length?'warn':''}"><b>${d.overdue.length}</b>期限切れ</span><span class="chip">レンダーノード <b>${d.nodes_online}</b>/ ${d.nodes} 稼働</span><span class="chip">ジョブ <b>${d.jobs_running}</b> 件実行中</span></div>
+  <div class="prodmain"><div class="kanban">${ST.map(c=>`<div class="col" data-st="${c[0]}"><h4><span style="color:${c[2]}">● ${c[1]}</span><span class="dim">${vis.filter(x=>x.status==c[0]).length}</span></h4><div class="cards">${
+    vis.filter(x=>x.status==c[0]).map(x=>`<div class="shot" draggable="true" data-id="${x.id}" style="border-left-color:${c[2]}"><div class="t">${esc(x.name)}</div><div class="s">${x.assignee?'👤 '+esc(x.assignee):'<span>未割り当て</span>'}${x.due?`<span class="${x.due<today&&x.status!='done'?'od':''}">📅 ${esc(x.due)}</span>`:''}${x.tc_in?`<span>⏱ ${esc(x.tc_in)}</span>`:''}${x.project&&!P.proj?`<span>${esc(x.project)}</span>`:''}</div>${x.note?`<div class="s">${esc(x.note.slice(0,60))}</div>`:''}</div>`).join('')}</div></div>`).join('')}</div>
+   <div class="feed"><h4>最近の動き</h4>${d.activity.map(a=>`<div class="ev">${esc(a.text)}<div class="w">${esc(a.user||'')} ${a.host?'@ '+esc(a.host):''} · ${hdate(a.time)}</div></div>`).join('')||'<div class="ev dim">まだありません</div>'}</div></div>`;
+  $('pproj').onchange=()=>{P.proj=$('pproj').value;LS.set('pproj',P.proj);prod()};$('pwho').onchange=()=>{P.who=$('pwho').value;prod()};
+  document.querySelectorAll('.shot').forEach(e=>{e.ondragstart=ev=>ev.dataTransfer.setData('text/x-shot',e.dataset.id);e.onclick=()=>editShot(P.shots.find(x=>x.id==e.dataset.id))});
+  document.querySelectorAll('.col').forEach(c=>{c.ondragover=ev=>{if(ev.dataTransfer.types.includes('text/x-shot')){ev.preventDefault();c.classList.add('drop')}};c.ondragleave=()=>c.classList.remove('drop');
+    c.ondrop=async ev=>{ev.preventDefault();c.classList.remove('drop');const id=ev.dataTransfer.getData('text/x-shot');if(!id)return;await post('/api/shots/'+id,{status:c.dataset.st,user:user()},'PATCH');prod()}});
+  clearTimeout(P.timer);P.timer=setTimeout(()=>{if($('p4').classList.contains('on')&&$('modal').style.display!='flex')prod()},15000)}
+function editShot(x){const isNew=!x;x=x||{name:'',assignee:user(),status:'todo',due:'',note:'',project:P.proj,tc_in:'',tc_out:''};
+  $('mbox').innerHTML=`<h3 style="margin:0">${isNew?'ショットを追加':'ショットを編集'}</h3>
+   <label>名前<input id="f_name" value="${esc(x.name)}"></label><label>プロジェクト<input id="f_proj" value="${esc(x.project||'')}"></label>
+   <div style="display:flex;gap:8px"><label style="flex:1">担当<input id="f_who" value="${esc(x.assignee||'')}"></label><label style="flex:1">期限<input id="f_due" type="date" value="${esc(x.due||'')}"></label></div>
+   <div style="display:flex;gap:8px"><label style="flex:1">状態<select id="f_st">${ST.map(s=>`<option value="${s[0]}" ${s[0]==x.status?'selected':''}>${s[1]}</option>`).join('')}</select></label><label style="flex:1">IN<input id="f_in" value="${esc(x.tc_in||'')}" placeholder="00:00:00:00"></label><label style="flex:1">OUT<input id="f_out" value="${esc(x.tc_out||'')}"></label></div>
+   <label>メモ<textarea id="f_note" rows="3">${esc(x.note||'')}</textarea></label>
+   <div class="row">${isNew?'':'<button id="f_del" style="margin-right:auto">削除</button>'}<button onclick="$('modal').style.display='none'">やめる</button><button class="pri" id="f_ok">保存</button></div>`;
+  $('modal').style.display='flex';$('f_name').focus();
+  $('f_ok').onclick=async()=>{const d={name:$('f_name').value.trim()||'ショット',project:$('f_proj').value.trim(),assignee:$('f_who').value.trim(),due:$('f_due').value,status:$('f_st').value,tc_in:$('f_in').value.trim(),tc_out:$('f_out').value.trim(),note:$('f_note').value,user:user()};
+    try{isNew?await post('/api/shots',d):await post('/api/shots/'+x.id,d,'PATCH');$('modal').style.display='none';prod()}catch(e){toast('保存できませんでした: '+e.message)}};
+  if(!isNew)$('f_del').onclick=async()=>{if(!confirm('このショットを削除しますか？'))return;await fetch('/api/shots/'+x.id+'?user='+encodeURIComponent(user()),{method:'DELETE'});$('modal').style.display='none';prod()}}
+document.addEventListener('keydown',e=>{if(e.key=='Escape'&&$('modal').style.display=='flex')$('modal').style.display='none'})
 async function projects(){const p=await api('/api/projects').catch(()=>[]);$('p2c').innerHTML=p.length?'<table><tr><th>プロジェクト</th><th>更新</th><th>使用中</th><th>場所</th><th></th></tr>'+
   p.map(x=>`<tr><td>${esc(x.name)}</td><td>${hdate(x.mtime)}</td><td>${x.lock?'🔒 '+esc(x.lock.user||'')+' @ '+esc(x.lock.host||''):''}</td><td class="dim">${esc(winPath(x.path))}</td><td><button onclick="copy(${esc(JSON.stringify(winPath(x.path)))})">パスをコピー</button></td></tr>`).join('')+'</table>':'<div class="empty">素材フォルダに .tcut のプロジェクトはありません</div>'}
 async function farm(){const n=await api('/api/render/nodes').catch(()=>[]);const j=await api('/api/render/jobs').catch(()=>[]);
@@ -415,4 +474,5 @@ async function farm(){const n=await api('/api/render/nodes').catch(()=>[]);const
   '</table><h3>ジョブ</h3><table><tr><th>ID</th><th>開始</th><th>進捗</th><th>状態</th><th>依頼元</th></tr>'+j.map(x=>`<tr><td>${esc(x.id)}</td><td>${hdate(x.created)}</td><td><progress max="${x.total||1}" value="${x.done}"></progress> ${x.done}/${x.total}</td><td>${esc(x.status)}</td><td>${esc(x.client)}</td></tr>`).join('')+'</table>';
   if($('p3').classList.contains('on'))setTimeout(farm,3000)}
 init();
+if(LS.get('tab',1)==4)tab(4);
 </script></body></html>

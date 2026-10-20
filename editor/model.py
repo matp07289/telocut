@@ -43,6 +43,8 @@ class MediaItem:
     mtime: float = 0.0          # ファイルの更新日時（自動同期・キャッシュの判定）
     pending: str = ""           # 外部アプリの書き出し待ち（このパターンのファイルができたら自動でつなぐ）
     tags: List[str] = field(default_factory=list)
+    link_src: str = ""          # Dynamic Link: つないだ .aep / .blend（path はそのレンダリング結果）
+    link_comp: str = ""         # Dynamic Link: コンポジション名 / シーン名（空 = 既定）
 
     @classmethod
     def from_dict(cls, d: dict) -> "MediaItem":
@@ -66,6 +68,8 @@ def default_props(kind: str) -> dict:
         p.update({"color": "#000000"})
     if kind == "character":
         p.update({"char_id": "", "audio_track": 0, "blink": True, "bounce": True, "flip": False})
+    if kind == "camera":
+        p.update({"zoom": 1.0, "pos_z": 0.0})
     if kind == "shape":
         p.update({"shape": "band", "color": "#000000", "rect": [0, 78, 100, 22], "radius": 0, "fill_opacity": 0.6})
     return p

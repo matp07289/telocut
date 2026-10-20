@@ -2,7 +2,7 @@
 
 テロップ: 位置プリセット（9 か所）・スタイルの一括適用・表記統一辞書・テキストから一括配置・読み時間で長さ・
           まとめてずらす・音声に合わせる・話者ごとの色・マーカー ⇔ テロップ（登場 / 退場アニメは render.py）
-編集:     マーカー一覧・マーカーで分割・隙間へ移動 / 黒で埋める・書き出し前チェック・フィット / フィル・PinP・
+編集:     マーカーの CSV / チャプター・マーカーで分割・隙間へ移動 / 黒で埋める・書き出し前チェック・フィット / フィル・PinP・
           ケン・バーンズ・スナップショット・未使用素材の整理・使用素材リスト・編集リスト・間隔をそろえる・
           再生ヘッドへ移動・同じ素材を選択・映像 / 音声だけ選択・素材の差し替え・シーケンス情報・IN-OUT を新しいシーケンスに
 """
@@ -30,8 +30,6 @@ from .settings import SETTINGS
 POSITIONS = [("tl", "左上"), ("tc", "上"), ("tr", "右上"), ("ml", "左"), ("mc", "中央"), ("mr", "右"),
              ("bl", "左下"), ("bc", "下"), ("br", "右下")]
 SPEAKER_COLORS = ["#FFE14D", "#6FD3FF", "#FF8FB1", "#8CF28C", "#FFB067", "#C7A0FF", "#FFFFFF"]
-MARKER_COLORS = [("黄", "#E0B000"), ("赤", "#E05050"), ("緑", "#50B060"), ("青", "#4F8FE0"), ("紫", "#9A6AD0"),
-                 ("水色", "#3FA9F5"), ("橙", "#FF9900"), ("白", "#DDDDDD")]
 
 
 def reading_frames(text: str, fps: float, cps: float = 6.0, lo: float = 1.2, hi: float = 6.0) -> int:
@@ -63,148 +61,6 @@ def gaps(seq: M.Sequence) -> List[Tuple[int, int]]:
     return out
 
 
-class MarkerPanel(QWidget):
-    """マーカー一覧（ダブルクリックで移動・名前 / コメント / 色を直接編集・削除・CSV）。"""
-    COLS = ["TC", "名前", "コメント", "色"]
-
-    def __init__(self, mw):
-        super().__init__()
-        self.mw = mw
-        v = QVBoxLayout(self)
-        v.setContentsMargins(4, 4, 4, 4)
-        h = QHBoxLayout()
-        for txt, tip, fn in (("＋ 再生ヘッドに追加", "再生ヘッドの位置にマーカー", self.add),
-                             ("削除", "選択したマーカーを削除", self.delete),
-                             ("CSV...", "マーカーを CSV で保存", self.export_csv),
-                             ("チャプター", "YouTube のチャプターとしてコピー", self.copy_chapters)):
-            b = QPushButton(txt)
-            b.setToolTip(tip)
-            b.clicked.connect(fn)
-            h.addWidget(b)
-        h.addStretch(1)
-        v.addLayout(h)
-        self.table = QTableWidget(0, len(self.COLS))
-        self.table.setHorizontalHeaderLabels(self.COLS)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.cellDoubleClicked.connect(self._jump)
-        self.table.itemChanged.connect(self._edited)
-        v.addWidget(self.table, 1)
-        self.stat = QLabel("")
-        self.stat.setObjectName("info")
-        v.addWidget(self.stat)
-        self._sig = None
-        self._busy = False
-        self.timer = QTimer(self)
-        self.timer.setInterval(500)
-        self.timer.timeout.connect(self.refresh)
-        self.timer.start()
-
-    def markers(self) -> List[M.Marker]:
-        return sorted(self.mw.project.sequence.markers, key=lambda m: m.frame)
-
-    def refresh(self, force=False):
-        if not force and not self.isVisible():
-            return
-        seq = self.mw.project.sequence
-        sig = (seq.id, tuple((m.frame, m.name, m.comment, m.color) for m in seq.markers))
-        if sig == self._sig and not force:
-            return
-        self._sig = sig
-        self._busy = True
-        ms = self.markers()
-        self.table.setRowCount(len(ms))
-        for r, m in enumerate(ms):
-            items = [QTableWidgetItem(self.mw.tc_str(m.frame)), QTableWidgetItem(m.name), QTableWidgetItem(m.comment),
-                     QTableWidgetItem("●")]
-            items[0].setFlags(items[0].flags() & ~Qt.ItemFlag.ItemIsEditable)
-            items[3].setFlags(items[3].flags() & ~Qt.ItemFlag.ItemIsEditable)
-            items[3].setForeground(QColor(m.color or "#E0B000"))
-            items[0].setData(Qt.ItemDataRole.UserRole, m.frame)
-            for c, it in enumerate(items):
-                self.table.setItem(r, c, it)
-        self.stat.setText(f"マーカー {len(ms)} 個　ダブルクリックで移動・名前とコメントはそのまま書き換えられます")
-        self._busy = False
-
-    def _row_marker(self, r) -> Optional[M.Marker]:
-        ms = self.markers()
-        return ms[r] if 0 <= r < len(ms) else None
-
-    def _jump(self, r, c):
-        m = self._row_marker(r)
-        if not m:
-            return
-        if c == 3:
-            names = [n for n, _ in MARKER_COLORS]
-            n, ok = QInputDialog.getItem(self, "マーカーの色", "色:", names, 0, False)
-            if ok:
-                self.mw.begin_edit()
-                m.color = dict(MARKER_COLORS)[n]
-                self.mw.end_edit("マーカーの色")
-                self.refresh(True)
-            return
-        self.mw.seek_record(m.frame)
-
-    def _edited(self, it: QTableWidgetItem):
-        if self._busy or it.column() not in (1, 2):
-            return
-        m = self._row_marker(it.row())
-        if not m:
-            return
-        self.mw.begin_edit()
-        if it.column() == 1:
-            m.name = it.text()
-        else:
-            m.comment = it.text()
-        self.mw.end_edit("マーカーを編集")
-
-    def add(self):
-        self.mw.begin_edit()
-        self.mw.project.sequence.markers.append(M.Marker(self.mw.record_player.position, "マーカー"))
-        self.mw.end_edit("マーカーを追加")
-        self.refresh(True)
-
-    def delete(self):
-        rows = sorted({i.row() for i in self.table.selectedIndexes()})
-        ms = [self._row_marker(r) for r in rows]
-        if not ms:
-            return
-        self.mw.begin_edit()
-        seq = self.mw.project.sequence
-        seq.markers = [m for m in seq.markers if not any(m is x for x in ms)]
-        self.mw.end_edit(f"マーカーを削除（{len(ms)} 個）")
-        self.refresh(True)
-
-    def export_csv(self, path: str = ""):
-        seq = self.mw.project.sequence
-        if not path:
-            path, _ = QFileDialog.getSaveFileName(self, "マーカーを保存", f"{seq.name}_markers.csv", "CSV (*.csv)")
-        if not path:
-            return
-        with open(path, "w", encoding="utf-8-sig", newline="") as f:
-            w = csv.writer(f)
-            w.writerow(["TC", "フレーム", "名前", "コメント", "色"])
-            for m in self.markers():
-                w.writerow([self.mw.tc_str(m.frame), m.frame, m.name, m.comment, m.color])
-        self.stat.setText(f"保存しました: {path}")
-        return path
-
-    def copy_chapters(self):
-        from PyQt6.QtWidgets import QApplication
-        fps = self.mw.project.sequence.fps
-        lines = []
-        ms = self.markers()
-        if not ms or ms[0].frame > 0:
-            lines.append("0:00 オープニング")
-        for m in ms:
-            s = int(m.frame / fps)
-            t = f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
-            lines.append(f"{t} {m.name or 'チャプター'}")
-        QApplication.clipboard().setText("\n".join(lines))
-        self.stat.setText("YouTube のチャプターをコピーしました（概要欄に貼れます）")
-
-
 class Features4Mixin:
     def _feature4_commands(self) -> dict:
         return {
@@ -216,6 +72,7 @@ class Features4Mixin:
             "markers_to_telops": self.markers_to_telops, "telops_to_markers": self.telops_to_markers,
             # 編集
             "marker_panel": lambda: self.show_dock(self.dock_markers), "split_at_markers": self.split_at_markers,
+            "marker_csv": self.export_markers_csv, "marker_chapters": self.copy_marker_chapters,
             "next_gap": lambda: self.goto_gap(1), "prev_gap": lambda: self.goto_gap(-1),
             "fill_gaps": self.fill_gaps_black, "preflight": self.preflight_dialog,
             "fit_frame": lambda: self.fit_clips("fit"), "fill_frame": lambda: self.fit_clips("fill"),
@@ -230,12 +87,7 @@ class Features4Mixin:
         }
 
     def _init_features4(self):
-        self.marker_panel = MarkerPanel(self)
-        self.dock_markers = self._dock("マーカー一覧", self.marker_panel, Qt.DockWidgetArea.RightDockWidgetArea, "markers")
-        self.marker_panel.setMinimumWidth(240)
-        self.tabifyDockWidget(self.dock_insp, self.dock_markers)
-        self.dock_markers.hide()
-        self.docks.append(self.dock_markers)
+        pass
 
     def _build_feature4_menus(self):
         mb = self.menuBar()
@@ -247,7 +99,7 @@ class Features4Mixin:
                   "markers_to_telops", "telops_to_markers"):
             t.addSeparator() if c is None else self._a(t, c)
         e = QMenu_before(mb, help_menu, "整理・チェック")
-        for c in ("marker_panel", "split_at_markers", None, "next_gap", "prev_gap", "fill_gaps", "preflight", None,
+        for c in ("marker_panel", "marker_csv", "marker_chapters", "split_at_markers", None, "next_gap", "prev_gap", "fill_gaps", "preflight", None,
                   "fit_frame", "fill_frame", "pip", "ken_burns", None,
                   "space_clips", "move_to_playhead", "select_same_media", "select_video_only", "select_audio_only",
                   "replace_media", None, "snapshot", "in_out_to_seq", "seq_stats", None,
@@ -566,6 +418,36 @@ class Features4Mixin:
         seq.markers.sort(key=lambda m: m.frame)
         self.end_edit(f"テロップからマーカー（{n} 個）")
         return n
+
+    # ─────────────────────────── マーカー（一覧パネルのボタンからも）───────────────────────────
+    def export_markers_csv(self, path: str = "") -> str:
+        seq = self.project.sequence
+        if not path:
+            path, _ = QFileDialog.getSaveFileName(self, "マーカーを保存", f"{seq.name}_markers.csv", "CSV (*.csv)")
+        if not path:
+            return ""
+        with open(path, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["TC", "フレーム", "名前", "コメント", "色"])
+            for m in sorted(seq.markers, key=lambda m: m.frame):
+                w.writerow([self.tc_str(m.frame), m.frame, m.name, m.comment, m.color])
+        self.status.showMessage(f"マーカーを保存しました: {path}", 5000)
+        return path
+
+    def copy_marker_chapters(self) -> str:
+        """マーカーを YouTube のチャプター（0:00 タイトル）にしてコピー。"""
+        from PyQt6.QtWidgets import QApplication
+        seq = self.project.sequence
+        ms = sorted(seq.markers, key=lambda m: m.frame)
+        lines = [] if ms and ms[0].frame == 0 else ["0:00 オープニング"]
+        for m in ms:
+            s_ = int(m.frame / seq.fps)
+            t = f"{s_ // 3600}:{s_ // 60 % 60:02d}:{s_ % 60:02d}" if s_ >= 3600 else f"{s_ // 60}:{s_ % 60:02d}"
+            lines.append(f"{t} {m.name or 'チャプター'}")
+        text = "\n".join(lines)
+        QApplication.clipboard().setText(text)
+        self.status.showMessage("YouTube のチャプターをコピーしました（概要欄に貼れます）", 5000)
+        return text
 
     # ─────────────────────────── 編集 ───────────────────────────
     def split_at_markers(self) -> int:
