@@ -18,7 +18,9 @@ param(
     [string]$NasUser = "",
     [string]$Drive = "",                  # 旧形式: その共有のドライブ（自動で調べるので通常は不要）
     [int]$Port = 8770,
-    [switch]$RenderNode
+    [switch]$RenderNode,
+    [string]$Git = "",                    # VM が取得する Git のリポジトリ（省略時はこのリポジトリの origin）
+    [switch]$ViaNas                       # Git を使わず、NAS にファイルを置いて渡す（以前の方式）
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -62,6 +64,35 @@ foreach ($s in $shares) {
     $pathFrom += "$unc=$mp"
     if ($d) { $pathFrom += "$d=$mp" }
     Write-Host ("   {0,-4} {1,-45} → VM {2}   （この PC: {3}）" -f $s.Type.ToUpper().Replace("CIFS", "SMB"), $s.Src, $mp, $(if ($d) { "$d / $unc" } else { $unc }))
+}
+
+# ── Git（Gitea）から取得するか
+if (-not $ViaNas -and -not $Git) {
+    try { $Git = (& git -C $root remote get-url origin 2>$null) } catch { $Git = "" }
+}
+if (-not $ViaNas -and $Git) {
+    $ahead = (& git -C $root rev-list --count "@{u}..HEAD" 2>$null)
+    $dirty = (& git -C $root status --porcelain 2>$null)
+    if ($ahead -and [int]$ahead -gt 0) { Write-Host "注意: まだ push していないコミットが $ahead 個あります（VM には push 済みの内容が入ります）" -ForegroundColor Yellow }
+    if ($dirty) { Write-Host "注意: コミットしていない変更があります（VM には push 済みの内容が入ります）" -ForegroundColor Yellow }
+    $hasSmb = @($shares | Where-Object { $_.Type -eq "cifs" }).Count -gt 0
+    $user = if ($NasUser) { $NasUser } else { "guest" }
+    $pre = if ($hasSmb) { 'read -rsp "NAS（SMB・__USER__）のパスワード: " NP; echo; ' } else { 'NP=""; ' }
+    $cmd = $pre +
+           '(sudo dnf -y -q install git >/dev/null 2>&1 || sudo apt-get -y -qq install git >/dev/null) && ' +
+           '(if [ -d ~/telocut-src/.git ]; then git -C ~/telocut-src pull -q --ff-only; else rm -rf ~/telocut-src && git clone -q __GIT__ ~/telocut-src; fi) && ' +
+           'sudo env SHARES=''__SHARES__'' NAS_USER=''__NASUSER__'' NAS_PASS="$NP" PORT=__PORT__ RENDER_NODE=__RN__ PATH_FROM=''__PF__'' bash ~/telocut-src/server/setup_linux.sh'
+    $cmd = $cmd.Replace("__GIT__", $Git).Replace("__USER__", $user).Replace("__SHARES__", ($entries -join ";")).
+                Replace("__NASUSER__", $NasUser).Replace("__PORT__", "$Port").Replace("__RN__", "$([int][bool]$RenderNode)").
+                Replace("__PF__", ($pathFrom -join ";"))
+    Set-Clipboard -Value $cmd
+    Write-Host ""
+    Write-Host "== Git（$Git）から取得する 1 行をクリップボードに入れました。Tera Term で VM にログインして貼り付けてください:" -ForegroundColor Green
+    Write-Host ""
+    Write-Host $cmd
+    Write-Host ""
+    Write-Host "2 回目からの更新は VM で: cd ~/telocut-src && git pull && sudo bash server/setup_linux.sh（設定は前回のまま）"
+    return
 }
 
 # ── 置き場所（最初の共有。この PC から見える場所）

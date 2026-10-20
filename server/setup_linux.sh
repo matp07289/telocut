@@ -23,6 +23,14 @@ MEDIA_DIR="${MEDIA_DIR:-/srv/telocut/media}"
 if [ "$(id -u)" -ne 0 ]; then
   echo "sudo で実行してください"; exit 1
 fi
+
+# 前回の設定（共有・ポートなど）。何も指定せずに実行したら前回と同じ設定で更新する
+CONF=/etc/telocut/setup.env
+if [ -z "${SHARES:-}${NAS_SHARE:-}" ] && [ -f "$CONF" ]; then
+  # shellcheck disable=SC1090
+  . "$CONF"
+  echo "== 前回の設定で更新します（$CONF）"
+fi
 . /etc/os-release
 echo "== OS: $PRETTY_NAME"
 
@@ -52,7 +60,7 @@ if [ -n "${SHARES:-}" ]; then
   # 入れ直しのとき: 動いているサービスが NAS を使っているので、止めてからつなぎ直す
   systemctl stop telocut-node.service telocut-asset.service 2>/dev/null || true
   CRED=/etc/telocut-nas.cred
-  if echo "$SHARES" | grep -q "cifs|"; then
+  if echo "$SHARES" | grep -q "cifs|" && { [ -n "${NAS_PASS:-}" ] || [ ! -s "$CRED" ]; }; then
     if [ -n "${NAS_USER:-}" ]; then
       if [ -z "${NAS_PASS:-}" ]; then
         read -r -s -p "NAS（SMB・$NAS_USER）のパスワード: " NAS_PASS; echo
@@ -197,6 +205,18 @@ WantedBy=multi-user.target
 EOF
 fi
 
+# 次回の更新用に設定を保存（パスワードは保存しない。SMB のパスワードは root だけが読める $CRED に入っている）
+mkdir -p /etc/telocut
+{
+  printf "SHARES=%q\n" "${SHARES:-}"
+  printf "NAS_USER=%q\n" "${NAS_USER:-}"
+  printf "MEDIA_DIR=%q\n" "$MEDIA_DIR"
+  printf "PORT=%q\n" "$PORT"
+  printf "RENDER_NODE=%q\n" "${RENDER_NODE:-0}"
+  printf "PATH_FROM=%q\n" "${PATH_FROM:-}"
+} > "$CONF"
+chmod 600 "$CONF"
+
 systemctl daemon-reload
 systemctl enable telocut-asset.service >/dev/null 2>&1
 systemctl restart telocut-asset.service
@@ -224,6 +244,9 @@ if curl -fsS "http://127.0.0.1:$PORT/api/info" >/dev/null 2>&1; then
   echo " 素材フォルダ:${ROOTS//--root/}"
   [ "${RENDER_NODE:-0}" = "1" ] && echo " レンダーノード: $(hostname -s)（ブラウザの「ファーム」タブで確認）"
   echo " TeloCut のアセットパネル / 書き出し（レンダーファーム）にこの URL を入れてください"
+  if [ -d "$SRC/.git" ]; then
+    echo " 更新するとき: cd $SRC && git pull && sudo bash server/setup_linux.sh"
+  fi
   echo "======================================================"
 else
   echo "起動に失敗しました。ログ: journalctl -u telocut-asset -n 50"

@@ -280,13 +280,23 @@ YouTube → テロップエディター（Ctrl+Shift+T）。DavinTelop のメイ
 - 読み込み（.dtproj / SRT / CSV）・書き出し（SRT / CSV / PNG 連番 / FCPXML）、文字起こしでテロップ作成
 - マルチディスプレイではパネル画面の中央（テロップ一覧と同じ場所）に表示。Resolve 連携・NDI など DavinTelop だけの機能は「DavinTelop（単体版）で開く」から
 
+### ソースの置き場所（Gitea）と更新の流れ
+
+ソースは自宅の Gitea（`http://192.168.0.37:3000/edit/davintelop`）で管理しています。
+
+1. 編集 PC で変更してコミットし、`git push`
+2. サーバー（VM）を最初に入れるとき: 編集 PC で `server\make_vm_command.ps1`（下の表）を実行し、VM に 1 行を貼り付け。
+   VM は Gitea から `git clone` して入れる（NAS にファイルを置く以前の方式は `-ViaNas`）
+3. 2 回目からの更新は VM で 1 行: `cd ~/telocut-src && git pull && sudo bash server/setup_linux.sh`
+   （共有・ポートなどの設定は `/etc/telocut/setup.env` に保存されていて、前回と同じ設定で更新されます）
+
 ### 自宅サーバー / レンダーファームの作り方
 
 コピペ 1 行で入るスクリプトを `server/` に用意しています（Windows 用 2 本は配布フォルダにも同梱）。
 
 | やりたいこと | 実行する場所 | コマンド |
 |---|---|---|
-| Linux VM を Tera Term などで操作して入れる（VM が鍵でしかログインできない場合も可） | 1) 編集 PC で `powershell -ExecutionPolicy Bypass -File server\make_vm_command.ps1 -Nas //192.168.0.10/ES_General -NasUser edit -Drive Z:` 2) VM にログインして、クリップボードの 1 行を貼り付け | （NAS 経由でファイルを渡す） |
+| Linux VM を Tera Term などで操作して入れる（VM が鍵でしかログインできない場合も可） | 1) 編集 PC で `powershell -ExecutionPolicy Bypass -File server\make_vm_command.ps1 -NasHost 192.168.0.10 -Nfs ES_General,ES_Edit -Smb ES_Render -NasUser edit` 2) VM にログインして、クリップボードの 1 行を貼り付け | （Gitea から取得。NFS / SMB の共有を複数つなぐ） |
 | Linux VM（Rocky Linux 推奨・Ubuntu 可）をサーバーにする | 編集 PC（このリポジトリ） | `powershell -ExecutionPolicy Bypass -File server\deploy_to_vm.ps1 -Vm user@192.168.0.20 -Nas //192.168.0.10/video -NasUser nasuser` |
 | 同上 + VM をレンダーノードにも | 編集 PC | 上のコマンドの末尾に `-RenderNode` |
 | Windows PC をサーバーにする | その PC の TeloCut フォルダ（管理者） | `powershell -ExecutionPolicy Bypass -File install_server_windows.ps1 -Root "\\192.168.0.10\video"` |
