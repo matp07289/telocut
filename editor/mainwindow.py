@@ -23,6 +23,7 @@ from .features4 import Features4Mixin
 from .features5 import Features5Mixin
 from .production import ProductionMixin
 from .features6 import Features6Mixin
+from .features7 import Features7Mixin
 from .dualdisplay import DualDisplayMixin
 from . import media as MD
 from . import render as R
@@ -84,7 +85,7 @@ class SequenceDialog(QDialog):
 
 
 class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin, ProductionMixin, Features6Mixin,
-                 DualDisplayMixin, QMainWindow):
+                 Features7Mixin, DualDisplayMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         SETTINGS.ensure_dirs()
@@ -225,6 +226,7 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         self._build_feature5_menus()
         self._build_production_menus()
         self._build_feature6_menus()
+        self._build_feature7_menus()
         self._build_toolbar()
         from .commands import add_new_keys
         self.apply_keymap(add_new_keys(dict(SETTINGS.keymap)) if SETTINGS.keymap else preset_keymap(SETTINGS.keyboard_preset))
@@ -376,6 +378,7 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         self.cmd_fns.update(self._feature5_commands())
         self.cmd_fns.update(self._production_commands())
         self.cmd_fns.update(self._feature6_commands())
+        self.cmd_fns.update(self._feature7_commands())
         for i in range(4):
             self.cmd_fns[f"toggle_v{i + 1}"] = lambda i=i: self.toggle_track("video", i)
             self.cmd_fns[f"toggle_a{i + 1}"] = lambda i=i: self.toggle_track("audio", i)

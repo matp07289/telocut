@@ -97,7 +97,7 @@ table.det tr.sel td{background:var(--sel)}table.det tr:hover td{background:#2a2a
 </style></head><body>
 <header>
   <h1>TeloCut アセットサーバー</h1>
-  <nav><a id="t1" class="on" onclick="tab(1)">素材</a><a id="t2" onclick="tab(2)">プロジェクト</a><a id="t3" onclick="tab(3)">レンダーファーム</a><a id="t4" onclick="tab(4)">制作管理</a></nav>
+  <nav><a id="t1" class="on" onclick="tab(1)">素材</a><a id="t2" onclick="tab(2)">プロジェクト</a><a id="t3" onclick="tab(3)">レンダーファーム</a><a id="t4" onclick="tab(4)">制作管理</a><a id="t5" onclick="tab(5)">変換</a></nav>
   <span class="grow"></span>
   <span id="stats"></span>
   <input id="user" placeholder="あなたの名前" style="width:120px" title="お気に入り・コメントに使う名前">
@@ -121,6 +121,7 @@ table.det tr.sel td{background:var(--sel)}table.det tr:hover td{background:#2a2a
       <select id="kind"><option value="">すべて</option><option value="video">動画</option><option value="audio">音声</option><option value="image">画像</option><option value="project">プロジェクト</option></select>
       <select id="rmin" title="評価"><option value="0">★すべて</option><option value="1">★1 以上</option><option value="2">★2 以上</option><option value="3">★3 以上</option><option value="4">★4 以上</option><option value="5">★5</option></select>
       <select id="lab" title="ラベル"></select>
+      <select id="resf" title="解像度"><option value="">解像度</option><option value="8k">8K</option><option value="4k">4K</option><option value="hd">HD（720〜1080）</option><option value="sd">SD 以下</option><option value="vertical">縦長</option></select>
       <select id="sort" title="並べ替え"><option value="name">名前</option><option value="mtime">更新日</option><option value="size">サイズ</option><option value="duration">長さ</option><option value="kind">種類</option><option value="rating">評価</option></select>
       <button id="sdir" onclick="toggleDir()" title="昇順 / 降順">↑</button>
       <label class="small" title="素材以外のファイル（zip など）も表示"><input type="checkbox" id="allf"> 素材以外も</label>
@@ -139,6 +140,8 @@ table.det tr.sel td{background:var(--sel)}table.det tr:hover td{background:#2a2a
       <input id="btag" placeholder="タグを追加" style="width:110px"><button onclick="bulkTag()">追加</button>
       <select id="bvf"><option value="">マイフォルダへ…</option></select>
       <button onclick="bulkFav()">★お気に入り</button>
+      <button onclick="tcDialog(selIds())" title="選んだ素材を別の形式に変換（サーバーで）">⇄ 変換</button>
+      <button onclick="zipSel()" title="選んだ素材をまとめて zip でダウンロード">⇩ zip</button>
       <span class="grow"></span><button onclick="clearSel()">選択解除</button>
     </div>
   </section>
@@ -147,6 +150,7 @@ table.det tr.sel td{background:var(--sel)}table.det tr:hover td{background:#2a2a
 <div id="p2" class="page"><div class="pad" id="p2c"></div></div>
 <div id="p3" class="page"><div class="pad" id="p3c"></div></div>
 <div id="p4" class="page"><div class="pad" id="p4c"></div></div>
+<div id="p5" class="page"><div class="pad" id="p5c"></div></div>
 <div id="modal"><div class="box" id="mbox"></div></div>
 <div id="toast"></div>
 <div id="upbar"></div>
@@ -185,7 +189,7 @@ function init(){
   $('view').innerHTML=VIEWS.map(v=>`<option value="${v[0]}">${v[1]}</option>`).join('');
   $('lab').innerHTML='<option value="">ラベル</option>'+LABELS.slice(1).map(l=>`<option value="${l[0]}">● ${l[1]}</option>`).join('');
   $('view').onchange=()=>setView($('view').value);
-  for(const id of['kind','rmin','lab','allf','favonly'])$(id).onchange=()=>refresh();
+  for(const id of['kind','rmin','lab','allf','favonly','resf'])$(id).onchange=()=>refresh();
   let qt;$('q').oninput=()=>{clearTimeout(qt);qt=setTimeout(()=>{if($('q').value&&S.view!='search'){setView('search')}else refresh()},300)};
   $('sort').value=S.sort;$('sort').onchange=()=>{S.sort=$('sort').value;LS.set('sort',S.sort);render()};
   $('sdir').textContent=S.desc?'↓':'↑';
@@ -242,7 +246,7 @@ function treeNode(d,depth,isRoot){const w=document.createElement('div');const e=
 
 /* ── 一覧を読む ── */
 async function refresh(){const g=++S.gen;$('list').innerHTML='<div class="empty">読み込み中…</div>';crumbs();setHash();
-  const qs=new URLSearchParams({q:$('q').value,kind:$('kind').value,rating_min:$('rmin').value,label:$('lab').value,limit:500});
+  const qs=new URLSearchParams({q:$('q').value,kind:$('kind').value,rating_min:$('rmin').value,label:$('lab').value,res:$('resf').value,limit:500});
   if($('favonly').checked){if(!user()){toast('お気に入りは名前を入れると使えます');$('favonly').checked=false}else qs.set('fav_user',user())}
   try{
     if(S.view=='browse'){
@@ -262,7 +266,8 @@ async function refresh(){const g=++S.gen;$('list').innerHTML='<div class="empty"
 }
 async function refreshQuiet(g){const r=await api('/api/browse?path='+encodeURIComponent(S.path)+($('allf').checked?'&all=1':'')).catch(()=>null);if(!r||g!=S.gen)return;S.items=r.files.filter(f=>filt(f));render();if(r.pending&&(S._poll=(S._poll||0)+1)<6)setTimeout(()=>refreshQuiet(g),3000);else S._poll=0}
 function filt(f){const q=$('q').value.toLowerCase();if(q&&!(f.name.toLowerCase().includes(q)||(f.tags||[]).join(' ').toLowerCase().includes(q)||(f.comment||'').toLowerCase().includes(q)))return false;
-  if($('kind').value&&f.kind!=$('kind').value)return false;if(+$('rmin').value&&(f.rating||0)<+$('rmin').value)return false;if($('lab').value&&f.label!=$('lab').value)return false;if($('favonly').checked&&!S.favs.has(f.id))return false;return true}
+  if($('kind').value&&f.kind!=$('kind').value)return false;const rf=$('resf').value,fw=+f.width||0,fh=+f.height||0;
+  if(rf&&!({'8k':fw>=7680,'4k':fw>=3840&&fw<7680,hd:fw>=1280&&fw<3840,sd:fw>0&&fw<1280,vertical:fh>fw}[rf]))return false;if(+$('rmin').value&&(f.rating||0)<+$('rmin').value)return false;if($('lab').value&&f.label!=$('lab').value)return false;if($('favonly').checked&&!S.favs.has(f.id))return false;return true}
 const key=f=>f.id||f.path;
 
 function crumbs(){const C=$('crumbs');
@@ -342,7 +347,7 @@ async function preview(f,play){S.cur=f;S.inP=S.outP=null;setHash();const P=$('pv
    <div class="path"><span>${esc(wp)}</span><button onclick="copy(${esc(JSON.stringify(wp))})">コピー</button></div>
    ${unc!=wp?`<div class="path"><span>${esc(unc)}</span><button onclick="copy(${esc(JSON.stringify(unc))})">コピー</button></div>`:''}
    <div class="path"><span class="dim">${esc(f.path)}</span><button onclick="copy(${esc(JSON.stringify(f.path))})">コピー</button></div>
-   <div class="ctl" style="padding:4px 0">${f.id?`<a href="/api/assets/${f.id}/file?dl=1"><button>⇩ ダウンロード</button></a><a href="/api/assets/${f.id}/file" target="_blank"><button>新しいタブで開く</button></a>`:''}<button onclick="openPath(${esc(JSON.stringify(f.path.replace(/\/[^\/]*$/,'')))})">フォルダを開く</button><button onclick="copy(location.href)" title="この素材を開く URL">🔗 URL</button></div></div>
+   <div class="ctl" style="padding:4px 0">${f.id?`<a href="/api/assets/${f.id}/file?dl=1"><button>⇩ ダウンロード</button></a><a href="/api/assets/${f.id}/file" target="_blank"><button>新しいタブで開く</button></a>`:''}<button onclick="openPath(${esc(JSON.stringify(f.path.replace(/\/[^\/]*$/,'')))})">フォルダを開く</button>${f.id&&(f.kind=='video'||f.kind=='audio')?`<button onclick="tcDialog(['${f.id}'])">⇄ 変換</button>`:''}<button onclick="copy(location.href)" title="この素材を開く URL">🔗 URL</button></div></div>
   ${f.id?`<div class="sec"><h3>整理（みんなで共有）</h3>
    <div class="stars" id="stars">${[1,2,3,4,5].map(n=>`<span data-n="${n}" class="${(f.rating||0)>=n?'on':''}">★</span>`).join('')}<span id="favb" title="お気に入り" style="margin-left:12px" class="${S.favs.has(f.id)?'on':''}">♥</span></div>
    <div class="labels" id="labels" style="margin:6px 0">${LABELS.map(l=>`<span title="${l[1]}" data-l="${l[0]}" class="${(f.label||'')==l[0]?'on':''}" style="background:${l[2]};${l[0]?'':'border-color:#666'}"></span>`).join('')}</div>
@@ -432,7 +437,29 @@ function upload(files){files=[...files];if(!files.length)return;const bar=$('upb
     x.onload=()=>{i++;next()};x.onerror=()=>{bar.innerHTML='送れませんでした: '+esc(f.name);i++;setTimeout(next,1500)};x.send(f)};next()}
 
 /* ── プロジェクト・レンダーファーム ── */
-function tab(n){for(const i of[1,2,3,4]){$('p'+i).classList.toggle('on',i==n);$('t'+i).className=i==n?'on':''}if(n==2)projects();if(n==3)farm();if(n==4)prod();LS.set('tab',n)}
+function tab(n){for(const i of[1,2,3,4,5]){$('p'+i).classList.toggle('on',i==n);$('t'+i).className=i==n?'on':''}if(n==2)projects();if(n==3)farm();if(n==4)prod();if(n==5)tcList();LS.set('tab',n)}
+
+/* ── 変換（トランスコード: DNxHR / DNxHD / ProRes / QuickTime / H.264 など。サーバーが 1 本ずつ変換）── */
+let PRE=null;
+async function presets(){if(!PRE)PRE=await api('/api/presets');return PRE}
+async function tcDialog(ids){ids=(ids||[]).filter(Boolean);if(!ids.length)return toast('動画か音声を選んでください');const p=await presets();
+  const groups=[...new Set(p.presets.map(x=>x.group))];const last=LS.get('tcpreset','dnxhr_hq');
+  $('mbox').innerHTML=`<h3 style="margin:0">変換（${ids.length} 件）</h3>
+   <label>形式<select id="tc_p">${groups.map(g=>`<optgroup label="${esc(g)}">${p.presets.filter(x=>x.group==g).map(x=>`<option value="${x.id}" ${x.id==last?'selected':''}>${esc(x.label)}${x.note?'（'+esc(x.note)+'）':''}</option>`).join('')}</optgroup>`).join('')}</select></label>
+   <label>大きさ<select id="tc_s">${p.sizes.map(x=>`<option value="${x.id}">${esc(x.label)}</option>`).join('')}</select></label>
+   <div class="small dim">変換した物は「アップロード（サーバー）/ 変換」に入ります。「変換」タブで進み具合とダウンロード。</div>
+   <div class="row"><button onclick="$('modal').style.display='none'">やめる</button><button class="pri" id="tc_ok">変換する</button></div>`;
+  $('modal').style.display='flex';
+  $('tc_ok').onclick=async()=>{LS.set('tcpreset',$('tc_p').value);const r=await post('/api/transcode',{ids,preset:$('tc_p').value,size:$('tc_s').value,user:user()});
+    $('modal').style.display='none';toast(`${r.length} 件の変換を受け付けました`);if(r.length)tab(5)}}
+async function tcList(){const j=await api('/api/transcode').catch(()=>[]);const st={waiting:'待ち',running:'変換中',done:'完了',error:'失敗',cancelled:'中止'};
+  $('p5c').innerHTML=j.length?'<table><tr><th>素材</th><th>形式</th><th>大きさ</th><th>状態</th><th></th><th>依頼</th></tr>'+j.map(x=>`<tr><td>${esc(x.name)}</td><td>${esc(x.preset_label)}</td><td>${esc(x.size||'元')}</td>
+   <td>${x.status=='running'?`<progress max="1" value="${x.progress}"></progress> ${Math.round(x.progress*100)}%`:esc(st[x.status]||x.status)}${x.error?`<div class="small" style="color:#ff8080">${esc(x.error)}</div>`:''}</td>
+   <td>${x.status=='done'&&x.out_asset?`<a href="/api/assets/${x.out_asset}/file?dl=1"><button>⇩ ダウンロード</button></a>`:''}${['waiting','running'].includes(x.status)?`<button onclick="tcCancel('${x.id}')">中止</button>`:''}</td>
+   <td class="dim">${esc(x.user||'')} ${hdate(x.created)}</td></tr>`).join('')+'</table>':'<div class="empty">変換はまだありません。素材を選んで「⇄ 変換」</div>';
+  if($('p5').classList.contains('on'))setTimeout(tcList,j.some(x=>['waiting','running'].includes(x.status))?1500:6000)}
+async function tcCancel(id){await post(`/api/transcode/${id}/cancel`,{});tcList()}
+function zipSel(){const ids=selIds();if(!ids.length)return;const a=document.createElement('a');a.href='/api/zip?ids='+ids.join(',')+'&name='+encodeURIComponent(S.path?S.path.split('/').pop():'assets');a.download='';document.body.appendChild(a);a.click();a.remove()}
 
 /* ── 制作管理（ショットの進み具合・担当・期限・活動）── */
 const ST=[['todo','未着手','#777'],['wip','作業中','#4f8fe0'],['review','レビュー待ち','#d8c040'],['fix','修正','#e05050'],['done','OK','#50b060']];

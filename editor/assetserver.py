@@ -41,6 +41,11 @@ KIND = {**{e: "video" for e in (".mp4", ".mov", ".mkv", ".avi", ".mxf", ".m4v", 
                                 ".exr")}}
 
 
+# 解像度での絞り込み（ブラウザ・TeloCut の「解像度」）
+RES_FILTER = {"8k": "a.width>=7680", "4k": "a.width>=3840 AND a.width<7680", "hd": "a.width>=1280 AND a.width<3840",
+              "sd": "a.width>0 AND a.width<1280", "vertical": "a.height>a.width"}
+
+
 def _like(prefix: str) -> str:
     """LIKE の「prefix/ で始まる」用（% と _ をそのままの文字として扱う）。"""
     return prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
@@ -123,6 +128,9 @@ class Store:
                 tc_in TEXT DEFAULT '', tc_out TEXT DEFAULT '', status TEXT DEFAULT 'todo', assignee TEXT DEFAULT '',
                 due TEXT DEFAULT '', priority INT DEFAULT 0, note TEXT DEFAULT '', asset_id TEXT DEFAULT '',
                 sort INT DEFAULT 0, created REAL, updated REAL, updated_by TEXT DEFAULT '');
+            CREATE TABLE IF NOT EXISTS tc_jobs(id TEXT PRIMARY KEY, asset_id TEXT, name TEXT, preset TEXT,
+                size TEXT DEFAULT '', status TEXT, progress REAL DEFAULT 0, out_asset TEXT DEFAULT '',
+                error TEXT DEFAULT '', user TEXT DEFAULT '', created REAL, finished REAL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY AUTOINCREMENT, time REAL, user TEXT, host TEXT,
                 project TEXT DEFAULT '', kind TEXT, target TEXT, text TEXT);
             """)
@@ -142,6 +150,12 @@ class Store:
         self._indexing: set = set()
         self._proxy_sem = threading.Semaphore(1)        # ブラウザ用プロキシは 1 本ずつ（VM の CPU・メモリを守る）
         self._proxy_state: dict = {}                    # id → {"status": making/ready/error, "progress": 0〜1}
+        self._tc_cancel: dict = {}                       # 変換ジョブ id → threading.Event
+        self._tc_wake = threading.Event()
+        with self.lock:                                  # 前回の途中の変換はやり直す
+            self.db.execute("UPDATE tc_jobs SET status='waiting', progress=0 WHERE status='running'")
+            self.db.commit()
+        threading.Thread(target=self._tc_loop, daemon=True).start()
 
     # ── 素材 ─────────────────────────────────
     @staticmethod
@@ -457,6 +471,108 @@ class Store:
                 "total": sum(v[0] for v in kinds.values()), "total_size": sum(v[1] for v in kinds.values()),
                 "scanning": self.scanning, "last_scan": self.last_scan, "indexing": len(self._indexing),
                 "roots": self.roots}
+
+    # ── トランスコード（ブラウザ・TeloCut から頼む。結果は「アップロード（サーバー）/変換」に入る）──
+    def presets(self) -> list:
+        from .mediacodecs import PRESETS, SIZES
+        return {"presets": [{"id": x.id, "label": x.label, "group": x.group, "alpha": x.alpha, "note": x.note,
+                             "video": bool(x.vcodec), "ext": x.ext} for x in PRESETS],
+                "sizes": [{"id": k, "label": v} for k, v in SIZES]}
+
+    def transcode_add(self, ids, preset: str, size: str = "", user: str = "") -> list:
+        import uuid
+        from .mediacodecs import BY_ID
+        if preset not in BY_ID:
+            raise ValueError("形式が正しくありません")
+        out = []
+        for i in list(ids or [])[:200]:
+            a = self.get(i)
+            if not a or a["kind"] not in ("video", "audio"):
+                continue
+            j = {"id": uuid.uuid4().hex[:12], "asset_id": i, "name": a["name"], "preset": preset, "size": size or "",
+                 "status": "waiting", "progress": 0.0, "user": (user or "")[:40], "created": time.time()}
+            with self.lock:
+                self.db.execute(f"INSERT INTO tc_jobs({','.join(j)}) VALUES({','.join('?' * len(j))})", list(j.values()))
+                self.db.commit()
+            out.append(j)
+        if out:
+            self.add_activity(user, "", "", "transcode", preset, f"{len(out)} 件の変換を受け付けました（{BY_ID[preset].label}）")
+            self._tc_wake.set()
+        return out
+
+    def transcode_jobs(self, limit: int = 100) -> list:
+        with self.lock:
+            rows = [dict(r) for r in self.db.execute("SELECT * FROM tc_jobs ORDER BY created DESC LIMIT ?",
+                                                     (max(1, min(500, int(limit))),))]
+        from .mediacodecs import BY_ID
+        for r in rows:
+            r["preset_label"] = BY_ID[r["preset"]].label if r["preset"] in BY_ID else r["preset"]
+        return rows
+
+    def transcode_cancel(self, jid: str) -> dict:
+        ev = self._tc_cancel.get(jid)
+        if ev is not None:
+            ev.set()
+        with self.lock:
+            self.db.execute("UPDATE tc_jobs SET status='cancelled', finished=? WHERE id=? AND status IN ('waiting','running')",
+                            (time.time(), jid))
+            self.db.commit()
+        return {"ok": True}
+
+    def _tc_loop(self):
+        """変換を 1 本ずつ（VM の CPU・メモリを使い切らない）。"""
+        from .mediacodecs import BY_ID, default_name, transcode
+        while True:
+            with self.lock:
+                r = self.db.execute("SELECT * FROM tc_jobs WHERE status='waiting' ORDER BY created LIMIT 1").fetchone()
+                if r is not None:
+                    self.db.execute("UPDATE tc_jobs SET status='running' WHERE id=?", (r["id"],))
+                    self.db.commit()
+            if r is None:
+                self._tc_wake.wait(5)
+                self._tc_wake.clear()
+                continue
+            j = dict(r)
+            ev = threading.Event()
+            self._tc_cancel[j["id"]] = ev
+            a = self.get(j["asset_id"])
+            last = [0.0]
+
+            def prog(x, jid=j["id"]):
+                if x - last[0] >= 0.02 or x >= 1:
+                    last[0] = x
+                    with self.lock:
+                        self.db.execute("UPDATE tc_jobs SET progress=? WHERE id=?", (round(x, 3), jid))
+                        self.db.commit()
+            try:
+                try:
+                    os.nice(10)
+                except (AttributeError, OSError):
+                    pass
+                if not a or not os.path.exists(a["path"]):
+                    raise FileNotFoundError("元の素材が見つかりません")
+                d = self.data / "uploads" / "変換"
+                dst = d / default_name(a["path"], j["preset"], j["size"])
+                k = 1
+                while dst.exists():
+                    dst = d / f"{Path(default_name(a['path'], j['preset'], j['size'])).stem}_{k}{BY_ID[j['preset']].ext}"
+                    k += 1
+                transcode(a["path"], str(dst), j["preset"], j["size"], prog, ev)
+                na = self.index(str(dst))
+                with self.lock:
+                    self.db.execute("UPDATE tc_jobs SET status='done', progress=1, out_asset=?, finished=? WHERE id=?",
+                                    (na["id"] if na else "", time.time(), j["id"]))
+                    self.db.commit()
+                self.add_activity(j["user"], "", "", "transcode", j["id"], f"{a['name']} を {BY_ID[j['preset']].label} に変換しました")
+            except InterruptedError:
+                pass
+            except Exception as ex:
+                with self.lock:
+                    self.db.execute("UPDATE tc_jobs SET status='error', error=?, finished=? WHERE id=?",
+                                    (str(ex)[:500], time.time(), j["id"]))
+                    self.db.commit()
+            finally:
+                self._tc_cancel.pop(j["id"], None)
 
     # ── 片付け（プロキシの容量・消えた素材のサムネイル / プロキシ）──
     def housekeeping(self, proxy_gb: float = 20.0) -> dict:
@@ -884,7 +1000,7 @@ class Store:
         return {"ok": True}
 
     def search(self, q="", kind="", tag="", fav_user="", limit=200, offset=0, dir="", under="", vfolder="",
-               order="added", rating_min=0, label="", since=0.0):
+               order="added", rating_min=0, label="", since=0.0, res=""):
         sql = "SELECT a.* FROM assets a"
         args = []
         where = ["a.missing=0"]
@@ -911,6 +1027,8 @@ class Store:
         if int(rating_min or 0) > 0:
             where.append("a.rating>=?")
             args.append(int(rating_min))
+        if res in RES_FILTER:
+            where.append(RES_FILTER[res])
         if label:
             where.append("a.label=?")
             args.append(label)
@@ -1126,6 +1244,46 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             raise
 
+    def _send_zip(self, ids, name: str = "assets"):
+        """選んだ素材をまとめて zip で（圧縮はしない＝速い。大きくても少しずつ送る）。"""
+        import zipfile
+        paths = []
+        for i in ids:
+            a = self.store.get(i)
+            if a and os.path.isfile(a["path"]):
+                paths.append(a["path"])
+        if not paths:
+            return self._json({"error": "ダウンロードできる素材がありません"}, 404)
+        safe = "".join(ch for ch in name if ch not in '\\/:*?"<>|')[:60] or "assets"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + urllib.parse.quote(safe + ".zip"))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+        class _W:
+            def __init__(self, f):
+                self.f, self.n = f, 0
+
+            def write(self, b):
+                self.f.write(b)
+                self.n += len(b)
+                return len(b)
+
+            def flush(self):
+                self.f.flush()
+        used = set()
+        with zipfile.ZipFile(_W(self.wfile), "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
+            for p in paths:
+                arc = os.path.basename(p)
+                k = 1
+                while arc.lower() in used:
+                    arc = f"{Path(p).stem}_{k}{Path(p).suffix}"
+                    k += 1
+                used.add(arc.lower())
+                zf.write(p, arc)
+
     def _send_file(self, path: str, download: bool = False):
         size = os.path.getsize(path)
         rng = self.headers.get("Range")
@@ -1175,7 +1333,9 @@ class Handler(BaseHTTPRequestHandler):
                                             max(0, int(qs.get("offset", 0))),
                                             qs.get("dir", ""), qs.get("under", ""), qs.get("vfolder", ""),
                                             qs.get("order", "added"), int(qs.get("rating_min", 0) or 0),
-                                            qs.get("label", ""), float(qs.get("since", 0) or 0)))
+                                            qs.get("label", ""), float(qs.get("since", 0) or 0), qs.get("res", "")))
+            if parts[:2] == ["api", "zip"]:
+                return self._send_zip([x for x in qs.get("ids", "").split(",") if x][:500], qs.get("name", "assets"))
             if parts[:2] == ["api", "browse"]:
                 return self._json(st.browse(qs.get("path", ""), qs.get("all", "") == "1"))
             if parts[:2] == ["api", "duplicates"]:
@@ -1186,6 +1346,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(st.roots_info())
             if parts[:2] == ["api", "shots"]:
                 return self._json(st.shots(qs.get("project", "")))
+            if parts[:2] == ["api", "presets"]:
+                return self._json(st.presets())
+            if parts[:2] == ["api", "transcode"]:
+                return self._json(st.transcode_jobs(int(qs.get("limit", 100))))
             if parts[:2] == ["api", "activity"]:
                 return self._json(st.activity(int(qs.get("limit", 100)), qs.get("project", ""), int(qs.get("since", 0) or 0)))
             if parts[:2] == ["api", "dashboard"]:
@@ -1286,6 +1450,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True})
             if parts[:2] == ["api", "roots"]:
                 return self._json(st.set_roots_info(body))
+            if parts[:2] == ["api", "transcode"] and len(parts) == 2:
+                return self._json(st.transcode_add(body.get("ids", []), body.get("preset", ""), body.get("size", ""),
+                                                   body.get("user", "")))
+            if parts[:2] == ["api", "transcode"] and len(parts) == 4 and parts[3] == "cancel":
+                return self._json(st.transcode_cancel(parts[2]))
             if parts[:2] == ["api", "shots"] and len(parts) == 2:
                 if isinstance(body.get("items"), list):          # まとめて追加（マーカーから など）
                     return self._json([st.shot_create(x, body.get("user", "")) for x in body["items"][:500]])

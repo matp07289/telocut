@@ -50,6 +50,16 @@ def hue(im, p, ctx):
     return out
 
 
+@effect("rgb_gain", "RGB の強さとずれ（カラーマッチ・オートカラー）", "カラー",
+        [P("gr", "R の強さ", 1.0, 0, 4, 0.01), P("gg", "G の強さ", 1.0, 0, 4, 0.01), P("gb", "B の強さ", 1.0, 0, 4, 0.01),
+         P("or", "R のずれ", 0.0, -255, 255, 1), P("og", "G のずれ", 0.0, -255, 255, 1), P("ob", "B のずれ", 0.0, -255, 255, 1)])
+def rgb_gain(im, p, ctx):
+    a = _arr(im)
+    for i, (g, o) in enumerate((("gr", "or"), ("gg", "og"), ("gb", "ob"))):
+        a[..., i] = a[..., i] * float(p[g]) + float(p[o])
+    return _img(a)
+
+
 @effect("temperature", "色温度", "カラー", [P("value", "暖かさ（−で寒色）", 30.0, -100, 100, 1)])
 def temperature(im, p, ctx):
     a = _arr(im)

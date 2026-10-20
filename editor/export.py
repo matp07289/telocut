@@ -20,12 +20,13 @@ from . import render
 
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
-ENCODERS = [
-    ("H.264 (libx264) / MP4", "libx264", ".mp4"),
-    ("H.264 (NVIDIA NVENC) / MP4", "h264_nvenc", ".mp4"),
-    ("H.265 (libx265) / MP4", "libx265", ".mp4"),
-    ("ProRes 422 HQ / MOV", "prores_ks", ".mov"),
-]
+from . import mediacodecs as MC
+
+# 書き出しの形式（mediacodecs のプリセット。NVENC だけは外部 ffmpeg）
+ENCODERS = [(f"{p.group}: {p.label}", p.id, p.ext) for p in MC.PRESETS if p.vcodec]
+ENCODERS.insert(1, ("配信: H.264（NVIDIA NVENC）/ MP4", "h264_nvenc", ".mp4"))
+LEGACY = {"libx264": "h264", "libx265": "h265", "prores_ks": "prores_hq"}     # 以前の設定・スマート書き出しの名前
+SMART_CODEC = {"h264": "libx264", "prores_hq": "prores_ks"}                     # スマート書き出しに対応している形式
 
 
 class ExportWorker(QThread):
@@ -33,14 +34,15 @@ class ExportWorker(QThread):
     finished_ok = pyqtSignal(str)
     failed = pyqtSignal(str)
 
-    def __init__(self, project: Project, a: int, b: int, path: str, encoder: str, quality: int):
+    def __init__(self, project: Project, a: int, b: int, path: str, encoder: str, quality: int, alpha: bool = False):
         super().__init__()
         self.project = copy.deepcopy(project)
         self.seq = self.project.sequence
         self.a, self.b = a, b
         self.path = path
-        self.encoder = encoder
+        self.encoder = LEGACY.get(encoder, encoder)
         self.quality = quality
+        self.alpha = alpha
         self.cancel = threading.Event()
 
     def run(self):
@@ -59,40 +61,44 @@ class ExportWorker(QThread):
         return Fraction(fps).limit_denominator(1001)
 
     def _run_pyav(self):
-        """PyAV（同梱の FFmpeg ライブラリ）で書き出す。外部 ffmpeg 不要。"""
+        """PyAV（同梱の FFmpeg ライブラリ）で書き出す。外部 ffmpeg 不要。DNx・ProRes・QuickTime・透明ありにも対応。"""
         import av
         import numpy as np
         seq = self.seq
         pool = DecoderPool()
         n = self.b - self.a
         W, H = seq.width & ~1, seq.height & ~1
+        preset = MC.BY_ID[self.encoder]
+        alpha = self.alpha and preset.alpha
         out = None
         try:
-            out = av.open(self.path, "w")
-            rate = self._fps_fraction()
-            vs = out.add_stream(self.encoder, rate=rate)
-            vs.width, vs.height = W, H
-            if self.encoder == "prores_ks":
-                vs.pix_fmt = "yuv422p10le"
-                vs.options = {"profile": "3"}
-            else:
-                vs.pix_fmt = "yuv420p"
-                vs.options = {"crf": str(self.quality), "preset": "medium"}
-            mov = self.path.lower().endswith(".mov")
-            ast = out.add_stream("pcm_s16le" if mov else "aac", rate=SAMPLE_RATE)
-            ast.layout = "stereo"
-            if not mov:
-                ast.bit_rate = 192000
+            err = MC.check(preset, W, H, seq.fps)
+            if err:
+                raise ValueError(err)
+            if preset.id in ("h264", "h264_mov", "h265"):
+                preset = MC.Preset(**{**preset.__dict__, "options": {**preset.options, "crf": str(self.quality)}})
+            out = MC.open_output(self.path, preset)
+            vs = MC.add_video_stream(out, preset, W, H, seq.fps)
+            ast = MC.add_audio_stream(out, preset, SAMPLE_RATE, 2)
+            res = av.AudioResampler(format=MC.audio_format(preset), layout="stereo", rate=SAMPLE_RATE)
             s_total = int(round(self.b * SAMPLE_RATE / seq.fps))
             s_cur = int(round(self.a * SAMPLE_RATE / seq.fps))
             a_pts = 0
             for i, f in enumerate(range(self.a, self.b)):
                 if self.cancel.is_set():
                     return
-                im = render.render_frame(seq, f, self.project, pool, 1.0)
-                if im.size != (W, H):
-                    im = im.resize((W, H))
-                vf = av.VideoFrame.from_ndarray(np.asarray(im), format="rgb24")
+                if alpha:
+                    arr = render.render_frame_rgba(seq, f, self.project, pool, 1.0)
+                    if arr.shape[:2] != (H, W):
+                        from PIL import Image
+                        arr = np.asarray(Image.fromarray(arr, "RGBA").resize((W, H)))
+                    vf = av.VideoFrame.from_ndarray(np.ascontiguousarray(arr), format="rgba")
+                else:
+                    im = render.render_frame(seq, f, self.project, pool, 1.0)
+                    if im.size != (W, H):
+                        im = im.resize((W, H))
+                    vf = av.VideoFrame.from_ndarray(np.asarray(im), format="rgb24")
+                vf = vf.reformat(format=preset.pix_fmt)
                 vf.pts = i
                 for pkt in vs.encode(vf):
                     out.mux(pkt)
@@ -100,13 +106,15 @@ class ExportWorker(QThread):
                 s_next = min(s_total, int(round((f + 1) * SAMPLE_RATE / seq.fps)))
                 if s_next > s_cur:
                     buf = render.mix_audio(seq, self.project, pool, s_cur, s_next - s_cur)
-                    pcm = (np.clip(buf, -1, 1) * 32767).astype(np.int16).reshape(1, -1)
-                    af = av.AudioFrame.from_ndarray(pcm, format="s16", layout="stereo")
+                    af = av.AudioFrame.from_ndarray(np.ascontiguousarray(np.clip(buf, -1, 1).T.astype(np.float32)),
+                                                    format="fltp", layout="stereo")
                     af.sample_rate = SAMPLE_RATE
                     af.pts = a_pts
                     a_pts += s_next - s_cur
-                    for pkt in ast.encode(af):
-                        out.mux(pkt)
+                    for rf in res.resample(af):
+                        rf.pts = None
+                        for pkt in ast.encode(rf):
+                            out.mux(pkt)
                     s_cur = s_next
                 if i % 5 == 0:
                     self.progress.emit(i, n)
@@ -273,8 +281,15 @@ class ExportDialog(QDialog):
         self.q = QSpinBox()
         self.q.setRange(0, 51)
         self.q.setValue(18)
-        self.q.setToolTip("小さいほど高画質（CRF / CQ）")
+        self.q.setToolTip("小さいほど高画質（CRF / CQ）。H.264 / H.265 / NVENC のみ")
         f.addRow("画質 (CRF)", self.q)
+        from PyQt6.QtWidgets import QCheckBox
+        self.alpha = QCheckBox("背景を透明にする（ProRes 4444・Animation・PNG のときだけ）")
+        self.alpha.setToolTip("何も無い所を透明にして書き出します。テロップや図形だけを別のソフトで重ねたいとき用")
+        f.addRow("", self.alpha)
+        self.enc_note = QLabel("")
+        self.enc_note.setObjectName("info")
+        f.addRow("", self.enc_note)
         self.range = QComboBox()
         self.range.addItems(["シーケンス全体", "IN 点から OUT 点"])
         if seq.mark_in >= 0 and seq.mark_out > seq.mark_in:
@@ -310,14 +325,14 @@ class ExportDialog(QDialog):
         self.cancel_btn.clicked.connect(self._cancel)
         lay.addWidget(self.btns)
         self.worker = None
-        self._on_mode()
+        self._on_enc(self.enc.currentIndex())
 
     def _on_mode(self):
         m = self.mode.currentData()
         self.server.setEnabled(m == "farm")
         codec = self.enc.currentData()[0]
-        if m != "normal" and codec not in ("libx264", "prores_ks"):
-            self.msg.setText("スマート書き出しは H.264 (libx264) と ProRes のみ対応です（通常で書き出します）")
+        if m != "normal" and codec not in SMART_CODEC:
+            self.msg.setText("スマート書き出しは H.264 / MP4 と ProRes 422 HQ のみ対応です（この形式は通常で書き出します）")
         else:
             self.msg.setText("")
 
@@ -325,7 +340,11 @@ class ExportDialog(QDialog):
         codec, ext = self.enc.itemData(i)
         base, _ = os.path.splitext(self.path.text())
         self.path.setText(base + ext)
-        self.q.setEnabled(codec != "prores_ks")
+        self.q.setEnabled(codec in ("h264", "h264_mov", "h265", "h264_nvenc"))
+        p = MC.BY_ID.get(codec)
+        self.alpha.setEnabled(bool(p and p.alpha))
+        seq = self.mw.project.sequence
+        self.enc_note.setText((MC.check(p, seq.width & ~1, seq.height & ~1, seq.fps) or p.note) if p else "")
         if hasattr(self, "mode"):
             self._on_mode()
 
@@ -347,7 +366,11 @@ class ExportDialog(QDialog):
         mode = self.mode.currentData()
         codec = self.enc.currentData()[0]
         self.mw.settings.setValue("export_mode", mode)
-        if mode != "normal" and codec in ("libx264", "prores_ks"):
+        if p_err := (MC.check(MC.BY_ID[codec], seq.width & ~1, seq.height & ~1, seq.fps) if codec in MC.BY_ID else ""):
+            QMessageBox.warning(self, "書き出し", p_err)
+            return
+        if mode != "normal" and codec in SMART_CODEC:
+            codec = SMART_CODEC[codec]
             server = ""
             if mode == "farm":
                 from .rendercluster import server_ok, online_nodes
@@ -367,7 +390,8 @@ class ExportDialog(QDialog):
                                             procs, server)
             self.worker.progress_msg.connect(self._on_smart_progress)
         else:
-            self.worker = ExportWorker(self.mw.project, a, b, self.path.text(), codec, self.q.value())
+            self.worker = ExportWorker(self.mw.project, a, b, self.path.text(), codec, self.q.value(),
+                                       alpha=self.alpha.isChecked() and self.alpha.isEnabled())
             self.worker.progress.connect(self._on_progress)
         self.worker.finished_ok.connect(self._done)
         self.worker.failed.connect(self._fail)

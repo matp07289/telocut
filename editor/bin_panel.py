@@ -254,6 +254,9 @@ class BinView(QWidget):
             m.addAction("再生ヘッドに挿入", lambda: mw.place_media_at(mids, None, None, True))
             m.addSeparator()
             m.addAction("プロキシを作成", lambda: mw.make_proxies([x for x in mw.project.media if x.id in mids]))
+            m.addAction("トランスコード（DNxHR / ProRes など）...",
+                        lambda: mw.transcode_dialog([x for x in mw.project.media if x.id in mids]))
+            m.addAction("使用箇所を表示...", mw.media_usage_dialog)
             m.addAction("ローカルにコピー（NAS → この PC）", lambda: mw.copy_local(mids))
             m.addAction("元の場所（NAS）に戻す", lambda: mw.restore_original(mids))
             m.addAction("オフライン素材を再リンク...", mw.relink_media)

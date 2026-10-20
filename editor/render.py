@@ -262,6 +262,49 @@ def _shape_image(seq: Sequence, clip: Clip, cf: int, W: int, H: int) -> Image.Im
         tw = d.textlength(txt, font=f) if f else len(txt) * 8
         d.text(((box[0] + box[2] - tw) / 2, box[1]), txt, font=f, fill=rgb + (255,),
                stroke_width=max(2, H // 200), stroke_fill=(0, 0, 0, 255))
+    elif shape == "timecode":
+        # タイムコードの焼き込み（Premiere の「タイムコード」エフェクト）
+        from core.timecode import frames_to_timecode, timecode_to_frames
+        try:
+            off = timecode_to_frames(seq.start_tc, seq.fps)
+        except Exception:
+            off = 0
+        txt = frames_to_timecode(cf + off, seq.fps)
+        lab = str(clip.prop("tc_label", "") or "")
+        if lab:
+            txt = f"{lab}  {txt}"
+        from PIL import ImageFont
+        fh = max(10, int(H * h / 100 * 0.7))
+        f = None
+        for fp in ("consola.ttf", "C:/Windows/Fonts/consola.ttf", "DejaVuSansMono.ttf",
+                   "/usr/share/fonts/dejavu/DejaVuSansMono.ttf", "arial.ttf"):
+            try:
+                f = ImageFont.truetype(fp, fh)
+                break
+            except Exception:
+                continue
+        tw = d.textlength(txt, font=f) if f else len(txt) * 7
+        pad = fh * 0.3
+        cxx = (box[0] + box[2]) / 2
+        d.rectangle([cxx - tw / 2 - pad, box[1], cxx + tw / 2 + pad, box[1] + fh * 1.3], fill=(0, 0, 0, max(fo, 160)))
+        d.text((cxx - tw / 2, box[1] + fh * 0.12), txt, font=f, fill=rgb + (255,))
+    elif shape == "letterbox":
+        # シネスコの黒帯（rect の高さ = 上下それぞれの帯の高さ %）
+        bh = H * h / 100
+        d.rectangle([0, 0, W, bh], fill=rgb + (fo,))
+        d.rectangle([0, H - bh, W, H], fill=rgb + (fo,))
+    elif shape == "bars":
+        # カラーバー（SMPTE 風: 75% の 7 色 + 下段）
+        cols = [(191, 191, 191), (191, 191, 0), (0, 191, 191), (0, 191, 0), (191, 0, 191), (191, 0, 0), (0, 0, 191)]
+        bw = W / 7
+        for i, cc in enumerate(cols):
+            d.rectangle([i * bw, 0, (i + 1) * bw, H * 0.67], fill=cc + (255,))
+        low = [(0, 0, 191), (19, 19, 19), (191, 0, 191), (19, 19, 19), (0, 191, 191), (19, 19, 19), (191, 191, 191)]
+        for i, cc in enumerate(low):
+            d.rectangle([i * bw, H * 0.67, (i + 1) * bw, H * 0.75], fill=cc + (255,))
+        for i, cc in enumerate([(0, 33, 76), (255, 255, 255), (50, 0, 106), (19, 19, 19), (9, 9, 9), (19, 19, 19),
+                                (29, 29, 29), (19, 19, 19)]):
+            d.rectangle([i * W / 8, H * 0.75, (i + 1) * W / 8, H], fill=cc + (255,))
     elif shape == "endcard":
         # YouTube の終了画面（動画 2 つ + チャンネル登録）の目安枠
         lw = max(2, W // 400)
@@ -480,6 +523,8 @@ def frame_signature(seq: Sequence, frame: int, project: Project, scale: float, u
                 item.append(round(L.cf / max(1, seq.duration), 4))
             elif c.prop("shape") == "countdown":
                 item.append(int(np.ceil((c.end - L.cf) / seq.fps)))
+            elif c.prop("shape") == "timecode":
+                item += [L.cf, c.prop("tc_label", ""), seq.start_tc]
         if c.kind == "text" and (c.prop("text_anim") or c.prop("karaoke") or c.prop("text_anim_out")):
             item += [c.prop("text_anim"), c.prop("karaoke"), c.prop("text_anim_out"), L.cf - c.start, c.end - L.cf]
         if any(fx.get("name") == "shake" for fx in (c.prop("effects") or [])):
@@ -498,7 +543,8 @@ def frame_signature(seq: Sequence, frame: int, project: Project, scale: float, u
                                     for v in MO.transform(seq, c, L.cf + t_, scale)], c.prop("shutter"), c.prop("mb_samples")))
         if c.prop("mask"):
             item.append(("mask", c.prop("mask")))
-        item.append({k: c.props[k] for k in ("effects", "crop", "chroma", "blend", "fx_mode", "fx_graph", "keys")
+        item.append({k: c.props[k] for k in ("effects", "crop", "chroma", "blend", "fx_mode", "fx_graph", "keys",
+                                             "flip_h", "flip_v")
                      if k in c.props})
         if c.prop("fx_mode") == "nodes" and c.prop("fx_graph"):
             from .nodes import graph_animated
@@ -986,6 +1032,10 @@ def _overlay(out: np.ndarray, project: Project, seq: Sequence, L: Layer,
     if ck:
         im = _chroma(im, ck)
     im = _crop(im, clip.prop("crop"))
+    if clip.props.get("flip_h"):
+        im = im.transpose(Image.FLIP_LEFT_RIGHT)
+    if clip.props.get("flip_v"):
+        im = im.transpose(Image.FLIP_TOP_BOTTOM)
     if clip.prop("mask"):
         im = MO.apply_mask(im, clip.prop("mask"), scale)
     if effects:
