@@ -87,6 +87,10 @@ class TranscodeDialog(QDialog):
         self.dest.addItem("元のファイルと同じフォルダ", "same")
         self.dest.addItem("フォルダを選ぶ...", "pick")
         self.dest.addItem("ファーム（レンダーノードに振り分け・この PC は空く）", "farm")
+        self._nas_dir = self._nas_output()
+        if self._nas_dir:
+            self.dest.insertItem(0, f"NAS の出力先（{self._nas_dir}）", "nas")
+            self.dest.setCurrentIndex(0)
         if not mw.project_path:
             self.dest.setCurrentIndex(1)
         f.addRow("保存先", self.dest)
@@ -112,8 +116,31 @@ class TranscodeDialog(QDialog):
         self.worker = None
         self.result = None
 
+    @staticmethod
+    def _nas_output() -> str:
+        """アセットサーバーの「結果の置き場所」（NAS の ES_Render など）を、この PC のパス（Y:\\TeloCut\\変換）で。"""
+        url = (SETTINGS.asset_server or "").rstrip("/")
+        if not url:
+            return ""
+        try:
+            from .rendercluster import _req
+            outs = _req(url + "/api/info", timeout=2).get("outputs") or []
+        except Exception:
+            return ""
+        o = next((x for x in outs if x.get("id") == "output"), None)
+        if not o:
+            return ""
+        base = o.get("drive") or o.get("unc") or ""
+        if not base:
+            return ""
+        rel = (o.get("rel") or "").replace("/", "\\")
+        p = base.rstrip("\\") + ("\\" + rel if rel else "") + "\\変換"
+        return p if os.path.isdir(os.path.dirname(p)) else ""
+
     def out_dir(self, src: str) -> Optional[Path]:
         k = self.dest.currentData()
+        if k == "nas":
+            return Path(self._nas_dir)
         if k == "project" and self.mw.project_path:
             return Path(self.mw.project_path).parent / "Transcoded"
         if k == "pick":
@@ -130,6 +157,8 @@ class TranscodeDialog(QDialog):
         self.mw.settings.setValue("transcode_preset", preset)
         if self.dest.currentData() == "farm":
             dst = str(Path(self.mw.project_path).parent / "Transcoded") if self.mw.project_path else ""
+            if self._nas_dir:
+                dst = self._nas_dir                        # NAS の出力先があればノードが直接そこへ
             if dst:
                 os.makedirs(dst, exist_ok=True)
             try:

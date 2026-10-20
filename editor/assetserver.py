@@ -98,7 +98,7 @@ from .farm import FarmMixin
 
 
 class Store(FarmMixin):
-    def __init__(self, data_dir: str, roots, local_worker: bool = True):
+    def __init__(self, data_dir: str, roots, local_worker: bool = True, output: str = ""):
         self.data = Path(data_dir)
         self.data.mkdir(parents=True, exist_ok=True)
         (self.data / "thumbs").mkdir(exist_ok=True)
@@ -153,6 +153,7 @@ class Store(FarmMixin):
         self._indexing: set = set()
         self._proxy_sem = threading.Semaphore(1)        # ブラウザ用プロキシは 1 本ずつ（VM の CPU・メモリを守る）
         self._proxy_state: dict = {}                    # id → {"status": making/ready/error, "progress": 0〜1}
+        self.output_dir = self._check_output(output)     # 変換・書き出しの結果を置く所（NAS の ES_Render など）
         self._farm_init(local_worker)                    # ジョブ（レンダリング・変換）を複数 PC に振り分ける
 
     # ── 素材 ─────────────────────────────────
@@ -475,11 +476,12 @@ class Store(FarmMixin):
         from .mediacodecs import PRESETS, SIZES
         return {"presets": [{"id": x.id, "label": x.label, "group": x.group, "alpha": x.alpha, "note": x.note,
                              "video": bool(x.vcodec), "ext": x.ext} for x in PRESETS],
-                "sizes": [{"id": k, "label": v} for k, v in SIZES]}
+                "sizes": [{"id": k, "label": v} for k, v in SIZES], "outputs": self.outputs()}
 
-    def transcode_add(self, ids, preset: str, size: str = "", user: str = "") -> list:
+    def transcode_add(self, ids, preset: str, size: str = "", user: str = "", dest: str = "", sub: str = "") -> list:
         """ブラウザから: サーバーの素材を変換（ファームのジョブ。空いているノードかサーバー自身が行う）。"""
-        return [self._tc_view(j) for j in self.farm_add_transcode([{"asset_id": i} for i in ids or []], preset, size, user)]
+        return [self._tc_view(j) for j in self.farm_add_transcode([{"asset_id": i} for i in ids or []], preset, size, user,
+                                                                   dest=dest, sub=sub)]
 
     def _tc_view(self, j: dict) -> dict:
         from .mediacodecs import BY_ID
@@ -495,6 +497,43 @@ class Store(FarmMixin):
 
     def transcode_cancel(self, jid: str) -> dict:
         return self.farm_cancel(jid)
+
+    # ── 結果の置き場所 ──
+    def _check_output(self, output: str) -> Optional[Path]:
+        if not output:
+            return None
+        p = Path(output)
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+            t = p / ".telocut_write_test"
+            t.write_text("ok")
+            t.unlink()
+        except OSError as ex:
+            print(f"⚠ 結果の置き場所 {output} に書き込めません（{ex}）。アップロード（サーバー）に置きます")
+            return None
+        if not any(str(p.resolve()).startswith(str(Path(r).resolve())) for r in self.roots):
+            print(f"注意: {output} は素材フォルダの外なので、ブラウザの一覧には出ません")
+        return p
+
+    def outputs(self) -> list:
+        """変換・書き出しの結果を置ける所（ブラウザ・TeloCut の「保存先」）。"""
+        out = []
+        if self.output_dir is not None:
+            r = next((x for x in self.roots_info() if str(self.output_dir).replace("\\", "/").startswith(x["path"].rstrip("/") + "/")
+                      or str(self.output_dir).replace("\\", "/") == x["path"]), None)
+            rel = str(self.output_dir).replace("\\", "/")[len(r["path"]):].strip("/") if r else ""
+            label = (f"{r['name']}" + (f" / {rel}" if rel else "")) if r else str(self.output_dir)
+            out.append({"id": "output", "label": f"{label}（NAS）", "path": str(self.output_dir).replace("\\", "/"),
+                        "drive": r.get("drive", "") if r else "", "unc": r.get("unc", "") if r else "", "rel": rel})
+        out.append({"id": "uploads", "label": "アップロード（サーバー）", "path": str(self.data / "uploads").replace("\\", "/")})
+        return out
+
+    def result_dir(self, dest: str, sub: str) -> Path:
+        """dest: "output"（NAS の出力先）/ "uploads"。出力先が無ければアップロードに。"""
+        base = self.output_dir if dest != "uploads" and self.output_dir is not None else self.data / "uploads"
+        d = base / sub
+        d.mkdir(parents=True, exist_ok=True)
+        return d
 
     # ── 片付け（プロキシの容量・消えた素材のサムネイル / プロキシ）──
     def housekeeping(self, proxy_gb: float = 20.0) -> dict:
@@ -1252,7 +1291,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._bytes(html, "text/html; charset=utf-8", extra={"Cache-Control": "no-cache"})
             if parts[:2] == ["api", "info"]:
                 return self._json({"app": "TeloCut Asset Server", "version": VERSION, "roots": st.roots,
-                                   "scanning": st.scanning})
+                                   "scanning": st.scanning, "outputs": st.outputs()})
             if parts[:2] == ["api", "assets"] and len(parts) == 2:
                 return self._json(st.search(qs.get("q", ""), qs.get("kind", ""), qs.get("tag", ""),
                                             qs.get("fav_user", ""), max(1, min(5000, int(qs.get("limit", 200)))),
@@ -1381,7 +1420,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(st.set_roots_info(body))
             if parts[:2] == ["api", "transcode"] and len(parts) == 2:
                 return self._json(st.transcode_add(body.get("ids", []), body.get("preset", ""), body.get("size", ""),
-                                                   body.get("user", "")))
+                                                   body.get("user", ""), body.get("dest", ""), body.get("sub", "")))
             if parts[:2] == ["api", "transcode"] and len(parts) == 4 and parts[3] == "cancel":
                 return self._json(st.transcode_cancel(parts[2]))
             if parts[:2] == ["api", "shots"] and len(parts) == 2:
@@ -1463,8 +1502,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(roots, data_dir: str, port: int = 8770, rescan_min: int = 10, block: bool = True, proxy_gb: float = 20.0,
-          local_worker: bool = True):
-    store = Store(data_dir, roots, local_worker)
+          local_worker: bool = True, output: str = ""):
+    store = Store(data_dir, roots, local_worker, output)
     Handler.store = store
     ThreadingHTTPServer.daemon_threads = True
     ThreadingHTTPServer.request_queue_size = 128      # 混んでいても接続を受け付ける
@@ -1501,8 +1540,9 @@ def main(argv=None):
     ap.add_argument("--rescan", type=int, default=10, help="再スキャン間隔（分）")
     ap.add_argument("--proxy-gb", type=float, default=20.0, help="ブラウザ用プロキシの容量の上限（GB）")
     ap.add_argument("--no-local-jobs", action="store_true", help="サーバー自身は変換しない（レンダーノードに任せる）")
+    ap.add_argument("--output", default="", help="変換・書き出しの結果を置くフォルダ（NAS の書き込みできる共有など）")
     a = ap.parse_args(argv)
-    serve(a.root, a.data, a.port, a.rescan, proxy_gb=a.proxy_gb, local_worker=not a.no_local_jobs)
+    serve(a.root, a.data, a.port, a.rescan, proxy_gb=a.proxy_gb, local_worker=not a.no_local_jobs, output=a.output)
 
 
 if __name__ == "__main__":

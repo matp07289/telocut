@@ -40,6 +40,12 @@ CREATE TABLE IF NOT EXISTS farm_auto(path TEXT PRIMARY KEY, job_id TEXT, added R
 """
 
 
+def _safe_sub(s: str) -> str:
+    """保存先の中のフォルダ名（1 段・記号を除く）。"""
+    s = "".join(ch for ch in str(s or "") if ch not in '\\/:*?"<>|\x00').replace("..", "").strip(" .")
+    return s[:60]
+
+
 def _new_id() -> str:
     return hashlib.sha1(f"{time.time()}{os.urandom(8)}".encode()).hexdigest()[:12]
 
@@ -74,7 +80,8 @@ class FarmMixin:
         n = max(1, min(64, int(d.get("chunks", 1) or 1), (b - a) // 15 or 1))
         jid = _new_id()
         params = {"a": a, "b": b, "preset": pid, "alpha": bool(d.get("alpha")), "quality": int(d.get("quality", 18)),
-                  "chunks": n, "ext": BY_ID[pid].ext, "fps": float(d.get("fps") or 0)}
+                  "chunks": n, "ext": BY_ID[pid].ext, "fps": float(d.get("fps") or 0), "dest": d.get("dest", ""),
+                  "sub": _safe_sub(d.get("sub", ""))}
         with self.lock:
             self.db.execute("INSERT INTO farm_jobs(id,kind,name,status,priority,created,user,client,params,project) "
                             "VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -94,7 +101,8 @@ class FarmMixin:
         self._farm_wake.set()
         return self.farm_job(jid)
 
-    def farm_add_transcode(self, items: List[dict], preset: str, size: str = "", user: str = "", priority: int = 0) -> list:
+    def farm_add_transcode(self, items: List[dict], preset: str, size: str = "", user: str = "", priority: int = 0,
+                           dest: str = "", sub: str = "") -> list:
         """items: [{"asset_id": サーバーの素材} または {"src_path": 各 PC のパス, "name": 名前, "dst_dir": 保存先}]"""
         from .mediacodecs import BY_ID
         if preset not in BY_ID:
@@ -112,7 +120,7 @@ class FarmMixin:
             jid = _new_id()
             params = {"preset": preset, "size": size or "", "asset_id": it.get("asset_id", ""),
                       "src_path": it.get("src_path", ""), "dst_dir": it.get("dst_dir", ""),
-                      "ext": BY_ID[preset].ext}
+                      "ext": BY_ID[preset].ext, "dest": dest or "", "sub": _safe_sub(sub)}
             with self.lock:
                 self.db.execute("INSERT INTO farm_jobs(id,kind,name,status,priority,created,user,params) VALUES(?,?,?,?,?,?,?,?)",
                                 (jid, "transcode", (name or Path(it.get("src_path", "")).name)[:200], "waiting",
@@ -297,8 +305,12 @@ class FarmMixin:
             if file is not None:
                 params = json.loads(j["params"] or "{}")
                 sub = "書き出し" if j["kind"] == "export" else "変換"
-                d = self.data / "uploads" / sub
-                d.mkdir(parents=True, exist_ok=True)
+                if params.get("sub"):
+                    sub = f"{sub}/{params['sub']}"
+                try:
+                    d = self.result_dir(params.get("dest", ""), sub)
+                except OSError:                                # NAS に書けない → アップロードに
+                    d = self.result_dir("uploads", sub)
                 stem = "".join(ch for ch in j["name"] if ch not in '\\/:*?"<>|').strip() or jid
                 if j["kind"] == "transcode":
                     from .mediacodecs import default_name

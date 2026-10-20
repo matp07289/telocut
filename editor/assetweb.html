@@ -447,16 +447,22 @@ async function tcDialog(ids){ids=(ids||[]).filter(Boolean);if(!ids.length)return
   $('mbox').innerHTML=`<h3 style="margin:0">変換（${ids.length} 件）</h3>
    <label>形式<select id="tc_p">${groups.map(g=>`<optgroup label="${esc(g)}">${p.presets.filter(x=>x.group==g).map(x=>`<option value="${x.id}" ${x.id==last?'selected':''}>${esc(x.label)}${x.note?'（'+esc(x.note)+'）':''}</option>`).join('')}</optgroup>`).join('')}</select></label>
    <label>大きさ<select id="tc_s">${p.sizes.map(x=>`<option value="${x.id}">${esc(x.label)}</option>`).join('')}</select></label>
-   <div class="small dim">変換した物は「アップロード（サーバー）/ 変換」に入ります。「変換」タブで進み具合とダウンロード。</div>
+   <label>保存先<select id="tc_d">${(p.outputs||[]).map(x=>`<option value="${x.id}" ${x.id==LS.get('tcdest','output')?'selected':''}>${esc(x.label)}</option>`).join('')}</select></label>
+   <label>フォルダ名（空なら「変換」の直下）<input id="tc_sub" placeholder="例: 2026-10_案件A" value="${esc(LS.get('tcsub',''))}"></label>
+   <div class="small dim" id="tc_where"></div>
    <div class="row"><button onclick="$('modal').style.display='none'">やめる</button><button class="pri" id="tc_ok">変換する</button></div>`;
   $('modal').style.display='flex';
-  $('tc_ok').onclick=async()=>{LS.set('tcpreset',$('tc_p').value);const r=await post('/api/transcode',{ids,preset:$('tc_p').value,size:$('tc_s').value,user:user()});
+  const where=()=>{const o=(p.outputs||[]).find(x=>x.id==$('tc_d').value);if(!o){$('tc_where').textContent='';return}const sub=$('tc_sub').value.trim();
+    const pth=o.path.replace(/\/$/,'')+'/変換'+(sub?'/'+sub:'');$('tc_where').textContent='置き場所: '+winPath(pth)+'（「変換」タブからダウンロードもできます）'};
+  $('tc_d').onchange=$('tc_sub').oninput=where;where();
+  $('tc_ok').onclick=async()=>{LS.set('tcpreset',$('tc_p').value);LS.set('tcdest',$('tc_d').value);LS.set('tcsub',$('tc_sub').value.trim());
+    const r=await post('/api/transcode',{ids,preset:$('tc_p').value,size:$('tc_s').value,user:user(),dest:$('tc_d').value,sub:$('tc_sub').value.trim()});
     $('modal').style.display='none';toast(`${r.length} 件の変換を受け付けました`);if(r.length)tab(5)}}
 async function tcList(){const j=await api('/api/transcode').catch(()=>[]);const st={waiting:'待ち',running:'変換中',done:'完了',error:'失敗',cancelled:'中止'};
   $('p5c').innerHTML=j.length?'<table><tr><th>素材</th><th>形式</th><th>大きさ</th><th>状態</th><th></th><th>依頼</th></tr>'+j.map(x=>`<tr><td>${esc(x.name)}</td><td>${esc(x.preset_label)}</td><td>${esc(x.size||'元')}</td>
    <td>${x.status=='running'?`<progress max="1" value="${x.progress}"></progress> ${Math.round(x.progress*100)}%`:esc(st[x.status]||x.status)}${x.error?`<div class="small" style="color:#ff8080">${esc(x.error)}</div>`:''}</td>
    <td>${x.status=='done'&&x.out_asset?`<a href="/api/assets/${x.out_asset}/file?dl=1"><button>⇩ ダウンロード</button></a>`:''}${['waiting','running'].includes(x.status)?`<button onclick="tcCancel('${x.id}')">中止</button>`:''}</td>
-   <td class="dim">${esc(x.user||'')} ${hdate(x.created)}</td></tr>`).join('')+'</table>':'<div class="empty">変換はまだありません。素材を選んで「⇄ 変換」</div>';
+   <td class="dim">${esc(x.user||'')} ${hdate(x.created)}${x.out_path?`<div class="small" title="${esc(winPath(x.out_path))}">→ ${esc(winPath(x.out_path))}</div>`:''}</td></tr>`).join('')+'</table>':'<div class="empty">変換はまだありません。素材を選んで「⇄ 変換」</div>';
   if($('p5').classList.contains('on'))setTimeout(tcList,j.some(x=>['waiting','running'].includes(x.status))?1500:6000)}
 async function tcCancel(id){await post(`/api/transcode/${id}/cancel`,{});tcList()}
 function zipSel(){const ids=selIds();if(!ids.length)return;const a=document.createElement('a');a.href='/api/zip?ids='+ids.join(',')+'&name='+encodeURIComponent(S.path?S.path.split('/').pop():'assets');a.download='';document.body.appendChild(a);a.click();a.remove()}

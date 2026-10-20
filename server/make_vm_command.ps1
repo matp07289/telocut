@@ -1,7 +1,8 @@
 ﻿# VM（Rocky Linux / Ubuntu）に Tera Term などで SSH ログインした後、貼り付け 1 回で TeloCut アセットサーバーを入れるための準備。
 #
 #   NFS でつなぐ（おすすめ・パスワード不要）＋ NFS で公開していない共有は SMB で:
-#     powershell -ExecutionPolicy Bypass -File server\make_vm_command.ps1 -NasHost 192.168.0.10 -Nfs ES_General,ES_Edit -Smb ES_Render -NasUser edit
+#     powershell -ExecutionPolicy Bypass -File server\make_vm_command.ps1 -NasHost 192.168.0.10 -Nfs ES_General,ES_Edit -Smb ES_Render -NasUser edit -Output ES_Render
+#   -Output: 変換・書き出しの結果を置く共有（その共有だけ書き込みできるようにつなぐ。中の TeloCut フォルダに置く）
 #   SMB だけ（旧形式）:
 #     powershell -ExecutionPolicy Bypass -File server\make_vm_command.ps1 -Nas //192.168.0.10/ES_General -NasUser edit
 #
@@ -19,6 +20,7 @@ param(
     [string]$Drive = "",                  # 旧形式: その共有のドライブ（自動で調べるので通常は不要）
     [int]$Port = 8770,
     [switch]$RenderNode,
+    [string]$Output = "",                 # 結果を置く共有の名前（例 ES_Render）
     [string]$Git = "",                    # VM が取得する Git のリポジトリ（省略時はこのリポジトリの origin）
     [switch]$ViaNas                       # Git を使わず、NAS にファイルを置いて渡す（以前の方式）
 )
@@ -81,8 +83,8 @@ if (-not $ViaNas -and $Git) {
     $cmd = $pre +
            '(sudo dnf -y -q install git >/dev/null 2>&1 || sudo apt-get -y -qq install git >/dev/null) && ' +
            '(if [ -d ~/telocut-src/.git ]; then git -C ~/telocut-src pull -q --ff-only; else rm -rf ~/telocut-src && git clone -q __GIT__ ~/telocut-src; fi) && ' +
-           'sudo env SHARES=''__SHARES__'' NAS_USER=''__NASUSER__'' NAS_PASS="$NP" PORT=__PORT__ RENDER_NODE=__RN__ PATH_FROM=''__PF__'' bash ~/telocut-src/server/setup_linux.sh'
-    $cmd = $cmd.Replace("__GIT__", $Git).Replace("__USER__", $user).Replace("__SHARES__", ($entries -join ";")).
+           'sudo env SHARES=''__SHARES__'' NAS_USER=''__NASUSER__'' NAS_PASS="$NP" PORT=__PORT__ RENDER_NODE=__RN__ PATH_FROM=''__PF__'' OUTPUT_SHARE=''__OUT__'' bash ~/telocut-src/server/setup_linux.sh'
+    $cmd = $cmd.Replace("__OUT__", $Output).Replace("__GIT__", $Git).Replace("__USER__", $user).Replace("__SHARES__", ($entries -join ";")).
                 Replace("__NASUSER__", $NasUser).Replace("__PORT__", "$Port").Replace("__RN__", "$([int][bool]$RenderNode)").
                 Replace("__PF__", ($pathFrom -join ";"))
     Set-Clipboard -Value $cmd
@@ -148,8 +150,8 @@ $cmd = $pre +
        'rm -rf ~/telocut-src && mkdir -p ~/telocut-src && tar --warning=no-unknown-keyword -xzf /mnt/telocut_tmp/TeloCutServer/telocut_server.tgz -C ~/telocut-src; ' +
        'sudo umount /mnt/telocut_tmp; ' +
        'sed -i ''s/\r$//'' ~/telocut-src/server/setup_linux.sh && ' +
-       'sudo env SHARES=''__SHARES__'' NAS_USER=''__NASUSER__'' NAS_PASS="$NP" PORT=__PORT__ RENDER_NODE=__RN__ PATH_FROM=''__PF__'' bash ~/telocut-src/server/setup_linux.sh'
-$cmd = $cmd.Replace("__FIRSTSRC__", $first.Src).Replace("__USER__", $user).Replace("__SHARES__", ($entries -join ";")).
+       'sudo env SHARES=''__SHARES__'' NAS_USER=''__NASUSER__'' NAS_PASS="$NP" PORT=__PORT__ RENDER_NODE=__RN__ PATH_FROM=''__PF__'' OUTPUT_SHARE=''__OUT__'' bash ~/telocut-src/server/setup_linux.sh'
+$cmd = $cmd.Replace("__OUT__", $Output).Replace("__FIRSTSRC__", $first.Src).Replace("__USER__", $user).Replace("__SHARES__", ($entries -join ";")).
             Replace("__NASUSER__", $NasUser).Replace("__PORT__", "$Port").Replace("__RN__", "$([int][bool]$RenderNode)").
             Replace("__PF__", ($pathFrom -join ";"))
 

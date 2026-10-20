@@ -12,6 +12,8 @@
 #   PORT        既定 8770
 #   RENDER_NODE 1 ならこの VM をレンダーノードにもする
 #   PATH_FROM   レンダーノード用: 編集 PC のパス → VM のパス（; 区切り。「元=先」、= が無ければ先は最初の共有）
+#   OUTPUT_SHARE 変換・書き出しの結果を置く共有の名前（例 ES_Render）。その共有だけ書き込みできるようにつなぐ
+#   OUTPUT_DIR   結果を置くフォルダ（既定 /mnt/telocut/<OUTPUT_SHARE>/TeloCut）
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,8 +29,11 @@ fi
 # 前回の設定（共有・ポートなど）。何も指定せずに実行したら前回と同じ設定で更新する
 CONF=/etc/telocut/setup.env
 if [ -z "${SHARES:-}${NAS_SHARE:-}" ] && [ -f "$CONF" ]; then
+  _OS="${OUTPUT_SHARE:-}"; _OD="${OUTPUT_DIR:-}"
   # shellcheck disable=SC1090
   . "$CONF"
+  [ -n "$_OS" ] && OUTPUT_SHARE="$_OS"            # 今回指定した出力先を優先
+  [ -n "$_OD" ] && OUTPUT_DIR="$_OD"
   echo "== 前回の設定で更新します（$CONF）"
 fi
 . /etc/os-release
@@ -56,6 +61,7 @@ if [ -z "${SHARES:-}" ] && [ -n "${NAS_SHARE:-}" ]; then
 fi
 ROOTS=""
 FIRST_MP=""
+OUTPUT_ARG=""
 if [ -n "${SHARES:-}" ]; then
   # 入れ直しのとき: 動いているサービスが NAS を使っているので、止めてからつなぎ直す
   systemctl stop telocut-node.service telocut-asset.service 2>/dev/null || true
@@ -80,11 +86,16 @@ if [ -n "${SHARES:-}" ]; then
   IFS=';' read -ra ENTRIES <<< "$SHARES"
   for ent in "${ENTRIES[@]}"; do
     [ -z "$ent" ] && continue
-    IFS='|' read -r TYP SRCP MP <<< "$ent"
+    IFS='|' read -r TYP SRCP MP RWF <<< "$ent"
+    # 出力先の共有だけ書き込みできるように（ほかは読み取り専用のまま。素材を消してしまわないように）
+    RW=0
+    if [ "${RWF:-}" = "rw" ] || { [ -n "${OUTPUT_SHARE:-}" ] && [ "$(basename "$MP")" = "$OUTPUT_SHARE" ]; }; then RW=1; fi
     mkdir -p "$MP"
     sed -i "\# $MP #d" /etc/fstab
     if [ "$TYP" = "nfs" ]; then
-      echo "$SRCP $MP nfs ro,_netdev,nofail,soft,timeo=150,retrans=3 0 0" >> /etc/fstab
+      echo "$SRCP $MP nfs $([ $RW = 1 ] && echo rw || echo ro),_netdev,nofail,soft,timeo=150,retrans=3 0 0" >> /etc/fstab
+    elif [ $RW = 1 ]; then
+      echo "$SRCP $MP cifs credentials=$CRED,iocharset=utf8,rw,_netdev,nofail,vers=3.0,uid=$(id -u telocut),gid=$(id -g telocut),file_mode=0664,dir_mode=0775 0 0" >> /etc/fstab
     else
       echo "$SRCP $MP cifs credentials=$CRED,iocharset=utf8,ro,_netdev,nofail,vers=3.0,file_mode=0644,dir_mode=0755 0 0" >> /etc/fstab
     fi
@@ -98,7 +109,18 @@ if [ -n "${SHARES:-}" ]; then
       mount "$MP" || { echo "NAS をマウントできませんでした: $SRCP（共有名 / NFS の公開設定 / ユーザー・パスワードを確認）"; exit 1; }
     fi
     # サーバーを動かすユーザー（telocut）から読めるか（NFS は NAS 側の権限がそのまま効く）
-    if su -s /bin/sh telocut -c "ls '$MP' >/dev/null 2>&1"; then
+    if [ $RW = 1 ]; then
+      OUTPUT_DIR="${OUTPUT_DIR:-$MP/TeloCut}"
+      mkdir -p "$OUTPUT_DIR" 2>/dev/null || true
+      chown telocut: "$OUTPUT_DIR" 2>/dev/null || true
+      if su -s /bin/sh telocut -c "touch '$OUTPUT_DIR/.telocut_write_test' && rm -f '$OUTPUT_DIR/.telocut_write_test'" 2>/dev/null; then
+        echo "   $SRCP → $MP（書き込み可・$TYP）結果の置き場所: $OUTPUT_DIR"
+        OUTPUT_ARG="--output $OUTPUT_DIR"
+      else
+        echo "   ⚠ $MP に書き込めません。NAS のその共有で、ユーザー「${NAS_USER:-guest}」に書き込み権限を付けてください"
+        echo "     （NFS の場合は Mapall User に書き込める人を）。結果はひとまず VM の中に置きます"
+      fi
+    elif su -s /bin/sh telocut -c "ls '$MP' >/dev/null 2>&1"; then
       echo "   $SRCP → $MP（読み取り専用・$TYP）"
     else
       echo "   ⚠ $MP はつながりましたが、サーバー用ユーザーから読めません。"
@@ -156,7 +178,7 @@ User=telocut
 WorkingDirectory=$APP
 Environment=TELOCUT_HOME=$DATA/home
 Environment=PYTHONUNBUFFERED=1
-ExecStart=$APP/venv/bin/python -m editor.assetserver $ROOTS --data $DATA --port $PORT
+ExecStart=$APP/venv/bin/python -m editor.assetserver $ROOTS --data $DATA --port $PORT $OUTPUT_ARG
 Restart=always
 RestartSec=5
 # メモリを使いすぎたときは、VM 全体ではなくこのサービスだけが抑えられ / 再起動されるように
@@ -214,6 +236,8 @@ mkdir -p /etc/telocut
   printf "PORT=%q\n" "$PORT"
   printf "RENDER_NODE=%q\n" "${RENDER_NODE:-0}"
   printf "PATH_FROM=%q\n" "${PATH_FROM:-}"
+  printf "OUTPUT_SHARE=%q\n" "${OUTPUT_SHARE:-}"
+  printf "OUTPUT_DIR=%q\n" "${OUTPUT_DIR:-}"
 } > "$CONF"
 chmod 600 "$CONF"
 
