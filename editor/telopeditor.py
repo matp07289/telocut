@@ -158,6 +158,18 @@ class TelopEditor(QWidget):
         m.addAction("重なりを直す（前のテロップを次の開始で切る）", self.fix_overlaps)
         m.addAction("読みやすさチェック（速すぎるテロップを選択）", self.select_fast)
         m.addSeparator()
+        for lab, fn in (("位置（9 か所）...", self.mw.telop_position_dialog),
+                        ("選んだテロップの見た目を一括適用...", self.mw.apply_style_to_all),
+                        ("話者ごとに色分け", self.mw.telop_speaker_colors),
+                        ("表記統一辞書...", self.mw.telop_dict_dialog),
+                        ("テキストから一括配置...", self.mw.telops_from_text_dialog),
+                        ("文字数で長さを調整", self.mw.telop_auto_length),
+                        ("まとめてずらす...", self.mw.telop_shift_dialog),
+                        ("音声（セリフ）に合わせる", self.mw.telop_fit_audio),
+                        ("マーカーからテロップ", self.mw.markers_to_telops),
+                        ("テロップの位置にマーカー", self.mw.telops_to_markers)):
+            m.addAction(lab, fn)
+        m.addSeparator()
         m.addAction("テロップを読み込み（.dtproj / SRT / CSV）...", self.mw.import_telops)
         ex = m.addMenu("書き出し")
         ex.addAction("SRT...", lambda: self.export("srt"))

@@ -64,6 +64,7 @@ class AppSettings:
     plugin_dir: str = ""               # 追加のエフェクトプラグインのフォルダ（<設定フォルダ>/plugins も読む）
     fx_mode_default: str = "stack"     # 新しくエフェクトを付けるときの管理方法（stack = レイヤー / nodes = ノード）
     mmd_exe: str = ""                  # MikuMikuDance.exe の場所（空なら自動で探す）
+    telop_dict: List[list] = field(default_factory=list)      # 表記統一辞書 [[元, 直す形], ...]
     asset_recent: List[dict] = field(default_factory=list)          # アセットから最近取り込んだ素材
     asset_saved_searches: List[dict] = field(default_factory=list)  # 保存した検索 {name, params}
 

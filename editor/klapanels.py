@@ -22,7 +22,7 @@ from .settings import SETTINGS
 
 # エフェクトプリセットとして保存するプロパティ（テキスト本文や長さは保存しない）
 PRESET_KEYS = ("opacity", "scale", "pos_x", "pos_y", "rotation", "fade_in", "fade_out", "effects", "crop",
-               "chroma", "anim", "style", "text_anim", "type_speed", "karaoke", "volume_db", "pan", "label")
+               "chroma", "anim", "style", "text_anim", "text_anim_out", "type_speed", "karaoke", "volume_db", "pan", "label")
 
 
 # ─────────────────────────────────────────────
@@ -337,6 +337,17 @@ class PresetPanel(QWidget):
         row.addWidget(self.anim_combo, 1)
         row.addWidget(ab)
         v.addLayout(row)
+        from .youtube import TEXT_OUT_ANIMS
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("退場アニメ"))
+        self.anim_out_combo = QComboBox()
+        for lab, k in TEXT_OUT_ANIMS:
+            self.anim_out_combo.addItem(lab, k)
+        ab2 = QPushButton("適用")
+        ab2.clicked.connect(self.apply_text_anim_out)
+        row2.addWidget(self.anim_out_combo, 1)
+        row2.addWidget(ab2)
+        v.addLayout(row2)
         v.addWidget(QLabel("ダブルクリックで選択テロップに適用（本文はそのまま）"))
         return w
 
@@ -348,6 +359,10 @@ class PresetPanel(QWidget):
     def apply_text_anim(self):
         k = self.anim_combo.currentData()
         self._apply("文字アニメ", lambda c: c.props.__setitem__("text_anim", k), kinds=("text",))
+
+    def apply_text_anim_out(self):
+        k = self.anim_out_combo.currentData()
+        self._apply("退場アニメ", lambda c: c.props.__setitem__("text_anim_out", k), kinds=("text",))
 
     # ── スケール / 動き ──
     def _motion_tab(self) -> QWidget:

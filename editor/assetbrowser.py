@@ -472,6 +472,18 @@ class ServerBrowser(QWidget):
         self.comment.editingFinished.connect(lambda: self.set_meta(comment=self.comment.text()))
         f.addRow("メモ", self.comment)
         v.addLayout(f)
+        # タイムコード付きコメント（Web の画面と共有。ダブルクリックでその位置へ）
+        self.notes = QListWidget()
+        self.notes.setMaximumHeight(90)
+        self.notes.setToolTip("タイムコード付きコメント（ブラウザの画面と共有）。ダブルクリックでその位置へ")
+        self.notes.itemDoubleClicked.connect(lambda it: self.player.setPosition(int(it.data(Qt.ItemDataRole.UserRole) * 1000)))
+        self.notes.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.notes.customContextMenuRequested.connect(self._note_menu)
+        v.addWidget(self.notes)
+        self.note_in = QLineEdit()
+        self.note_in.setPlaceholderText("今の位置にコメント（Enter）")
+        self.note_in.returnPressed.connect(self.add_note)
+        v.addWidget(self.note_in)
         br = QHBoxLayout()
         for txt, tip, fn in (("取り込む", "ビンに取り込む（Enter）", lambda: self.import_selected()),
                              ("配置", "取り込んで再生ヘッドに配置", lambda: self.import_selected(place=True)),
@@ -516,6 +528,25 @@ class ServerBrowser(QWidget):
         self.roots = [r.replace("\\", "/").rstrip("/") for r in res.get("roots") or []]
         self.panel._server_roots = self.roots
         self.reload()
+        self.share_drives()
+
+    def share_drives(self):
+        """この PC のドライブ割り当て（Z: = \\\\NAS\\共有）をサーバーに送る。ブラウザの画面がその名前で表示する。"""
+        roots, url = list(self.roots), self.server()
+        if not roots or not url:
+            return
+
+        def work():
+            from .rendercluster import _req
+            m = {}
+            for r in roots:
+                d = drive_for_root(r)
+                if d:
+                    m[r] = {"drive": d, "unc": _drives().get(d, "")}
+            if m:
+                _req(url + "/api/roots", m)
+            return bool(m)
+        self.f.run(("br_done", False), work)
 
     def on_stats(self, s):
         busy = "　読み取り中…" if s.get("scanning") or s.get("indexing") else ""
@@ -880,9 +911,12 @@ class ServerBrowser(QWidget):
         self.wave.set_peaks([])
         self.wave.setVisible(False)
         self.psd_btn.setVisible(False)
+        self.notes.clear()
         if not r:
             return
         url = self.server()
+        if r.get("id"):
+            self.f.run(("br_notes", r["id"]), _get, f"{url}/api/assets/{r['id']}/notes", 20)
         local = r.get("local") or to_local(r["path"], self.roots)
         self._fill_meta(r)
         info = [f"<b>{r['name']}</b>", KIND_JP.get(r["kind"], r["kind"])]
@@ -951,6 +985,44 @@ class ServerBrowser(QWidget):
             extra.append(f"{m['image']['format']} {m['image']['mode']}")
         if extra:
             self.info.setText(self._info_base + "<br><span style='color:#aaa'>" + "<br>".join(extra) + "</span>")
+
+    def on_notes(self, aid, notes):
+        if not self._cur or self._cur.get("id") != aid:
+            return
+        self.notes.clear()
+        for n in notes or []:
+            t = float(n.get("t") or 0)
+            it = QListWidgetItem(f"{int(t // 60):02d}:{t % 60:05.2f}  {n.get('user') or '名無し'}: {n.get('text', '')}")
+            it.setData(Qt.ItemDataRole.UserRole, t)
+            it.setData(Qt.ItemDataRole.UserRole + 1, n.get("id"))
+            self.notes.addItem(it)
+
+    def add_note(self):
+        r = self._cur
+        text = self.note_in.text().strip()
+        if not r or not r.get("id") or not text:
+            return
+        from .rendercluster import _req
+        url, aid = self.server(), r["id"]
+        t = self.player.position() / 1000.0 if r["kind"] in ("video", "audio") else 0.0
+        user = SETTINGS.user_name
+        self.note_in.clear()
+        self.f.run(("br_notes", aid), lambda: (_req(f"{url}/api/assets/{aid}/notes", {"t": t, "user": user, "text": text}),
+                                               _get(f"{url}/api/assets/{aid}/notes", 20))[1])
+
+    def _note_menu(self, pos):
+        it = self.notes.itemAt(pos)
+        if not it or not self._cur:
+            return
+        m = QMenu(self)
+        m.addAction("削除", lambda: self._delete_note(it.data(Qt.ItemDataRole.UserRole + 1)))
+        m.exec(self.notes.mapToGlobal(pos))
+
+    def _delete_note(self, nid):
+        from .rendercluster import _req
+        url, aid = self.server(), self._cur["id"]
+        self.f.run(("br_notes", aid), lambda: (_req(f"{url}/api/notes/{nid}", None, method="DELETE"),
+                                               _get(f"{url}/api/assets/{aid}/notes", 20))[1])
 
     def on_wave(self, aid, peaks):
         if self._cur and self._cur.get("id") == aid and peaks:

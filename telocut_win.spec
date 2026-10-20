@@ -19,7 +19,7 @@ from PyInstaller.utils.hooks import collect_submodules  # noqa: E402
 ICON = os.path.abspath(os.path.join('editor', 'telocut.ico'))
 make_ico(ICON)
 
-VERSION = '0.7.0'
+VERSION = '0.8.0'
 VERSION_FILE = os.path.abspath(os.path.join('editor', 'version_info.txt'))
 _v = tuple(int(x) for x in VERSION.split('.')) + (0,)
 with open(VERSION_FILE, 'w', encoding='utf-8') as f:
@@ -44,7 +44,7 @@ a = Analysis(
     ['telocut.py'],
     pathex=['.'],
     binaries=[],
-    datas=[(ICON, '.')],
+    datas=[(ICON, '.'), (os.path.join('editor', 'assetweb.html'), 'editor')],
     hiddenimports=[
         *collect_submodules('editor'), 'core.telocut_link', 'core.voicevox', 'core.transcribe',
         'psd_tools', 'psd_tools.api', 'psd_tools.constants', 'editor', 'editor.mainwindow', 'editor.model', 'editor.media', 'editor.render',

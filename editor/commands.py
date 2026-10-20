@@ -190,13 +190,49 @@ COMMANDS = [
     ("mmd_render", "MMD のモデルとモーションを Blender でレンダリング", "3D・MMD", "MMD▶"),
     ("mmd_tools_install", "Blender に MMD Tools を入れる", "3D・MMD", "MMDT"),
     ("reload_plugins", "エフェクトプラグインを再読み込み", "AI・連携", "Plug↻"),
+    # ── テロップ ──
+    ("telop_pos", "テロップの位置（9 か所から選ぶ）", "テロップ", "位置"),
+    ("telop_style_all", "選んだテロップの見た目を一括適用", "テロップ", "一括"),
+    ("telop_dict", "表記統一辞書（一括置換）", "テロップ", "辞書"),
+    ("telop_from_text", "テキストからテロップを一括配置", "テロップ", "流込"),
+    ("telop_auto_len", "テロップの長さを文字数で調整", "テロップ", "長さ"),
+    ("telop_shift", "テロップをまとめてずらす", "テロップ", "ずら"),
+    ("telop_fit_audio", "テロップを音声（セリフ）に合わせる", "テロップ", "音合"),
+    ("telop_speaker_colors", "話者ごとにテロップの色を分ける", "テロップ", "話色"),
+    ("markers_to_telops", "マーカーからテロップを作る", "テロップ", "M→T"),
+    ("telops_to_markers", "テロップの位置にマーカー", "テロップ", "T→M"),
+    # ── 整理・チェック ──
+    ("marker_panel", "マーカー一覧を表示", "整理・チェック", "◆一覧"),
+    ("split_at_markers", "マーカーの位置ですべて分割", "整理・チェック", "◆分割"),
+    ("next_gap", "次の隙間（黒）へ", "整理・チェック", "隙→"),
+    ("prev_gap", "前の隙間（黒）へ", "整理・チェック", "←隙"),
+    ("fill_gaps", "隙間を黒で埋める", "整理・チェック", "黒埋"),
+    ("preflight", "書き出し前チェック", "整理・チェック", "✓"),
+    ("fit_frame", "画面にフィット", "整理・チェック", "Fit"),
+    ("fill_frame", "画面を埋める（フィル）", "整理・チェック", "Fill"),
+    ("pip", "ピクチャー・イン・ピクチャー", "整理・チェック", "PiP"),
+    ("ken_burns", "ケン・バーンズ（ゆっくりズーム）", "整理・チェック", "KB"),
+    ("snapshot", "シーケンスのスナップショットを保存", "整理・チェック", "版"),
+    ("unused_media", "未使用の素材を整理", "整理・チェック", "未使"),
+    ("media_list", "使用素材リスト（CSV）を書き出し", "整理・チェック", "素材表"),
+    ("edit_list", "編集リスト（テキスト）を書き出し", "整理・チェック", "編集表"),
+    ("space_clips", "選んだクリップの間隔をそろえる", "整理・チェック", "間隔"),
+    ("move_to_playhead", "選んだクリップを再生ヘッドへ移動", "整理・チェック", "→▼"),
+    ("select_same_media", "同じ素材のクリップをすべて選択", "整理・チェック", "同素"),
+    ("select_video_only", "選択を映像だけにする", "整理・チェック", "V選"),
+    ("select_audio_only", "選択を音声だけにする", "整理・チェック", "A選"),
+    ("replace_media", "素材の差し替え（使っている所すべて）", "整理・チェック", "差替"),
+    ("seq_stats", "シーケンス情報（長さ・カット数・文字数）", "整理・チェック", "情報"),
+    ("in_out_to_seq", "IN〜OUT を新しいシーケンスに", "整理・チェック", "IO→S"),
 ]
 
 # 後から追加したコマンドの既定キー（プリセットの他のキーと重ならなければ割り当てる）
 NEW_COMMAND_KEYS = {"command_palette": ["Ctrl+Shift+P"], "drag_zoom": ["Ctrl+Alt+Z"],
                     "script_gen": ["Ctrl+Alt+Y"], "ai_assist": ["Ctrl+Alt+C"],
                     "telop_editor": ["Ctrl+Shift+T"], "voice_panel": ["Ctrl+Shift+Y"],
-                    "node_editor": ["Ctrl+Shift+N"]}
+                    "node_editor": ["Ctrl+Shift+N"], "preflight": ["Ctrl+Alt+K"],
+                    "next_gap": ["Ctrl+Alt+Right"], "prev_gap": ["Ctrl+Alt+Left"],
+                    "marker_panel": ["Ctrl+Alt+M"], "snapshot": ["Ctrl+Alt+S"]}
 
 COMMAND_INFO = OrderedDict((c[0], c) for c in COMMANDS)
 CATEGORIES = list(OrderedDict.fromkeys(c[2] for c in COMMANDS))

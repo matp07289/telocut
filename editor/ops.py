@@ -97,7 +97,7 @@ def apply_ops(mw, ops: List[dict], label: str = "AI の編集") -> List[str]:
                     t = _text_track(seq, a, b, op.get("track"))
                     c = M.Clip(M.new_id(), "text", a, b - a, name="テロップ",
                                props={"text": str(op.get("text", "")), "style": dict(op.get("style") or {})})
-                    for k in ("text_anim", "karaoke"):
+                    for k in ("text_anim", "text_anim_out", "karaoke"):
                         if op.get(k):
                             c.props[k] = op[k]
                     M.place_clips(seq, [(t, c)])

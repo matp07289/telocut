@@ -96,6 +96,7 @@ class Store:
         (self.data / "thumbs").mkdir(exist_ok=True)
         (self.data / "uploads").mkdir(exist_ok=True)
         (self.data / "segments").mkdir(exist_ok=True)
+        (self.data / "proxies").mkdir(exist_ok=True)
         self.roots = [str(Path(r)) for r in roots] + [str(self.data / "uploads")]
         self.lock = threading.RLock()
         self.db = sqlite3.connect(str(self.data / "assets.db"), check_same_thread=False)
@@ -115,6 +116,9 @@ class Store:
                 created REAL, sort INT DEFAULT 0);
             CREATE TABLE IF NOT EXISTS vfolder_items(folder_id TEXT, asset_id TEXT, added REAL,
                 PRIMARY KEY(folder_id, asset_id));
+            CREATE TABLE IF NOT EXISTS notes(id TEXT PRIMARY KEY, asset_id TEXT, t REAL, user TEXT, text TEXT,
+                created REAL);
+            CREATE INDEX IF NOT EXISTS notes_asset ON notes(asset_id);
             """)
             cols = [r[1] for r in self.db.execute("PRAGMA table_info(assets)").fetchall()]
             if "label" not in cols:
@@ -130,6 +134,8 @@ class Store:
         self.scanning = False
         self.last_scan = 0.0
         self._indexing: set = set()
+        self._proxy_sem = threading.Semaphore(1)        # ブラウザ用プロキシは 1 本ずつ（VM の CPU・メモリを守る）
+        self._proxy_state: dict = {}                    # id → {"status": making/ready/error, "progress": 0〜1}
 
     # ── 素材 ─────────────────────────────────
     @staticmethod
@@ -445,6 +451,209 @@ class Store:
                 "total": sum(v[0] for v in kinds.values()), "total_size": sum(v[1] for v in kinds.values()),
                 "scanning": self.scanning, "last_scan": self.last_scan, "indexing": len(self._indexing),
                 "roots": self.roots}
+
+    # ── 素材フォルダの情報（Windows のドライブ・ネットワークパス）──
+    def roots_info(self) -> list:
+        """素材フォルダごとの {path, name, unc, drive}。
+        unc は /proc/mounts の接続元から（CIFS: //NAS/共有 → \\\\NAS\\共有、NFS: NAS:/…/共有 → \\\\NAS\\共有）。
+        drive は TeloCut（各 PC）が教えてくれたドライブ文字（roots.json）。"""
+        mounts = {}
+        try:
+            for line in open("/proc/mounts", encoding="utf-8", errors="replace"):
+                f = line.split()
+                if len(f) >= 3:
+                    mounts[f[1].replace("\\040", " ")] = (f[0].replace("\\040", " "), f[2])
+        except OSError:
+            pass
+        saved = self._roots_saved()
+        out = []
+        for r in self.roots:
+            rr = r.replace("\\", "/")
+            unc = ""
+            src = mounts.get(rr)
+            if src:
+                dev, typ = src
+                if typ.startswith("cifs") or typ.startswith("smb"):
+                    unc = "\\\\" + dev.lstrip("/").replace("/", "\\")
+                elif typ.startswith("nfs") and ":" in dev:
+                    host, path = dev.split(":", 1)
+                    unc = f"\\\\{host}\\{path.rstrip('/').rsplit('/', 1)[-1]}"
+            sv = saved.get(rr, {})
+            is_up = rr == str(self.data / "uploads").replace("\\", "/")
+            out.append({"path": rr, "name": "アップロード（サーバー）" if is_up else (Path(r).name or r),
+                        "unc": sv.get("unc") or unc, "drive": sv.get("drive", ""), "uploads": is_up})
+        return out
+
+    def _roots_saved(self) -> dict:
+        try:
+            return json.loads((self.data / "roots.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def set_roots_info(self, d: dict) -> list:
+        """{サーバーのパス: {"drive": "Z:", "unc": "\\\\NAS\\共有"}}（TeloCut が分かったときに送ってくる）"""
+        saved = self._roots_saved()
+        known = {r.replace("\\", "/") for r in self.roots}
+        for k, v in (d or {}).items():
+            k = k.replace("\\", "/")
+            if k in known and isinstance(v, dict):
+                cur = saved.setdefault(k, {})
+                for f in ("drive", "unc"):
+                    if v.get(f):
+                        cur[f] = str(v[f])[:200]
+        (self.data / "roots.json").write_text(json.dumps(saved, ensure_ascii=False, indent=1), encoding="utf-8")
+        return self.roots_info()
+
+    # ── タイムコード付きコメント（レビュー用）──
+    def notes(self, asset_id: str) -> list:
+        with self.lock:
+            return [dict(r) for r in self.db.execute("SELECT * FROM notes WHERE asset_id=? ORDER BY t, created",
+                                                     (asset_id,)).fetchall()]
+
+    def add_note(self, asset_id: str, t: float, user: str, text: str) -> dict:
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("コメントが空です")
+        n = {"id": hashlib.md5(f"{asset_id}{time.time()}{text}".encode()).hexdigest()[:12], "asset_id": asset_id,
+             "t": max(0.0, float(t or 0)), "user": (user or "")[:40], "text": text[:2000], "created": time.time()}
+        with self.lock:
+            self.db.execute("INSERT INTO notes VALUES(:id,:asset_id,:t,:user,:text,:created)", n)
+            self.db.commit()
+        return n
+
+    def delete_note(self, nid: str) -> dict:
+        with self.lock:
+            self.db.execute("DELETE FROM notes WHERE id=?", (nid,))
+            self.db.commit()
+        return {"ok": True}
+
+    def note_counts(self, ids) -> dict:
+        ids = list(ids)
+        if not ids:
+            return {}
+        with self.lock:
+            q = ",".join("?" * len(ids))
+            return {r[0]: r[1] for r in self.db.execute(
+                f"SELECT asset_id, COUNT(*) FROM notes WHERE asset_id IN ({q}) GROUP BY asset_id", ids)}
+
+    # ── まとめて変更 ──
+    def bulk_update(self, ids, d: dict) -> dict:
+        """複数の素材の評価・ラベル・タグ（追加 / 削除）をまとめて変える。"""
+        n = 0
+        for i in ids or []:
+            a = self.get(i)
+            if not a:
+                continue
+            ch = {k: d[k] for k in ("rating", "label") if k in d}
+            if d.get("tags_add") or d.get("tags_remove"):
+                tags = [t for t in a.get("tags") or [] if t not in (d.get("tags_remove") or [])]
+                for t in d.get("tags_add") or []:
+                    if t and t not in tags:
+                        tags.append(t)
+                ch["tags"] = tags
+            if ch:
+                self.update(i, ch)
+                n += 1
+        return {"updated": n}
+
+    # ── ブラウザで再生できない素材のプロキシ（H.264 / AAC の MP4）──
+    BROWSER_VIDEO = {"h264", "vp8", "vp9", "av1"}
+    BROWSER_AUDIO_EXT = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus", ".webm"}
+
+    def playable(self, a: dict, meta: Optional[dict] = None) -> bool:
+        ext = Path(a["path"]).suffix.lower()
+        if a["kind"] == "audio":
+            return ext in self.BROWSER_AUDIO_EXT
+        if a["kind"] != "video":
+            return False
+        if ext not in (".mp4", ".m4v", ".mov", ".webm", ".mkv"):
+            return False
+        m = meta if meta is not None else self.meta(a["id"])
+        return (m.get("video") or {}).get("codec") in self.BROWSER_VIDEO and \
+            (m.get("video") or {}).get("pix_fmt", "yuv420p") in ("yuv420p", "yuvj420p", "nv12")
+
+    def proxy_path(self, i: str, audio_only: bool) -> Path:
+        return self.data / "proxies" / f"{i}.{'m4a' if audio_only else 'mp4'}"
+
+    def proxy(self, i: str, start: bool = True) -> dict:
+        """プロキシの状態。無ければ作り始める（start=True）。"""
+        a = self.get(i)
+        if not a or a["kind"] not in ("video", "audio"):
+            return {"status": "none"}
+        p = self.proxy_path(i, a["kind"] == "audio")
+        if p.exists() and p.stat().st_mtime >= (a.get("mtime") or 0):
+            return {"status": "ready", "url": f"/api/assets/{i}/proxyfile"}
+        st = self._proxy_state.get(i)
+        if st and st["status"] in ("making", "waiting"):
+            return st
+        if st and st["status"] == "error" and not start:
+            return st
+        if not start:
+            return {"status": "none"}
+        self._proxy_state[i] = {"status": "waiting", "progress": 0.0}
+        threading.Thread(target=self._make_proxy, args=(a, p), daemon=True).start()
+        return self._proxy_state[i]
+
+    def _make_proxy(self, a: dict, p: Path):
+        import av
+        i = a["id"]
+        tmp = p.with_suffix(".part" + p.suffix)
+        with self._proxy_sem:
+            self._proxy_state[i] = {"status": "making", "progress": 0.0}
+            try:
+                try:
+                    os.nice(5)
+                except (AttributeError, OSError):
+                    pass
+                dur = float(a.get("duration") or 0) or 1.0
+                with av.open(a["path"]) as src, av.open(str(tmp), "w", format="mp4",
+                                                         options={"movflags": "+faststart"}) as dst:
+                    vin = src.streams.video[0] if src.streams.video and a["kind"] == "video" else None
+                    ain = src.streams.audio[0] if src.streams.audio else None
+                    vout = aout = None
+                    if vin is not None:
+                        w0 = vin.codec_context.width or 1280
+                        h0 = vin.codec_context.height or 720
+                        w = min(960, w0) // 2 * 2
+                        h = max(2, int(round(h0 * w / max(1, w0))) // 2 * 2)
+                        rate = vin.average_rate or vin.guessed_rate or 30
+                        vout = dst.add_stream("libx264", rate=rate)
+                        vout.width, vout.height, vout.pix_fmt = w, h, "yuv420p"
+                        vout.options = {"preset": "veryfast", "crf": "26"}
+                        vin.thread_type = "AUTO"
+                    if ain is not None:
+                        aout = dst.add_stream("aac", rate=48000)
+                        aout.layout = "stereo"
+                        res = av.AudioResampler(format="fltp", layout="stereo", rate=48000)
+                    streams = [s_ for s_ in (vin, ain) if s_ is not None]
+                    last = 0.0
+                    for pkt in src.demux(*streams):
+                        for fr in pkt.decode():
+                            if pkt.stream is vin:
+                                fr = fr.reformat(width=vout.width, height=vout.height, format="yuv420p")
+                                fr.pts = None
+                                for op in vout.encode(fr):
+                                    dst.mux(op)
+                            else:
+                                for rf in res.resample(fr):
+                                    rf.pts = None
+                                    for op in aout.encode(rf):
+                                        dst.mux(op)
+                            if fr.time is not None and fr.time - last > 1:
+                                last = fr.time
+                                self._proxy_state[i]["progress"] = min(0.99, fr.time / dur)
+                    for o in (vout, aout):
+                        if o is not None:
+                            for op in o.encode(None):
+                                dst.mux(op)
+                os.replace(tmp, p)
+                self._proxy_state[i] = {"status": "ready", "url": f"/api/assets/{i}/proxyfile", "progress": 1.0}
+            except Exception as ex:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+                self._proxy_state[i] = {"status": "error", "error": str(ex)[:300]}
 
     # ── フォルダ（NAS と同じ構成）──
     def folders(self, parent: str = "") -> dict:
@@ -775,7 +984,7 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         return self.rfile.read(n) if n else b""
 
-    def _send_file(self, path: str):
+    def _send_file(self, path: str, download: bool = False):
         size = os.path.getsize(path)
         rng = self.headers.get("Range")
         ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
@@ -790,6 +999,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Accept-Ranges", "bytes")
+        if download:
+            self.send_header("Content-Disposition",
+                             "attachment; filename*=UTF-8''" + urllib.parse.quote(os.path.basename(path)))
         self.send_header("Content-Length", str(end - start + 1))
         self.end_headers()
         with open(path, "rb") as f:
@@ -809,7 +1021,9 @@ class Handler(BaseHTTPRequestHandler):
         st = self.store
         try:
             if not parts:
-                return self._bytes(WEB.encode("utf-8"), "text/html; charset=utf-8")
+                web = Path(__file__).with_name("assetweb.html")
+                html = web.read_bytes() if web.exists() else WEB.encode("utf-8")
+                return self._bytes(html, "text/html; charset=utf-8", extra={"Cache-Control": "no-cache"})
             if parts[:2] == ["api", "info"]:
                 return self._json({"app": "TeloCut Asset Server", "version": VERSION, "roots": st.roots,
                                    "scanning": st.scanning})
@@ -825,6 +1039,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(st.duplicates())
             if parts[:2] == ["api", "stats"]:
                 return self._json(st.stats())
+            if parts[:2] == ["api", "roots"]:
+                return self._json(st.roots_info())
             if parts[:2] == ["api", "folders"]:
                 return self._json(st.folders(qs.get("parent", "")))
             if parts[:2] == ["api", "vfolders"]:
@@ -841,7 +1057,18 @@ class Handler(BaseHTTPRequestHandler):
                     t = st.thumb(parts[2], tt, size)
                     return self._bytes(t, "image/jpeg") if t else self._json({"error": "no thumb"}, 404)
                 if parts[3] == "file":
-                    return self._send_file(a["path"])
+                    return self._send_file(a["path"], download=qs.get("dl") == "1")
+                if parts[3] == "proxy":
+                    return self._json(st.proxy(parts[2], qs.get("start", "1") == "1"))
+                if parts[3] == "proxyfile":
+                    pp = st.proxy_path(parts[2], a["kind"] == "audio")
+                    return self._send_file(str(pp)) if pp.exists() else self._json({"error": "not ready"}, 404)
+                if parts[3] == "notes":
+                    return self._json(st.notes(parts[2]))
+                if parts[3] == "play":
+                    # ブラウザでそのまま再生できるか（できなければプロキシを使う）
+                    m = st.meta(parts[2])
+                    return self._json({"direct": st.playable(a, m), "meta": m, "proxy": st.proxy(parts[2], False)})
                 if parts[3] == "meta":
                     return self._json(st.meta(parts[2]))
                 if parts[3] == "wave":
@@ -893,6 +1120,12 @@ class Handler(BaseHTTPRequestHandler):
             if parts[:2] == ["api", "favorites"]:
                 st.favorite(body["user"], body["asset_id"], bool(body.get("on", True)))
                 return self._json({"ok": True})
+            if parts[:2] == ["api", "roots"]:
+                return self._json(st.set_roots_info(body))
+            if parts[:3] == ["api", "assets", "bulk"]:
+                return self._json(st.bulk_update(body.get("ids", []), body.get("set", {})))
+            if parts[:2] == ["api", "assets"] and len(parts) == 4 and parts[3] == "notes":
+                return self._json(st.add_note(parts[2], body.get("t", 0), body.get("user", ""), body.get("text", "")))
             if parts[:2] == ["api", "vfolders"] and len(parts) == 2:
                 return self._json(st.vfolder_create(body.get("name", ""), body.get("parent", "")))
             if parts[:2] == ["api", "vfolders"] and len(parts) == 4 and parts[3] == "items":
@@ -925,9 +1158,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         parts = [p for p in urllib.parse.urlparse(self.path).path.split("/") if p]
+        self._body()                                   # 本文が付いていても読み捨てる（接続を使い回すため）
         try:
             if parts[:2] == ["api", "vfolders"] and len(parts) == 3:
                 return self._json(self.store.vfolder_delete(parts[2]))
+            if parts[:2] == ["api", "notes"] and len(parts) == 3:
+                return self._json(self.store.delete_note(parts[2]))
             self._json({"error": "not found"}, 404)
         except Exception as ex:
             self._json({"error": str(ex)}, 500)

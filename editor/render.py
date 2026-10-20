@@ -394,8 +394,8 @@ def frame_signature(seq: Sequence, frame: int, project: Project, scale: float, u
                 item.append(round(L.cf / max(1, seq.duration), 4))
             elif c.prop("shape") == "countdown":
                 item.append(int(np.ceil((c.end - L.cf) / seq.fps)))
-        if c.kind == "text" and (c.prop("text_anim") or c.prop("karaoke")):
-            item += [c.prop("text_anim"), c.prop("karaoke"), L.cf - c.start]
+        if c.kind == "text" and (c.prop("text_anim") or c.prop("karaoke") or c.prop("text_anim_out")):
+            item += [c.prop("text_anim"), c.prop("karaoke"), c.prop("text_anim_out"), L.cf - c.start, c.end - L.cf]
         if any(fx.get("name") == "shake" for fx in (c.prop("effects") or [])):
             item.append(L.cf)
         if c.prop("effects"):
@@ -666,6 +666,10 @@ def _source_image(project: Project, seq: Sequence, clip: Clip, cf: int,
     return None, False
 
 
+# テロップの登場アニメ（pop / slide / type は従来の処理）。退場は text_anim_out に fade / zoom / drop / slide / wipe / blur
+TEXT_IN_ANIMS = ("fade", "zoom", "drop", "wipe", "blur")
+
+
 def _overlay(out: np.ndarray, project: Project, seq: Sequence, L: Layer,
              pool: DecoderPool, W: int, H: int, scale: float):
     clip, cf = L.clip, L.cf
@@ -721,6 +725,62 @@ def _overlay(out: np.ndarray, project: Project, seq: Sequence, L: Layer,
             e = 1 - (1 - k) ** 3
             py += (1 - e) * 60 * scale
             alpha *= e
+        # 登場（フェード・ズーム・落下・ワイプ・ぼかし）と退場（最後の 0.3 秒）
+        zs, wipe, blur = 1.0, 1.0, 0.0
+        phases = []
+        if anim in TEXT_IN_ANIMS and k < 1.0:
+            phases.append((anim, 1 - (1 - k) ** 3, 1))
+        anim_out = clip.prop("text_anim_out") or ""
+        if anim_out:
+            ko = (clip.end - cf) / max(1, int(fps * 0.3))
+            if ko < 1.0:
+                phases.append((anim_out, 1 - (1 - max(0.0, ko)) ** 3, -1))
+        for kind_, e, d in phases:
+            if kind_ == "fade":
+                alpha *= e
+            elif kind_ == "zoom":
+                zs *= (1.6 - 0.6 * e) if d > 0 else (1.0 + 0.4 * (1 - e))
+                alpha *= e
+            elif kind_ == "drop":
+                py += -(1 - e) * 80 * scale if d > 0 else (1 - e) * 60 * scale
+                alpha *= e
+            elif kind_ == "slide":
+                py -= (1 - e) * 60 * scale
+                alpha *= e
+            elif kind_ == "wipe":
+                wipe = min(wipe, e)
+            elif kind_ == "blur":
+                blur = max(blur, (1 - e) * 14 * scale)
+                alpha *= e
+        if wipe < 1.0 or blur > 0.0:
+            im0 = Image.fromarray(arr, "RGBA")
+            if blur > 0.0:
+                from PIL import ImageFilter
+                pad = int(blur * 2) + 1
+                big = Image.new("RGBA", (im0.width + pad * 2, im0.height + pad * 2), (0, 0, 0, 0))
+                big.paste(im0, (pad, pad))
+                im0 = big.filter(ImageFilter.GaussianBlur(blur))
+                x, y = x - pad, y - pad
+            a0 = np.asarray(im0).copy()
+            if wipe < 1.0:
+                a0[:, int(a0.shape[1] * wipe):, 3] = 0
+            arr = a0
+        if zs != 1.0:
+            h0, w0 = arr.shape[:2]
+            cxp, cyp = x + w0 / 2, y + h0 / 2
+            im = Image.fromarray(arr, "RGBA")
+            if effects:
+                im = apply_clip_fx(im, clip, seq, cf, scale)
+            f_ = s * zs
+            im = im.resize((max(1, int(im.width * f_)), max(1, int(im.height * f_))), Image.BILINEAR)
+            if rot:
+                im = im.rotate(-rot, resample=Image.BILINEAR, expand=True)
+            a = np.asarray(im).copy()
+            if alpha < 1.0:
+                a[..., 3] = (a[..., 3].astype(np.float32) * alpha).astype(np.uint8)
+            cxp, cyp = W / 2 + (cxp - W / 2) * s, H / 2 + (cyp - H / 2) * s
+            _blend(out, a, int(round(cxp - im.width / 2 + px)), int(round(cyp - im.height / 2 + py)), mode=bm)
+            return
         if s == 1.0 and not rot and not effects:
             if alpha < 1.0:
                 arr = arr.copy()

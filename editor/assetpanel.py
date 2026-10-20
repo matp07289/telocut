@@ -209,6 +209,7 @@ class AssetPanel(QWidget):
              "br_browse": lambda: b.on_browse(tag[1], res), "br_rows": lambda: b.on_rows(tag[1], res),
              "br_dup": lambda: b.on_dup(tag[1], res), "br_pv": lambda: b.on_preview(tag[1], res),
              "br_meta": lambda: b.on_meta(tag[1], res), "br_wave": lambda: b.on_wave(tag[1], res),
+             "br_notes": lambda: b.on_notes(tag[1], res),
              "br_done": lambda: b.on_done(tag[1]),
              "br_import": lambda: b.on_import(tag[1], tag[2], tag[3], res)}[kind]()
         elif kind == "info":
