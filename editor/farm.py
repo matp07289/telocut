@@ -60,7 +60,7 @@ class FarmMixin:
             if "skip" not in cols:                      # 素材が見えなかったノード（そのジョブは配らない）
                 self.db.execute("ALTER TABLE farm_jobs ADD COLUMN skip TEXT DEFAULT ''")
             self.db.commit()
-        (self.data / "farm").mkdir(exist_ok=True)
+        self._farm_dir().mkdir(parents=True, exist_ok=True)
         self._farm_wake = threading.Event()
         if local_worker:
             threading.Thread(target=self._farm_local_loop, daemon=True).start()
@@ -278,13 +278,30 @@ class FarmMixin:
         self._farm_wake.set()
         return {"ok": True}
 
+    def farm_pass(self, jid: str, idx: int, node: str, reason: str) -> dict:
+        """このノードではやらない（空き容量が足りない など）→ ほかのノードに回す（失敗の回数には数えない）。"""
+        with self.lock:
+            r = self.db.execute("SELECT skip FROM farm_jobs WHERE id=?", (jid,)).fetchone()
+            sk = set(filter(None, ((r["skip"] if r else "") or "").split("\n"))) | {node}
+            self.db.execute("UPDATE farm_jobs SET skip=?, error=? WHERE id=?", ("\n".join(sorted(sk)), reason[:500], jid))
+            self.db.execute("UPDATE farm_tasks SET status='pending', node='', error=? WHERE job_id=? AND idx=? AND status='claimed'",
+                            (f"{node}: {reason}"[:500], jid, idx))
+            self.db.commit()
+        self._farm_wake.set()
+        return {"ok": True}
+
     def _farm_fail_job(self, jid: str, error: str):
         self.db.execute("UPDATE farm_jobs SET status='error', error=?, finished=? WHERE id=? AND status IN ('waiting','running')",
                         (str(error)[:500], time.time(), jid))
         self.db.execute("UPDATE farm_tasks SET status='error' WHERE job_id=? AND status IN ('pending','claimed')", (jid,))
 
+    def _farm_dir(self) -> Path:
+        """作業用（区間・変換途中のファイル）。大きいので、NAS の出力先があればそこに（VM のディスクを使い切らない）。"""
+        out = getattr(self, "output_dir", None)
+        return (out / ".telocut_farm") if out is not None else self.data / "farm"
+
     def farm_result_path(self, jid: str, idx: int, ext: str) -> Path:
-        d = self.data / "farm" / jid
+        d = self._farm_dir() / jid
         d.mkdir(parents=True, exist_ok=True)
         return d / f"{idx}{ext}"
 
@@ -328,7 +345,7 @@ class FarmMixin:
                 self.db.execute("UPDATE farm_jobs SET status='done', result_asset=?, result_path=?, finished=? WHERE id=?",
                                 (asset, result_path, time.time(), jid))
                 self.db.commit()
-            shutil.rmtree(self.data / "farm" / jid, ignore_errors=True)
+            shutil.rmtree(self._farm_dir() / jid, ignore_errors=True)
             self.add_activity(j["user"], node, "", "farm", jid, f"「{j['name']}」が完了（{node}）")
         self._farm_wake.set()
         return {"ok": True}
@@ -339,8 +356,20 @@ class FarmMixin:
                             (time.time(), jid))
             self.db.execute("UPDATE farm_tasks SET status='cancelled' WHERE job_id=? AND status IN ('pending','claimed')", (jid,))
             self.db.commit()
-        shutil.rmtree(self.data / "farm" / jid, ignore_errors=True)
+        shutil.rmtree(self._farm_dir() / jid, ignore_errors=True)
         return {"ok": True}
+
+    def farm_cleanup(self) -> int:
+        """終わった・失敗した・中止したジョブの作業ファイルを消す（片付けで呼ぶ）。"""
+        with self.lock:
+            alive = {r[0] for r in self.db.execute("SELECT id FROM farm_jobs WHERE status IN ('waiting','running')")}
+        n = 0
+        d = self._farm_dir()
+        for x in (d.iterdir() if d.is_dir() else []):
+            if x.is_dir() and x.name not in alive:
+                shutil.rmtree(x, ignore_errors=True)
+                n += 1
+        return n
 
     def farm_retry(self, jid: str) -> dict:
         with self.lock:
@@ -392,10 +421,24 @@ class FarmMixin:
                 if not a or not os.path.exists(a["path"]):
                     raise FileNotFoundError("元の素材が見つかりません")
                 out = self.farm_result_path(t["job_id"], 0, p["ext"])
+                from .mediacodecs import probe_estimate
+                need = probe_estimate(a["path"], p["preset"], p.get("size", ""))
+                free = shutil.disk_usage(str(out.parent)).free
+                if free < need:
+                    gb = lambda x: f"{x / 1024 ** 3:.1f} GB"
+                    self.farm_pass(t["job_id"], 0, "サーバー",
+                                   f"サーバーの空きが足りません（必要 約 {gb(need)}・空き {gb(free)}）。"
+                                   "レンダーノードが空いたら変換します（または結果の置き場所を NAS に）")
+                    continue
                 transcode(a["path"], str(out), p["preset"], p.get("size", ""), prog, cancel)
                 self.farm_done(t["job_id"], 0, "サーバー", out)
             except InterruptedError:
                 pass
+            except OSError as ex:
+                if ex.errno == 28:                       # 容量不足 → ほかのノードに回す
+                    self.farm_pass(t["job_id"], 0, "サーバー", "サーバーの空き容量が足りなくなりました。レンダーノードに任せます")
+                else:
+                    self.farm_fail(t["job_id"], 0, "サーバー", str(ex))
             except Exception as ex:
                 self.farm_fail(t["job_id"], 0, "サーバー", str(ex))
 
@@ -499,6 +542,8 @@ def handle(h, method: str, parts: List[str], qs: dict) -> bool:
             h._json(st.farm_progress(rest[1], int(rest[2]), body.get("node", "?"), body.get("progress", 0)))
         elif len(rest) == 4 and rest[0] == "tasks" and rest[3] == "fail":
             h._json(st.farm_fail(rest[1], int(rest[2]), body.get("node", "?"), body.get("error", ""), bool(body.get("skip"))))
+        elif len(rest) == 4 and rest[0] == "tasks" and rest[3] == "pass":
+            h._json(st.farm_pass(rest[1], int(rest[2]), body.get("node", "?"), body.get("reason", "")))
         elif len(rest) == 4 and rest[0] == "tasks" and rest[3] == "done":       # 結果を NAS などに直接書いたとき
             h._json(st.farm_done(rest[1], int(rest[2]), body.get("node", "?"), None, body.get("path", "")))
         elif len(rest) == 3 and rest[0] == "jobs" and rest[2] == "cancel":
@@ -614,6 +659,10 @@ def run_task(server: str, node: str, t: dict, log: Callable[[str], None] = print
                     log(f"素材をダウンロード: {t['asset']['name']}")
                     _download(f"{server}/api/assets/{t['asset']['id']}/file", src)
             out = os.path.join(tmpdir, "out" + p["ext"])
+            from .mediacodecs import probe_estimate
+            need, free = probe_estimate(src, p["preset"], p.get("size", "")), shutil.disk_usage(tmpdir).free
+            if free < need:
+                raise _NoSpace(f"{node} の一時フォルダの空きが足りません（必要 約 {need / 1024 ** 3:.1f} GB・空き {free / 1024 ** 3:.1f} GB）")
             transcode(src, out, p["preset"], p.get("size", ""), rep, rep.cancel)
             dst_dir = _local(p.get("dst_dir", "")) if p.get("dst_dir") else ""
             if dst_dir and os.access(dst_dir, os.W_OK):      # 保存先が見えるなら直接置く
@@ -663,6 +712,21 @@ def run_task(server: str, node: str, t: dict, log: Callable[[str], None] = print
     except InterruptedError:
         log("中止されました")
         return False
+    except (_NoSpace, OSError) as ex:
+        if isinstance(ex, _NoSpace) or getattr(ex, "errno", None) == 28:
+            log(f"空き容量が足りないので、ほかのノードに回します: {ex}")
+            try:
+                _req(f"{server}/api/farm/tasks/{t['job_id']}/{t['idx']}/pass", {"node": node, "reason": str(ex)[:400]})
+            except Exception:
+                pass
+            return False
+        log(f"失敗: {ex}")
+        try:
+            _req(f"{server}/api/farm/tasks/{t['job_id']}/{t['idx']}/fail",
+                 {"node": node, "error": str(ex)[:400], "skip": isinstance(ex, FileNotFoundError)})
+        except Exception:
+            pass
+        return False
     except Exception as ex:
         log(f"失敗: {ex}")
         try:
@@ -673,6 +737,10 @@ def run_task(server: str, node: str, t: dict, log: Callable[[str], None] = print
         return False
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+class _NoSpace(Exception):
+    pass
 
 
 def claim(server: str, node: str, kinds=None) -> Optional[dict]:

@@ -173,6 +173,8 @@ class Store(FarmMixin):
             seen = set()
             for root in self.roots:
                 for dp, _dirs, files in os.walk(root):
+                    # 隠しフォルダ（.telocut_farm の作業中ファイルなど）・NAS のごみ箱は見ない
+                    _dirs[:] = [d for d in _dirs if not d.startswith(".") and d not in ("@eaDir", "#recycle", "$RECYCLE.BIN")]
                     for f in files:
                         ext = Path(f).suffix.lower()
                         if ext not in MEDIA_EXT or f.startswith("."):
@@ -565,6 +567,10 @@ class Store(FarmMixin):
                 removed += 1
             except OSError:
                 pass
+        try:
+            removed += self.farm_cleanup()
+        except Exception:
+            pass
         return {"removed": removed, "freed": freed, "proxies": total}
 
     # ── 素材フォルダの情報（Windows のドライブ・ネットワークパス）──

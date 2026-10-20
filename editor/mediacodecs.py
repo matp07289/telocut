@@ -254,6 +254,34 @@ def transcode(src: str, dst: str, preset_id: str, size: str = "", progress: Opti
         raise
 
 
+# 1080p 30fps のときのおおよそのビットレート（Mbps）。大きさの見積もりに使う
+_MBPS = {"h264": 15, "h264_mov": 15, "h265": 8, "dnxhr_lb": 45, "dnxhr_sq": 145, "dnxhr_hq": 220, "dnxhr_hqx": 220,
+         "dnxhr_444": 440, "dnxhr_hq_mov": 220, "dnxhd_hq": 220, "dnxhd_hqx": 220, "dnxhd_lb": 45, "prores_proxy": 45,
+         "prores_lt": 102, "prores_422": 147, "prores_hq": 220, "prores_4444": 330, "prores_4444xq": 500, "qtrle": 400,
+         "png_mov": 500, "v210": 1300, "cineform": 160, "mjpeg": 80, "wav": 2.3, "m4a": 0.3, "flac": 1.2}
+
+
+def estimate_bytes(preset_id: str, w: int, h: int, fps: float, seconds: float, size: str = "") -> int:
+    """書き出したときのおおよその大きさ（バイト）。"""
+    p = BY_ID.get(preset_id)
+    mbps = _MBPS.get(preset_id, 200)
+    if p is not None and p.vcodec and w and h:
+        w2, h2 = out_size(w, h, size)
+        mbps *= (w2 * h2) / (1920 * 1080) * max(0.5, (fps or 30) / 30)
+    return int(mbps * 1e6 / 8 * max(0.0, seconds) * 1.1) + 10_000_000
+
+
+def probe_estimate(src: str, preset_id: str, size: str = "") -> int:
+    import av
+    with av.open(src) as c:
+        v = c.streams.video[0] if c.streams.video else None
+        dur = float(c.duration / 1e6) if c.duration else 0.0
+        if v is None:
+            return estimate_bytes(preset_id, 0, 0, 0, dur, size)
+        return estimate_bytes(preset_id, v.codec_context.width, v.codec_context.height,
+                              float(v.average_rate or v.guessed_rate or 30), dur, size)
+
+
 def default_name(src: str, preset_id: str, size: str = "") -> str:
     p = BY_ID[preset_id]
     tag = preset_id + (f"_{size}" if size else "")

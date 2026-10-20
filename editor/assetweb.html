@@ -461,10 +461,11 @@ async function tcDialog(ids){ids=(ids||[]).filter(Boolean);if(!ids.length)return
 async function tcList(){const j=await api('/api/transcode').catch(()=>[]);const st={waiting:'待ち',running:'変換中',done:'完了',error:'失敗',cancelled:'中止'};
   $('p5c').innerHTML=j.length?'<table><tr><th>素材</th><th>形式</th><th>大きさ</th><th>状態</th><th></th><th>依頼</th></tr>'+j.map(x=>`<tr><td>${esc(x.name)}</td><td>${esc(x.preset_label)}</td><td>${esc(x.size||'元')}</td>
    <td>${x.status=='running'?`<progress max="1" value="${x.progress}"></progress> ${Math.round(x.progress*100)}%`:esc(st[x.status]||x.status)}${x.error?`<div class="small" style="color:#ff8080">${esc(x.error)}</div>`:''}</td>
-   <td>${x.status=='done'&&x.out_asset?`<a href="/api/assets/${x.out_asset}/file?dl=1"><button>⇩ ダウンロード</button></a>`:''}${['waiting','running'].includes(x.status)?`<button onclick="tcCancel('${x.id}')">中止</button>`:''}</td>
+   <td>${x.status=='done'&&x.out_asset?`<a href="/api/assets/${x.out_asset}/file?dl=1"><button>⇩ ダウンロード</button></a>`:''}${['waiting','running'].includes(x.status)?`<button onclick="tcCancel('${x.id}')">中止</button>`:''}${['error','cancelled'].includes(x.status)?`<button onclick="tcRetry('${x.id}')">やり直す</button>`:''}</td>
    <td class="dim">${esc(x.user||'')} ${hdate(x.created)}${x.out_path?`<div class="small" title="${esc(winPath(x.out_path))}">→ ${esc(winPath(x.out_path))}</div>`:''}</td></tr>`).join('')+'</table>':'<div class="empty">変換はまだありません。素材を選んで「⇄ 変換」</div>';
   if($('p5').classList.contains('on'))setTimeout(tcList,j.some(x=>['waiting','running'].includes(x.status))?1500:6000)}
 async function tcCancel(id){await post(`/api/transcode/${id}/cancel`,{});tcList()}
+async function tcRetry(id){await post(`/api/farm/jobs/${id}/retry`,{});tcList()}
 function zipSel(){const ids=selIds();if(!ids.length)return;const a=document.createElement('a');a.href='/api/zip?ids='+ids.join(',')+'&name='+encodeURIComponent(S.path?S.path.split('/').pop():'assets');a.download='';document.body.appendChild(a);a.click();a.remove()}
 
 /* ── 制作管理（ショットの進み具合・担当・期限・活動）── */
