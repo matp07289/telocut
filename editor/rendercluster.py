@@ -18,7 +18,7 @@ from typing import Callable, List, Optional, Tuple
 
 
 def _req(url: str, data=None, method=None, timeout=30, raw=False):
-    headers = {}
+    headers = {"X-TeloCut": "1"}             # アセットサーバーが「TeloCut からの要求」と分かるように（CSRF 対策）
     if data is not None and not isinstance(data, (bytes, bytearray)):
         data = json.dumps(data, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"

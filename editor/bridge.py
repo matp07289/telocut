@@ -8,11 +8,15 @@
         | "import_files" | "ping", ...}
 応答: {"id": 1, "ok": true, "result": ...}
 通知（TeloCut → 接続先）: {"event": "playhead", "tc": "..."} / {"event": "telops_changed"}
+
+安全のため、要求には telocut_bridge.json に書いた合言葉（"token"）が必要（同じ PC のユーザーだけが読める）。
+ブラウザなどから HTTP で送られてきた接続はすぐ切る（Web ページから勝手に操作されないように）。
 """
 from __future__ import annotations
 
 import json
 import os
+import secrets
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
@@ -34,6 +38,8 @@ class Bridge(QObject):
         self.server.newConnection.connect(self._on_conn)
         self.clients = []
         self._buf = {}
+        self._authed = set()
+        self.token = secrets.token_hex(16)
         self._last_tc = ""
         self._last_hash = ""
         self._last_sel: tuple = ()
@@ -50,7 +56,7 @@ class Bridge(QObject):
         p = self.server.serverPort()
         try:
             BASE_DIR.mkdir(parents=True, exist_ok=True)
-            PORT_FILE.write_text(json.dumps({"port": p, "pid": os.getpid()}), encoding="utf-8")
+            PORT_FILE.write_text(json.dumps({"port": p, "pid": os.getpid(), "token": self.token}), encoding="utf-8")
         except OSError:
             pass
         self.mw.record_player.position_changed.connect(self._push_playhead)
@@ -81,17 +87,31 @@ class Bridge(QObject):
         if s in self.clients:
             self.clients.remove(s)
         self._buf.pop(id(s), None)
+        self._authed.discard(id(s))
         self.status.emit(f"連携: 接続 {len(self.clients)}")
 
+    HTTP_START = (b"GET ", b"POST ", b"PUT ", b"DELETE ", b"OPTIONS ", b"HEAD ", b"PATCH ", b"CONNECT ")
+
     def _read(self, s):
+        if id(s) not in self._buf:
+            return
         self._buf[id(s)] += bytes(s.readAll())
-        while b"\n" in self._buf[id(s)]:
+        if id(s) not in self._authed and (self._buf[id(s)].lstrip().startswith(self.HTTP_START)
+                                          or len(self._buf[id(s)]) > 1 << 20):
+            self._buf[id(s)] = b""
+            s.abort()                               # ブラウザからの HTTP（Web ページの攻撃）や巨大なデータは切る
+            return
+        while b"\n" in self._buf.get(id(s), b""):
             line, rest = self._buf[id(s)].split(b"\n", 1)
             self._buf[id(s)] = rest
             if not line.strip():
                 continue
             try:
                 req = json.loads(line.decode("utf-8"))
+                if id(s) not in self._authed:
+                    if not isinstance(req, dict) or not secrets.compare_digest(str(req.get("token", "")), self.token):
+                        raise PermissionError("合言葉が違います（TeloCut を起動し直すか、連携するソフトを更新してください）")
+                    self._authed.add(id(s))
                 res = self.handle(req)
                 resp = {"id": req.get("id"), "ok": True, "result": res}
             except Exception as ex:
@@ -106,7 +126,7 @@ class Bridge(QObject):
     def broadcast(self, event: dict):
         data = (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
         for s in list(self.clients):
-            if s.state() == QTcpSocket.SocketState.ConnectedState:
+            if id(s) in self._authed and s.state() == QTcpSocket.SocketState.ConnectedState:
                 s.write(data)
 
     def _push_changes(self):
@@ -204,8 +224,11 @@ def call(cmd: str, port: int = 0, timeout: float = 10.0, **kw):
     if not port:
         raise ConnectionError("TeloCut が起動していません")
     with socket.create_connection(("127.0.0.1", port), timeout=timeout) as s:
-        s.sendall((json.dumps({"id": 1, "cmd": cmd, **kw}, ensure_ascii=False) + "\n").encode("utf-8"))
-        buf = b""
+        try:
+            token = json.loads(PORT_FILE.read_text(encoding="utf-8")).get("token", "")
+        except (OSError, ValueError):
+            token = ""
+        s.sendall((json.dumps({"id": 1, "cmd": cmd, "token": token, **kw}, ensure_ascii=False) + "\n").encode("utf-8"))
         f = s.makefile("rb")
         while True:
             line = f.readline()

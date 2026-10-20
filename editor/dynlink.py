@@ -61,8 +61,9 @@ def render_command(src: str, comp: str, out: str) -> List[str]:
         exe = find_app("blender")
         if not exe:
             raise RuntimeError("Blender が見つかりません。環境設定で blender.exe の場所を指定してください")
-        script = Path(out).with_suffix(".py")
-        script.write_text(BLENDER_OUT, encoding="utf-8")
+        script = Path(out).parent / "_telocut_blender_out.py"
+        if not script.exists() or script.read_text(encoding="utf-8") != BLENDER_OUT:
+            script.write_text(BLENDER_OUT, encoding="utf-8")
         cmd = [exe, "-b", src, "--python", str(script), "--", out]
         if comp:
             cmd[3:3] = ["-S", comp]                           # シーン名

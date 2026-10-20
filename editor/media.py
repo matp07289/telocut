@@ -96,6 +96,22 @@ def proxy_path(path: str) -> Path:
     return Path(SETTINGS.proxy_dir) / f"{_cache_key(path)}_{SETTINGS.proxy_width}.mp4"
 
 
+_OFFLINE: dict = {}
+
+
+def is_offline(path: str, ttl: float = 5.0) -> bool:
+    """素材ファイルが無いか（画面の描き直しのたびに NAS へ問い合わせないよう、5 秒ごとに確認）。"""
+    now = time.time()
+    hit = _OFFLINE.get(path)
+    if hit is not None and now - hit[0] < ttl:
+        return hit[1]
+    off = not os.path.exists(path)
+    _OFFLINE[path] = (now, off)
+    if len(_OFFLINE) > 5000:
+        _OFFLINE.clear()
+    return off
+
+
 def has_proxy(path: str) -> bool:
     try:
         p = proxy_path(path)

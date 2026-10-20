@@ -1071,7 +1071,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(data)
 
@@ -1084,9 +1084,47 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    MAX_JSON = 8 * 1024 * 1024
+
+    def _length(self) -> int:
+        try:
+            return max(0, int(self.headers.get("Content-Length") or 0))
+        except ValueError:
+            return 0
+
     def _body(self) -> bytes:
-        n = int(self.headers.get("Content-Length") or 0)
+        n = self._length()
+        if n > self.MAX_JSON:
+            raise ValueError("データが大きすぎます")
         return self.rfile.read(n) if n else b""
+
+    def _same_site(self) -> bool:
+        """ほかの Web サイトから勝手に送られた要求（CSRF）を断る。
+        JSON（Content-Type: application/json）か X-TeloCut ヘッダーが付いた要求だけ受け付ける
+        （どちらもブラウザはほかのサイトからは事前確認なしに送れない）。"""
+        ct = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        return ct == "application/json" or self.headers.get("X-TeloCut") == "1"
+
+    def _save_upload(self, dst: Path):
+        """アップロードを少しずつファイルに書く（大きな動画でもメモリを使わない）。"""
+        n = self._length()
+        tmp = dst.with_name(dst.name + ".part")
+        try:
+            with open(tmp, "wb") as f:
+                left = n
+                while left > 0:
+                    buf = self.rfile.read(min(1 << 20, left))
+                    if not buf:
+                        raise ConnectionError("アップロードが途中で切れました")
+                    f.write(buf)
+                    left -= len(buf)
+            os.replace(tmp, dst)
+        except BaseException:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
 
     def _send_file(self, path: str, download: bool = False):
         size = os.path.getsize(path)
@@ -1133,7 +1171,8 @@ class Handler(BaseHTTPRequestHandler):
                                    "scanning": st.scanning})
             if parts[:2] == ["api", "assets"] and len(parts) == 2:
                 return self._json(st.search(qs.get("q", ""), qs.get("kind", ""), qs.get("tag", ""),
-                                            qs.get("fav_user", ""), int(qs.get("limit", 200)), int(qs.get("offset", 0)),
+                                            qs.get("fav_user", ""), max(1, min(5000, int(qs.get("limit", 200)))),
+                                            max(0, int(qs.get("offset", 0))),
                                             qs.get("dir", ""), qs.get("under", ""), qs.get("vfolder", ""),
                                             qs.get("order", "added"), int(qs.get("rating_min", 0) or 0),
                                             qs.get("label", ""), float(qs.get("since", 0) or 0)))
@@ -1209,6 +1248,12 @@ class Handler(BaseHTTPRequestHandler):
         parts = [p for p in u.path.split("/") if p]
         st = self.store
         try:
+            if not self._same_site():
+                n = self._length()
+                if n <= self.MAX_JSON:
+                    self.rfile.read(n)                  # 読み捨ててから答える（読まずに切ると相手に届かない）
+                self.close_connection = True
+                return self._json({"error": "この要求は受け付けません（ほかのサイトからの送信）"}, 403)
             if parts[:2] == ["api", "housekeeping"]:
                 return self._json(st.housekeeping(float(qs.get("proxy_gb", 20))))
             if parts[:2] == ["api", "scan"]:
@@ -1217,16 +1262,23 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=st.scan, daemon=True).start()
                 return self._json({"ok": True})
             if parts[:2] == ["api", "upload"]:
-                name = Path(qs.get("name", "upload.bin")).name
-                sub = qs.get("folder", "").strip("/\\").replace("..", "")
-                d = st.data / "uploads" / sub
+                import re as _re
+                name = _re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", qs.get("name", "upload.bin")).strip(" .") or "upload.bin"
+                # フォルダは「英数字・日本語などの名前」を / でつないだものだけ（.. や C: やルートは使えない）
+                parts_ = [_re.sub(r'[\\:*?"<>|\x00-\x1f]', "_", x).strip(" .") for x in
+                          qs.get("folder", "").replace("\\", "/").split("/")]
+                parts_ = [x for x in parts_ if x and x not in (".", "..")][:8]
+                up = (st.data / "uploads").resolve()
+                d = up.joinpath(*parts_) if parts_ else up
+                if up != d.resolve() and up not in d.resolve().parents:
+                    raise ValueError("アップロード先が正しくありません")
                 d.mkdir(parents=True, exist_ok=True)
                 p = d / name
                 k = 1
                 while p.exists():
                     p = d / f"{Path(name).stem}_{k}{Path(name).suffix}"
                     k += 1
-                p.write_bytes(self._body())
+                self._save_upload(p)
                 return self._json(st.index(str(p)))
             body = json.loads(self._body() or b"{}")
             if parts[:2] == ["api", "favorites"]:

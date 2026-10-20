@@ -28,6 +28,18 @@ def find_port() -> int:
         return DEFAULT_PORT
 
 
+def find_token() -> str:
+    """TeloCut が起動時に作る合言葉（同じ PC・同じユーザーだけが読める場所にある）。"""
+    try:
+        return str(json.loads(_port_file().read_text(encoding="utf-8")).get("token", ""))
+    except (OSError, ValueError):
+        return ""
+
+
+def _hello() -> bytes:
+    return (json.dumps({"id": 0, "cmd": "ping", "token": find_token()}) + "\n").encode("utf-8")
+
+
 def call(cmd: str, timeout: float = 10.0, port: int = 0, **kw):
     port = port or find_port()
     try:
@@ -35,7 +47,8 @@ def call(cmd: str, timeout: float = 10.0, port: int = 0, **kw):
     except OSError:
         raise ConnectionError("TeloCut が起動していません（TeloCut を起動してから実行してください）")
     with s:
-        s.sendall((json.dumps({"id": 1, "cmd": cmd, **kw}, ensure_ascii=False) + "\n").encode("utf-8"))
+        s.sendall((json.dumps({"id": 1, "cmd": cmd, "token": find_token(), **kw}, ensure_ascii=False) + "\n")
+                  .encode("utf-8"))
         f = s.makefile("rb")
         while True:
             line = f.readline()
@@ -175,7 +188,7 @@ class Session:
             try:
                 self._sock = socket.create_connection(("127.0.0.1", find_port()), timeout=3)
                 self._sock.settimeout(None)
-                self._sock.sendall(b'{"id": 0, "cmd": "ping"}\n')
+                self._sock.sendall(_hello())
                 f = self._sock.makefile("rb")
                 self._set(True)
                 for line in f:
@@ -217,7 +230,7 @@ class PlayheadFollower:
                 self._sock = socket.create_connection(("127.0.0.1", find_port()), timeout=3)
                 self._sock.settimeout(None)
                 # 接続したことをブリッジに知らせる（以後イベントが届く）
-                self._sock.sendall(b'{"id": 0, "cmd": "ping"}\n')
+                self._sock.sendall(_hello())
                 f = self._sock.makefile("rb")
                 for line in f:
                     if self._stop.is_set():

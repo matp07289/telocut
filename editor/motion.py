@@ -26,7 +26,7 @@ FPS = [30.0]                  # 描画中のシーケンス fps（エクスプ�
 
 # ─────────────────────────── エクスプレッション ───────────────────────────
 _ALLOWED_NODES = (ast.Expression, ast.BinOp, ast.UnaryOp, ast.Call, ast.Name, ast.Load, ast.Constant,
-                  ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod, ast.Pow, ast.FloorDiv, ast.USub, ast.UAdd,
+                  ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod, ast.FloorDiv, ast.USub, ast.UAdd,
                   ast.IfExp, ast.Compare, ast.Lt, ast.Gt, ast.LtE, ast.GtE, ast.Eq, ast.NotEq, ast.BoolOp,
                   ast.And, ast.Or, ast.Tuple)
 _cache: Dict[str, object] = {}
@@ -49,10 +49,16 @@ def compile_expr(src: str):
     """安全な式だけを許して compile（属性アクセス・import などは不可）。"""
     if src in _cache:
         return _cache[src]
+    if len(src) > 500:
+        raise ValueError("式が長すぎます")
     tree = ast.parse(src.strip(), mode="eval")
     for n in ast.walk(tree):
+        if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Pow):
+            raise ValueError("累乗は pow(a, b) を使ってください")
         if not isinstance(n, _ALLOWED_NODES):
             raise ValueError(f"使えない書き方です: {type(n).__name__}")
+        if isinstance(n, ast.Constant) and not isinstance(n.value, (int, float, bool)):
+            raise ValueError("数字だけが使えます")
         if isinstance(n, ast.Call) and not isinstance(n.func, ast.Name):
             raise ValueError("関数は名前で呼んでください")
     code = compile(tree, "<expr>", "eval")
@@ -66,6 +72,7 @@ def eval_expr(src: str, value: float, frame: float, fps: float, seed: int = 1) -
         "value": value, "time": t, "frame": frame, "fps": fps, "pi": math.pi,
         "sin": math.sin, "cos": math.cos, "abs": abs, "min": min, "max": max, "sqrt": math.sqrt,
         "floor": math.floor, "round": round, "int": int,
+        "pow": lambda a, b: math.pow(max(-1e6, min(1e6, a)), max(-50, min(50, b))),
         "wiggle": lambda freq, amp, s=0: value + amp * _noise1(t * freq, seed + int(s)),
         "loop": lambda period: (t % period) if period else t,
         "ease": lambda x: 1 - (1 - max(0.0, min(1.0, x))) ** 3,

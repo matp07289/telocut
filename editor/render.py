@@ -21,7 +21,27 @@ from .media import DecoderPool, SAMPLE_RATE, CHANNELS, has_proxy
 from .model import Clip, Project, Sequence
 
 _VISUAL = ("video", "image", "text", "color", "character", "shape", "adjust", "nest")
-_NEST_DEPTH = [0]           # 入れ子シーケンスの深さ（自分を入れ子にしても止まるように）
+import threading as _threading
+
+
+class _Local(_threading.local):
+    def __init__(self):
+        self.depth = 0          # 入れ子シーケンスの深さ（自分を入れ子にしても止まるように）
+        self.alpha = []         # 透明を保って合成中の [(出力の配列, 不透明度の配列)]
+
+
+_TL = _Local()                  # プレビュー・裏のレンダリング・書き出しが別スレッドで同時に動くので、スレッドごとに持つ
+
+
+class _Depth:
+    def __getitem__(self, _i):
+        return _TL.depth
+
+    def __setitem__(self, _i, v):
+        _TL.depth = v
+
+
+_NEST_DEPTH = _Depth()
 _text_src: "OrderedDict[str, tuple]" = OrderedDict()     # key -> (rgba ndarray, x, y) フル解像度
 _text_scaled: "OrderedDict[tuple, tuple]" = OrderedDict()  # (key, scale) -> (rgba, x, y)
 _offline: dict = {}
@@ -520,22 +540,69 @@ def _fit(w, h, W, H):
     return max(2, int(w * r)) & ~1, max(2, int(h * r)) & ~1
 
 
-def offline_frame(W: int, H: int) -> np.ndarray:
-    """素材が見つからない時の赤い画面（Avid の Media Offline 風）。"""
-    arr = _offline.get((W, H))
-    if arr is None:
-        im = Image.new("RGB", (W, H), (150, 20, 20))
-        d = ImageDraw.Draw(im)
-        txt = "MEDIA OFFLINE"
+def _offline_font(size: int, bold: bool = True):
+    from PIL import ImageFont
+    from core.renderer import _FONT_FALLBACK_CANDIDATES
+    for path in (["C:/Windows/Fonts/YuGothB.ttc", "C:/Windows/Fonts/meiryob.ttc"] if bold else []) + \
+            list(_FONT_FALLBACK_CANDIDATES) + ["arial.ttf"]:
         try:
-            from PIL import ImageFont
-            f = ImageFont.truetype("arial.ttf", max(12, H // 12))
+            return ImageFont.truetype(path, size)
         except Exception:
-            f = None
-        tw = d.textlength(txt, font=f) if f else len(txt) * 6
-        d.text(((W - tw) / 2, H / 2 - H // 24), txt, fill=(255, 255, 255), font=f)
-        arr = np.asarray(im)
-        _offline[(W, H)] = arr
+            continue
+    return None
+
+
+def offline_frame(W: int, H: int, name: str = "", path: str = "") -> np.ndarray:
+    """素材が見つからない時の画面（Premiere の「メディアオフライン」風）。どのファイルが無いかと直し方も出す。"""
+    key = (W, H, name, path)
+    arr = _offline.get(key)
+    if arr is not None:
+        return arr
+    # 濃い赤のグラデーション
+    y = np.linspace(0, 1, H, dtype=np.float32)[:, None]
+    base = np.empty((H, W, 3), np.float32)
+    base[..., 0] = 120 + 40 * (1 - y)
+    base[..., 1] = 14 + 6 * (1 - y)
+    base[..., 2] = 18 + 6 * (1 - y)
+    im = Image.fromarray(base.astype(np.uint8), "RGB")
+    d = ImageDraw.Draw(im)
+    # 斜めの縞（オフラインだとすぐ分かるように）
+    step = max(16, W // 24)
+    for x0 in range(-H, W, step * 2):
+        d.polygon([(x0, H), (x0 + step, H), (x0 + step + H, 0), (x0 + H, 0)], fill=(140, 22, 26))
+    big = _offline_font(max(14, H // 9))
+    mid = _offline_font(max(11, H // 20))
+    small = _offline_font(max(9, H // 34), bold=False)
+
+    def center(txt, yy, font, fill):
+        tw = d.textlength(txt, font=font) if font else len(txt) * 6
+        if font and tw > W * 0.84:
+            while len(txt) > 4 and d.textlength(txt + "…", font=font) > W * 0.84:
+                txt = txt[:-1]
+            txt += "…"
+            tw = d.textlength(txt, font=font)
+        d.text(((W - tw) / 2, yy), txt, fill=fill, font=font, stroke_width=max(1, H // 360), stroke_fill=(60, 0, 0))
+
+    ch = H // 9
+    pad = int(H * 0.04)
+    box_top, box_bot = int(H * 0.22), int(H * 0.80)
+    d.rounded_rectangle([int(W * 0.06), box_top, int(W * 0.94), box_bot], radius=max(4, H // 60), fill=(40, 6, 8),
+                        outline=(255, 255, 255), width=max(1, H // 270))
+    center("メディアオフライン", box_top + pad, big, (255, 255, 255))
+    center("MEDIA OFFLINE", box_top + pad + ch + pad // 2, mid, (255, 200, 200))
+    yy = box_top + pad + ch + pad // 2 + H // 20 + pad
+    if name:
+        center(name, yy, mid, (255, 255, 255))
+        yy += H // 20 + pad // 2
+    if path:
+        center(path, yy, small, (230, 190, 190))
+        yy += H // 34 + pad // 2
+    center("ファイル → メディア管理 → オフライン素材を再リンク で場所を指定してください", box_bot - pad - H // 34, small,
+           (255, 230, 150))
+    arr = np.asarray(im)
+    _offline[key] = arr
+    while len(_offline) > 32:
+        _offline.pop(next(iter(_offline)))
     return arr
 
 
@@ -565,8 +632,9 @@ def blend_rgb(d: np.ndarray, s: np.ndarray, mode: str) -> np.ndarray:
     return s
 
 
-def _blend(out: np.ndarray, rgba: np.ndarray, x: int, y: int, mode: str = "normal"):
-    """out（HxWx3）の (x,y) に RGBA を合成（はみ出しは切り取り）。mode: ブレンドモード。"""
+def _blend(out: np.ndarray, rgba: np.ndarray, x: int, y: int, mode: str = "normal", keep_alpha: bool = False):
+    """out（HxWx3）の (x,y) に RGBA を合成（はみ出しは切り取り）。mode: ブレンドモード。
+    透明を保つ合成中は、out を「黒の上に重ねた（乗算済みの）色」とみなし、不透明度も重ねていく。"""
     H, W = out.shape[:2]
     h, w = rgba.shape[:2]
     x0, y0 = max(0, x), max(0, y)
@@ -577,6 +645,11 @@ def _blend(out: np.ndarray, rgba: np.ndarray, x: int, y: int, mode: str = "norma
     a = src[..., 3:4].astype(np.uint16)
     if not a.any():
         return
+    st = _TL.alpha
+    if st and st[-1][0] is out and not keep_alpha:
+        pa = st[-1][1]
+        cur = pa[y0:y1, x0:x1].astype(np.uint16)
+        pa[y0:y1, x0:x1] = (cur + (a[..., 0] * (255 - cur) + 127) // 255).astype(np.uint8)
     dst = out[y0:y1, x0:x1]
     if mode and mode != "normal":
         d = dst.astype(np.float32) / 255
@@ -737,10 +810,10 @@ def _source_image(project: Project, seq: Sequence, clip: Clip, cf: int,
         sc = min(W / max(1, nested.width), H / max(1, nested.height))
         _NEST_DEPTH[0] += 1
         try:
-            arr = render_frame_np(nested, int(round(src_frame(clip, cf))), project, pool, sc)
+            arr = render_frame_rgba(nested, int(round(src_frame(clip, cf))), project, pool, sc)
         finally:
             _NEST_DEPTH[0] -= 1
-        return Image.fromarray(arr, "RGB").convert("RGBA"), False
+        return Image.fromarray(arr, "RGBA"), False
     if clip.kind == "image":
         if m is None:
             return None, True
@@ -904,7 +977,10 @@ def _overlay(out: np.ndarray, project: Project, seq: Sequence, L: Layer,
         im, offline = _source_image(project, seq, clip, cf, pool, W, H)
         if im is None:
             if offline:
-                _blend(out, np.dstack([offline_frame(W, H), np.full((H, W), int(255 * alpha), np.uint8)]), 0, 0, mode=bm)
+                m = project.media_by_id(clip.media_id) if clip.media_id else None
+                nm = m.name if m else (clip.name or "素材")
+                _blend(out, np.dstack([offline_frame(W, H, nm, m.path if m else ""),
+                                       np.full((H, W), int(255 * alpha), np.uint8)]), 0, 0, mode=bm)
             return
     ck = clip.prop("chroma")
     if ck:
@@ -963,16 +1039,35 @@ def _motion_blur(out, im, seq, clip, cf, scale, W, H, alpha, bm, cur) -> bool:
     return True
 
 
+def render_frame_rgba(seq: Sequence, frame: int, project: Project, pool: DecoderPool,
+                      scale: float = 1.0) -> np.ndarray:
+    """透明を保った合成フレーム（HxWx4）。何も無い所は透明（入れ子シーケンスを重ねるとき用）。"""
+    W = max(2, int(seq.width * scale)) & ~1
+    H = max(2, int(seq.height * scale)) & ~1
+    out = np.zeros((H, W, 3), np.uint8)
+    pa = np.zeros((H, W), np.uint8)
+    _TL.alpha.append((out, pa))
+    try:
+        render_frame_np(seq, frame, project, pool, scale, _out=out)
+    finally:
+        _TL.alpha.pop()
+    # 乗算済みの色 → ふつうの色
+    a = pa.astype(np.float32)[..., None]
+    rgb = np.where(a > 0, out.astype(np.float32) * 255.0 / np.maximum(a, 1.0), 0)
+    return np.dstack([np.clip(rgb + 0.5, 0, 255).astype(np.uint8), pa])
+
+
 def render_frame_np(seq: Sequence, frame: int, project: Project, pool: DecoderPool,
-                    scale: float = 1.0) -> np.ndarray:
+                    scale: float = 1.0, _out: Optional[np.ndarray] = None) -> np.ndarray:
     """合成フレームを HxWx3 uint8 で返す。"""
     from .motion import FPS
     FPS[0] = seq.fps
     W = max(2, int(seq.width * scale)) & ~1
     H = max(2, int(seq.height * scale)) & ~1
     layers = active_layers(seq, frame)
-    out = None
+    out = _out
     start = 0
+    layers_fast = _out is None             # 透明を保つ合成では高速パス（不透明な土台）を使わない
     # 最下層が全面・不透明・加工なしなら、デコード結果をそのまま土台に（高速パス）
     if layers:
         L = layers[0]
@@ -980,7 +1075,7 @@ def render_frame_np(seq: Sequence, frame: int, project: Project, pool: DecoderPo
         if c.props.get("mask") or c.props.get("motion_blur") or c.props.get("parent") or c.props.get("layer3d") \
                 or c.props.get("expr") or c.props.get("clip_in") or c.props.get("clip_out") or c.props.get("speed_keys"):
             L = None
-    if layers and L is not None:
+    if layers and L is not None and layers_fast:
         m0 = project.media_by_id(c.media_id) if c.kind == "video" and c.media_id else None
         dec0 = pool.video(m0.path) if m0 else None
         if _plain(c) and clip_alpha(c, L.cf) >= 1.0 and L.amul >= 1.0 and not getattr(dec0, "has_alpha", False):
@@ -993,7 +1088,7 @@ def render_frame_np(seq: Sequence, frame: int, project: Project, pool: DecoderPo
                 m = project.media_by_id(c.media_id)
                 dec = pool.video(m.path) if m else None
                 if dec is None:
-                    out = offline_frame(W, H).copy()
+                    out = offline_frame(W, H, m.name if m else (c.name or "素材"), m.path if m else "").copy()
                     start = 1
                 else:
                     fw, fh = _fit(m.width or W, m.height or H, W, H)
@@ -1029,7 +1124,7 @@ def _adjust(out: np.ndarray, seq: Sequence, L: Layer, scale: float):
                         (res.width - im.width) // 2 + im.width, (res.height - im.height) // 2 + im.height))
     arr = np.asarray(res).copy()
     arr[..., 3] = (arr[..., 3].astype(np.float32) * a).astype(np.uint8)
-    _blend(out, arr, 0, 0, clip.prop("blend") or "normal")
+    _blend(out, arr, 0, 0, clip.prop("blend") or "normal", keep_alpha=True)
 
 
 def render_frame(seq: Sequence, frame: int, project: Project, pool: DecoderPool,

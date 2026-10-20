@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (QWidget, QScrollBar, QVBoxLayout, QHBoxLayout, QToo
                              QLabel, QMenu, QSlider, QInputDialog, QButtonGroup, QSizePolicy)
 
 from core.timecode import frames_to_timecode
+from . import media as MD
 from . import model as M
 from .theme import C
 
@@ -376,6 +377,19 @@ class TimelineCanvas(QWidget):
         g.setColorAt(1, col.darker(110) if not sel else col)
         p.fillRect(r, g)
         m = self.mw.project.media_by_id(c.media_id) if c.media_id else None
+        offline = m is not None and not getattr(m, "pending", "") and MD.is_offline(m.path)
+        if c.kind == "nest" and self.mw.project.sequence_by_id(c.props.get("seq_id", "")) is None:
+            offline = True
+        if offline:
+            # Premiere のように、オフラインのクリップは赤い斜線
+            p.fillRect(r, QColor(150, 20, 24))
+            p.save()
+            p.setClipRect(r)
+            p.setPen(QPen(QColor(200, 50, 50), 3))
+            step = 10
+            for x0 in range(int(r.left()) - int(r.height()), int(r.right()), step):
+                p.drawLine(QPointF(x0, r.bottom()), QPointF(x0 + r.height(), r.top()))
+            p.restore()
 
         # 音声波形
         if c.kind == "audio" and m is not None and r.width() > 4:
@@ -441,6 +455,25 @@ class TimelineCanvas(QWidget):
             label = c.prop("text", "").replace("\n", " ") if c.kind == "text" else (c.name or c.kind)
             if c.prop("effects"):
                 label = "ƒx " + label
+            # 目印: オフライン・ネスト・スピードランプ・テイク・Dynamic Link・登場 / 退場アニメ
+            marks = []
+            if offline:
+                marks.append("⚠オフライン")
+            if c.kind == "nest":
+                marks.append("⧉")
+            if c.props.get("speed_keys"):
+                marks.append("⤳")
+            takes = c.props.get("takes") or []
+            if len(takes) > 1:
+                marks.append(f"T{takes.index(c.media_id) + 1 if c.media_id in takes else '?'}/{len(takes)}")
+            if m is not None and getattr(m, "link_src", ""):
+                st = getattr(self.mw, "dynlink", None)
+                stt = st.state.get(m.id, {}).get("status") if st else ""
+                marks.append({"rendering": "DL⟳", "error": "DL⚠", "waiting": "DL…"}.get(stt, "DL"))
+            if c.props.get("clip_in") or c.props.get("clip_out"):
+                marks.append("◇")
+            if marks:
+                label = " ".join(marks) + " " + label
             if c.kind in ("video", "audio") and c.props.get("volume_db"):
                 label += f"  {float(c.props['volume_db']):+.1f}dB"
             tx = max(r.left(), HW) + 4
