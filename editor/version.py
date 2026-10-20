@@ -1,2 +1,2 @@
 """TeloCut のバージョン（ここだけ変えれば EXE・zip・MCP・画面の表示がそろう）。"""
-VERSION = "0.13.2"
+VERSION = "0.14.0"

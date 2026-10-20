@@ -25,6 +25,7 @@ from .production import ProductionMixin
 from .features6 import Features6Mixin
 from .features7 import Features7Mixin
 from .farmpanel import FarmMixin as FarmUIMixin
+from .autoclippanel import AutoClipMixin
 from .dualdisplay import DualDisplayMixin
 from . import media as MD
 from . import render as R
@@ -86,7 +87,7 @@ class SequenceDialog(QDialog):
 
 
 class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin, ProductionMixin, Features6Mixin,
-                 Features7Mixin, FarmUIMixin, DualDisplayMixin, QMainWindow):
+                 Features7Mixin, FarmUIMixin, AutoClipMixin, DualDisplayMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         SETTINGS.ensure_dirs()
@@ -382,6 +383,7 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         self.cmd_fns.update(self._feature6_commands())
         self.cmd_fns.update(self._feature7_commands())
         self.cmd_fns.update(self._farmui_commands())
+        self.cmd_fns.update(self._autoclip_commands())
         for i in range(4):
             self.cmd_fns[f"toggle_v{i + 1}"] = lambda i=i: self.toggle_track("video", i)
             self.cmd_fns[f"toggle_a{i + 1}"] = lambda i=i: self.toggle_track("audio", i)

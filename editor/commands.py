@@ -258,6 +258,8 @@ COMMANDS = [
     ("match_loudness", "選んだ音声のラウドネスをそろえる", "クリップ", "LUFS="),
     ("compare_seq", "シーケンスを比較", "クリップ", "比較"),
     ("collect_files", "ファイルの収集（素材をプロジェクトに集める）", "クリップ", "収集"),
+    # ── 自動切り抜き ──
+    ("auto_clip", "自動切り抜き（見どころ・無音カット・字幕・書き出し）", "YouTube", "切抜"),
     # ── ファーム ──
     ("farm_panel", "ジョブ（ファーム）を表示", "変換・仕上げ", "Farm"),
     ("farm_export", "ファームで書き出し（複数 PC に振り分け）", "変換・仕上げ", "Farm書"),
@@ -299,7 +301,7 @@ NEW_COMMAND_KEYS = {"command_palette": ["Ctrl+Shift+P"], "drag_zoom": ["Ctrl+Alt
                     "next_gap": ["Ctrl+Alt+Right"], "prev_gap": ["Ctrl+Alt+Left"],
                     "marker_panel": ["Ctrl+Alt+M"], "snapshot": ["Ctrl+Alt+S"],
                     "graph_editor": ["Shift+F3"], "motion_panel": ["Ctrl+Alt+G"],
-                    "select_at_playhead": ["D"], "take_next": ["Ctrl+Alt+T"], "nest": ["Ctrl+Alt+N"]}
+                    "select_at_playhead": ["D"], "auto_clip": ["Ctrl+Alt+A"], "take_next": ["Ctrl+Alt+T"], "nest": ["Ctrl+Alt+N"]}
 
 COMMAND_INFO = OrderedDict((c[0], c) for c in COMMANDS)
 CATEGORIES = list(OrderedDict.fromkeys(c[2] for c in COMMANDS))

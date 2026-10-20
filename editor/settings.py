@@ -64,6 +64,7 @@ class AppSettings:
     plugin_dir: str = ""               # 追加のエフェクトプラグインのフォルダ（<設定フォルダ>/plugins も読む）
     fx_mode_default: str = "stack"     # 新しくエフェクトを付けるときの管理方法（stack = レイヤー / nodes = ノード）
     mmd_exe: str = ""                  # MikuMikuDance.exe の場所（空なら自動で探す）
+    autoclip: dict = field(default_factory=dict)                 # 自動切り抜きの設定（出力先・OP / ED・しきい値など）
     version_limit_mb: float = 300.0                             # 更新履歴に版を残すファイルの大きさの上限
     telop_dict: List[list] = field(default_factory=list)      # 表記統一辞書 [[元, 直す形], ...]
     asset_recent: List[dict] = field(default_factory=list)          # アセットから最近取り込んだ素材

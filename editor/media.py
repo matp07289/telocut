@@ -172,11 +172,25 @@ def _probe(path: str) -> MediaItem:
 #  音声キャッシュ・波形
 # ─────────────────────────────────────────────
 
+_AUDIO_LOCKS: dict = {}
+_AUDIO_LOCKS_LOCK = threading.Lock()
+
+
 def build_audio_cache(path: str, cancel: Optional[threading.Event] = None) -> Optional[Path]:
-    """PyAV で raw PCM (s16le / 48k / stereo) を作る。既にあれば再利用。"""
+    """PyAV で raw PCM (s16le / 48k / stereo) を作る。既にあれば再利用。
+    同じ素材を別のスレッドが作っている最中なら、それが終わるのを待つ（同じ一時ファイルに 2 つ書かない）。"""
     out = audio_cache_path(path)
     if out.exists() and out.stat().st_size > 0:
         return out
+    with _AUDIO_LOCKS_LOCK:
+        lock = _AUDIO_LOCKS.setdefault(str(out), threading.Lock())
+    with lock:
+        if out.exists() and out.stat().st_size > 0:
+            return out
+        return _build_audio_cache(path, out, cancel)
+
+
+def _build_audio_cache(path: str, out: Path, cancel: Optional[threading.Event]) -> Optional[Path]:
     cache_dir().mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".part")
     try:
