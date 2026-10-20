@@ -58,3 +58,4 @@ editor/telocut.png
 # ライセンスの秘密鍵（絶対に入れない）
 *signing_key*
 *.license_key
+editor/build_kind.py

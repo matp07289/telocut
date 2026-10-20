@@ -25,10 +25,18 @@ NVENC での書き出しだけは、ffmpeg.exe が PATH 上か TeloCut.exe と�
 ## EXE のビルド
 
 ```
-build\build_telocut.bat
+build\build_telocut.bat              3 種類すべて
+build\build_telocut.bat personal     自分用だけ（free / paid も同様）
 ```
 
-- 生成物: `dist_telocut\TeloCut\`（フォルダ形式。フォルダごと配布）と `dist_telocut\TeloCut_v<バージョン>.zip`（バージョンは `editor/version.py` の 1 か所で決まる）
+| 種類 | 中身 | 配る相手 |
+|---|---|---|
+| `personal`（自分用） | キーなしで Studio（全部の機能）。タイトルに「Studio（自分用）」 | **配らない**（自分と自分のレンダーノードだけ） |
+| `free`（無料版） | 無料版に固定。キー入力・お試しはなく「有料版を見る / 購入する」だけ | だれにでも（無料配布） |
+| `paid`（有料版） | キーで Pro / Studio。キーが無ければ無料版＋Pro の 14 日間お試し | 購入した人（キーと一緒に） |
+
+- EXE では環境変数 `TELOCUT_EDITION` は効きません（ソースから動かすときだけ）
+- 生成物: `dist_telocut\<種類>\TeloCut\`（フォルダ形式。フォルダごと配布）と `dist_telocut\TeloCut_v<バージョン>_<種類>.zip`（バージョンは `editor/version.py` の 1 か所で決まる）
   - `TeloCut.exe`（動画編集）/ `DavinTelop.exe`（テロップ編集）/ `TeloCutCLI.exe`（コンソール版: MCP・サーバー・レンダーノード）
 - バッチは最後に `TeloCut.exe --selftest` で合成・テロップ描画・書き出し・デコードを確認します
 - 予期しないエラーは `%USERPROFILE%\.davintelop\telocut_crash.log` に記録されます

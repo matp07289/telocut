@@ -39,7 +39,7 @@ def main():
     ap.add_argument("--edition", default="pro", choices=["pro", "studio"])
     ap.add_argument("--days", type=int, default=0, help="有効日数（0 = 期限なし・買い切り）")
     ap.add_argument("--seats", type=int, default=1)
-    ap.add_argument("--updates-days", type=int, default=365, help="無料アップデートの期間（買い切り用）")
+    ap.add_argument("--updates-days", type=int, default=365, help="無料アップデートの期間（買い切り用。0 = 無期限）")
     a = ap.parse_args()
     kp = Path(a.key)
     if a.init:
@@ -66,7 +66,7 @@ def main():
     payload = {"v": 1, "id": secrets.token_hex(6), "name": a.name, "email": a.email, "edition": a.edition,
                "seats": a.seats, "issued": today.isoformat(),
                "expires": (today + datetime.timedelta(days=a.days)).isoformat() if a.days else "",
-               "updates_until": (today + datetime.timedelta(days=a.updates_days)).isoformat() if not a.days else ""}
+               "updates_until": (today + datetime.timedelta(days=a.updates_days)).isoformat() if not a.days and a.updates_days else ""}
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     key = "TELOCUT-" + b64(body) + "." + b64(ed25519.sign(sk, body))
     print(key)

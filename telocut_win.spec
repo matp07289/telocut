@@ -20,6 +20,11 @@ ICON = os.path.abspath(os.path.join('editor', 'telocut.ico'))
 make_ico(ICON)
 
 from editor.version import VERSION  # noqa: E402
+# ビルドの種類（personal = 自分用 / free = 無料版 / paid = 有料版）。EXE の中に書き込む
+KIND = os.environ.get('TELOCUT_BUILD_KIND', 'paid')
+assert KIND in ('personal', 'free', 'paid'), KIND
+with open(os.path.join('editor', 'build_kind.py'), 'w', encoding='utf-8') as f:
+    f.write('"""ビルドのときに telocut_win.spec が書く（Git には入れない）。"""\n' f'KIND = {KIND!r}\n')
 VERSION_FILE = os.path.abspath(os.path.join('editor', 'version_info.txt'))
 _v = tuple(int(x) for x in VERSION.split('.')) + (0,)
 with open(VERSION_FILE, 'w', encoding='utf-8') as f:
@@ -46,7 +51,7 @@ a = Analysis(
     binaries=[],
     datas=[(ICON, '.'), (os.path.join('editor', 'assetweb.html'), 'editor')],
     hiddenimports=[
-        *collect_submodules('editor'), 'core.telocut_link', 'core.voicevox', 'core.transcribe',
+        *collect_submodules('editor'), 'editor.build_kind', 'core.telocut_link', 'core.voicevox', 'core.transcribe',
         'psd_tools', 'psd_tools.api', 'psd_tools.constants', 'editor', 'editor.mainwindow', 'editor.model', 'editor.media', 'editor.render',
         'editor.player', 'editor.monitor', 'editor.timeline', 'editor.bin_panel',
         'editor.inspector', 'editor.export', 'editor.theme', 'editor.assets',

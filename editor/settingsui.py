@@ -370,12 +370,15 @@ class LicenseDialog(QDialog):
         self.key.setFixedHeight(70)
         v.addWidget(self.key)
         h = QHBoxLayout()
-        for txt, fn in (("登録", self._install), ("Pro を 14 日間試す", self._trial), ("購入ページを開く", self._buy),
-                        ("登録を外す", self._remove)):
+        reg = LIC.can_register()
+        btns = ((("登録", self._install), ("Pro を 14 日間試す", self._trial), ("購入ページを開く", self._buy),
+                 ("登録を外す", self._remove)) if reg else (("有料版を見る / 購入する", self._buy),))
+        for txt, fn in btns:
             b = QPushButton(txt)
             b.clicked.connect(fn)
             h.addWidget(b)
         v.addLayout(h)
+        self.key.setVisible(reg)
         v.addWidget(QLabel("できること"))
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["機能", "無料版", "Pro", "Studio"])
@@ -405,6 +408,8 @@ class LicenseDialog(QDialog):
         if lic.source == "key":
             txt += f"<br>登録者: {lic.name}（{lic.email}）　席数 {lic.seats}"
             txt += f"<br>期限: {lic.expires or 'なし（買い切り）'}" + (f"　無料アップデート: {lic.updates_until} まで" if lic.updates_until else "")
+        elif lic.source == "free" and not LIC.can_register():
+            txt += "<br>これは無料版です。Pro / Studio の機能は有料版（別のダウンロード）で使えます。"
         elif lic.source == "free":
             txt += "<br>Pro の機能を 14 日間お試しできます（1 回だけ）。"
         self.head.setText(txt)

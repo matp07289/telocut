@@ -6,7 +6,12 @@
 - Studio: Pro ＋ チーム（ファーム = 複数 PC で書き出し / 変換・制作管理）
 
 ライセンスキーは開発者の秘密鍵で署名したもの（tools/make_license.py）。アプリは公開鍵で確かめるだけなので、キーを作ることはできない。
-ソースから動かしているとき（開発中）は Studio 扱い。TELOCUT_EDITION=free/pro/studio で切り替えて試せる。
+ソースから動かしているとき（開発中）は Studio 扱い。TELOCUT_EDITION=free/pro/studio で切り替えて試せる（ソースから動かすときだけ）。
+
+EXE は 3 種類に分けてビルドする（build/build_telocut.bat personal / free / paid。ビルドの種類は editor/build_kind.py に書き込まれる）:
+- personal（自分用）: キーなしで Studio。配らないこと
+- free（無料版）: 無料版に固定。キー入力・お試しはなく、有料版の案内だけ
+- paid（有料版）: キーで Pro / Studio。キーが無ければ無料版の機能＋14 日間のお試し
 """
 from __future__ import annotations
 
@@ -20,6 +25,14 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .settings import BASE_DIR, SETTINGS
+
+try:
+    from .build_kind import KIND as BUILD_KIND        # ビルドのときに作られる（Git には入れない）
+except ImportError:
+    BUILD_KIND = ""
+if BUILD_KIND not in ("personal", "free", "paid"):
+    BUILD_KIND = "paid"
+KIND_NAMES = {"personal": "自分用", "free": "無料版", "paid": "有料版"}
 
 PUBLIC_KEY = "c16bc99038e91d615710710f303b33dfc7bf4c37fe6ff8448630dec789b2943f"
 LICENSE_PATH = BASE_DIR / "license.key"
@@ -76,6 +89,8 @@ class License:
             s += f"（お試し あと {self.trial_left} 日）"
         elif self.source == "dev":
             s += "（開発用）"
+        elif self.source == "personal":
+            s += "（自分用）"
         return s
 
 
@@ -112,12 +127,15 @@ def current(refresh: bool = False) -> License:
     global _cache
     if _cache is not None and not refresh:
         return _cache
-    env = os.environ.get("TELOCUT_EDITION", "").lower()
-    if env in RANK:
-        _cache = License(edition=env, source="env")
-        return _cache
     if not getattr(sys, "frozen", False):
-        _cache = License(edition="studio", source="dev")
+        env = os.environ.get("TELOCUT_EDITION", "").lower()      # EXE では効かない（環境変数で制限を外せないように）
+        _cache = License(edition=env, source="env") if env in RANK else License(edition="studio", source="dev")
+        return _cache
+    if BUILD_KIND == "personal":
+        _cache = License(edition="studio", source="personal")
+        return _cache
+    if BUILD_KIND == "free":
+        _cache = License(edition="free", source="free")
         return _cache
     lic = None
     try:
@@ -144,6 +162,11 @@ def _trial() -> Optional[License]:
     if left <= 0:
         return None
     return License(edition="pro", source="trial", trial_left=left)
+
+
+def can_register() -> bool:
+    """キーの登録・お試しができるビルドか（無料版の EXE ではできない）。"""
+    return BUILD_KIND != "free" or not getattr(sys, "frozen", False)
 
 
 def start_trial() -> License:
@@ -184,7 +207,7 @@ def require(parent, feature: str) -> bool:
     box = QMessageBox(parent)
     box.setWindowTitle(f"{NAMES[need]} の機能です")
     box.setText(f"「{label}」は {NAMES[need]} で使えます。\n今は {current().label} です。")
-    reg = box.addButton("ライセンスを入力 / お試し...", QMessageBox.ButtonRole.AcceptRole)
+    reg = box.addButton("ライセンスを入力 / お試し..." if can_register() else "有料版について...", QMessageBox.ButtonRole.AcceptRole)
     box.addButton("閉じる", QMessageBox.ButtonRole.RejectRole)
     box.exec()
     if box.clickedButton() is reg and parent is not None and hasattr(parent, "license_dialog"):
