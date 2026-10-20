@@ -57,7 +57,7 @@ a = Analysis(
         'aaf2.content', 'aaf2.mobslots', 'aaf2.dictionary', 'aaf2.metadict', 'aaf2.model',
         'core', 'core.models', 'core.timecode', 'core.renderer', 'core.preset',
         'core.exporter', 'core.textfmt',
-        'PyQt6.QtMultimedia',
+        'PyQt6.QtMultimedia', 'PyQt6.QtMultimediaWidgets',
         'av', 'numpy', 'PIL.Image', 'PIL.ImageDraw', 'PIL.ImageFont', 'PIL.ImageOps',
         'PIL.ImageEnhance', 'PIL.ImageFilter',
     ],

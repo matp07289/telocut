@@ -117,6 +117,8 @@ class Store:
                 PRIMARY KEY(folder_id, asset_id));
             """)
             cols = [r[1] for r in self.db.execute("PRAGMA table_info(assets)").fetchall()]
+            if "label" not in cols:
+                self.db.execute("ALTER TABLE assets ADD COLUMN label TEXT DEFAULT ''")
             if "dir" not in cols:
                 # 以前のデータベース: フォルダ列を足して、今ある素材の分を埋める
                 self.db.execute("ALTER TABLE assets ADD COLUMN dir TEXT")
@@ -126,6 +128,8 @@ class Store:
             self.db.execute("CREATE INDEX IF NOT EXISTS assets_dir ON assets(dir)")
             self.db.commit()
         self.scanning = False
+        self.last_scan = 0.0
+        self._indexing: set = set()
 
     # ── 素材 ─────────────────────────────────
     @staticmethod
@@ -161,6 +165,7 @@ class Store:
                 self.db.commit()
         finally:
             self.scanning = False
+            self.last_scan = time.time()
 
     def index(self, path: str) -> dict:
         st = os.stat(path)
@@ -276,6 +281,171 @@ class Store:
         d["tags"] = json.loads(d.get("tags") or "[]")
         return d
 
+    # ── 実際のフォルダ（マウントしている構成そのまま）──
+    def _inside_roots(self, path: str) -> Optional[str]:
+        """素材フォルダの中のパスなら正規化して返す（外側を見せない）。"""
+        rp = os.path.realpath(path)
+        for r in self.roots:
+            rr = os.path.realpath(r)
+            if rp == rr or rp.startswith(rr.rstrip(os.sep) + os.sep):
+                return rp
+        return None
+
+    def browse(self, path: str, all_files: bool = False) -> dict:
+        """フォルダの中身をそのまま返す（空のフォルダ・素材以外のファイルも）。素材は登録済みの情報と合わせる。
+        まだ登録していない素材は裏で登録し、pending で知らせる（少し後にもう一度読むと情報が付く）。"""
+        if not path:
+            return {"path": "", "dirs": [{"name": Path(r).name or r, "path": r.replace("\\", "/")} for r in self.roots],
+                    "files": [], "pending": 0}
+        p = self._inside_roots(path)
+        if p is None or not os.path.isdir(p):
+            raise ValueError("素材フォルダの外か、存在しないフォルダです")
+        dirs, files = [], []
+        with os.scandir(p) as it:
+            for e in it:
+                if e.name.startswith(".") or e.name in ("TeloCutServer", "@eaDir", "#recycle", "$RECYCLE.BIN"):
+                    continue
+                try:
+                    if e.is_dir(follow_symlinks=True):
+                        dirs.append({"name": e.name, "path": e.path.replace("\\", "/")})
+                    elif e.is_file(follow_symlinks=True):
+                        ext = Path(e.name).suffix.lower()
+                        if not all_files and ext not in MEDIA_EXT:
+                            continue
+                        st = e.stat()
+                        files.append({"name": e.name, "path": e.path.replace("\\", "/"), "size": st.st_size,
+                                      "mtime": st.st_mtime, "kind": KIND.get(ext, "other"), "media": ext in MEDIA_EXT})
+                except OSError:
+                    continue
+        with self.lock:
+            rows = {r["path"].replace("\\", "/"): dict(r) for r in
+                    self.db.execute("SELECT * FROM assets WHERE dir=?", (p.replace("\\", "/"),)).fetchall()}
+        todo = []
+        for f in files:
+            r = rows.get(f["path"])
+            if r is not None:
+                r["tags"] = json.loads(r.get("tags") or "[]")
+                f.update({k: v for k, v in r.items() if k not in ("path", "name")})
+            elif f["media"]:
+                todo.append(f["path"])
+        if todo:
+            self._index_later(todo)
+        dirs.sort(key=lambda d: d["name"].lower())
+        files.sort(key=lambda f: f["name"].lower())
+        return {"path": p.replace("\\", "/"), "dirs": dirs, "files": files, "pending": len(todo)}
+
+    def _index_later(self, paths):
+        new = [x for x in paths if x not in self._indexing]
+        if not new:
+            return
+        self._indexing.update(new)
+
+        def work():
+            for x in new:
+                try:
+                    self.index(x)
+                except Exception:
+                    pass
+                finally:
+                    self._indexing.discard(x)
+        threading.Thread(target=work, daemon=True).start()
+
+    def rescan_dir(self, path: str, recursive: bool = False) -> dict:
+        p = self._inside_roots(path)
+        if p is None:
+            raise ValueError("素材フォルダの外です")
+        found = []
+        walker = os.walk(p) if recursive else [(p, [], os.listdir(p))]
+        for dp, _d, fs in walker:
+            for f in fs:
+                if Path(f).suffix.lower() in MEDIA_EXT and not f.startswith("."):
+                    found.append(os.path.join(dp, f))
+        self._index_later(found)
+        return {"queued": len(found)}
+
+    def meta(self, i: str) -> dict:
+        """コーデック・fps・ビットレート・音声などの詳しい情報。"""
+        a = self.get(i)
+        if not a:
+            return {}
+        out = {"path": a["path"], "size": a.get("size")}
+        if a["kind"] in ("video", "audio"):
+            import av
+            with av.open(a["path"]) as c:
+                out["format"] = c.format.long_name if c.format else ""
+                out["bitrate"] = c.bit_rate or 0
+                out["duration"] = (c.duration or 0) / 1e6
+                for s_ in c.streams:
+                    cc = s_.codec_context
+                    if s_.type == "video":
+                        out["video"] = {"codec": cc.name, "width": cc.width, "height": cc.height,
+                                        "fps": float(s_.average_rate or s_.guessed_rate or 0), "pix_fmt": str(cc.pix_fmt)}
+                    elif s_.type == "audio" and "audio" not in out:
+                        out["audio"] = {"codec": cc.name, "rate": cc.sample_rate, "channels": cc.channels}
+        elif a["kind"] == "image" and not a["path"].lower().endswith((".psd", ".psb")):
+            from PIL import Image
+            with Image.open(a["path"]) as im:
+                out["image"] = {"format": im.format, "mode": im.mode, "width": im.width, "height": im.height}
+        return out
+
+    def waveform(self, i: str, bins: int = 600) -> list:
+        """音声の波形（0〜1 の山の高さ。最初の 30 分まで）。"""
+        bins = max(50, min(2000, int(bins)))
+        cp = self.data / "thumbs" / f"{i}_wave{bins}.json"
+        if cp.exists():
+            return json.loads(cp.read_text())
+        a = self.get(i)
+        if not a or a["kind"] not in ("audio", "video"):
+            return []
+        import av
+        import numpy as np
+        with self._thumb_sem:
+            peaks = []
+            with av.open(a["path"]) as c:
+                if not c.streams.audio:
+                    return []
+                st = c.streams.audio[0]
+                rs = av.AudioResampler(format="s16", layout="mono", rate=4000)
+                limit = 30 * 60 * 4000
+                n = 0
+                for fr in c.decode(st):
+                    for r in rs.resample(fr):
+                        x = np.abs(r.to_ndarray().reshape(-1).astype(np.int32))
+                        peaks.append(x)
+                        n += x.size
+                    if n >= limit:
+                        break
+            if not peaks:
+                return []
+            x = np.concatenate(peaks)[:limit]
+            k = max(1, x.size // bins)
+            y = x[:k * bins].reshape(-1, k).max(axis=1) / 32768.0
+            out = [round(float(v), 3) for v in y]
+        cp.parent.mkdir(parents=True, exist_ok=True)
+        cp.write_text(json.dumps(out))
+        return out
+
+    def duplicates(self, limit: int = 200) -> list:
+        """名前と大きさが同じファイル（コピーの重複の候補）。"""
+        with self.lock:
+            rows = self.db.execute("SELECT name, size, COUNT(*) AS n FROM assets WHERE missing=0 AND size>0 "
+                                   "GROUP BY name, size HAVING n>1 ORDER BY size DESC LIMIT ?", (int(limit),)).fetchall()
+            out = []
+            for r in rows:
+                items = self.db.execute("SELECT * FROM assets WHERE missing=0 AND name=? AND size=?",
+                                        (r["name"], r["size"])).fetchall()
+                out.append({"name": r["name"], "size": r["size"], "items": [dict(x) for x in items]})
+        return out
+
+    def stats(self) -> dict:
+        with self.lock:
+            kinds = {r["kind"]: (r["n"], r["sz"] or 0) for r in self.db.execute(
+                "SELECT kind, COUNT(*) AS n, SUM(size) AS sz FROM assets WHERE missing=0 GROUP BY kind").fetchall()}
+        return {"kinds": {k: {"count": v[0], "size": v[1]} for k, v in kinds.items()},
+                "total": sum(v[0] for v in kinds.values()), "total_size": sum(v[1] for v in kinds.values()),
+                "scanning": self.scanning, "last_scan": self.last_scan, "indexing": len(self._indexing),
+                "roots": self.roots}
+
     # ── フォルダ（NAS と同じ構成）──
     def folders(self, parent: str = "") -> dict:
         """parent の直下のフォルダ（中の素材数つき・下のフォルダも含めた数）と、直下の素材数。parent="" なら素材フォルダの一覧。"""
@@ -369,7 +539,7 @@ class Store:
         return {"ok": True}
 
     def search(self, q="", kind="", tag="", fav_user="", limit=200, offset=0, dir="", under="", vfolder="",
-               order="added"):
+               order="added", rating_min=0, label="", since=0.0):
         sql = "SELECT a.* FROM assets a"
         args = []
         where = ["a.missing=0"]
@@ -393,6 +563,15 @@ class Store:
         if kind:
             where.append("a.kind=?")
             args.append(kind)
+        if int(rating_min or 0) > 0:
+            where.append("a.rating>=?")
+            args.append(int(rating_min))
+        if label:
+            where.append("a.label=?")
+            args.append(label)
+        if float(since or 0) > 0:
+            where.append("a.added>=?")
+            args.append(time.time() - float(since))
         if tag:
             where.append("a.tags LIKE ?")
             args.append(f'%"{tag}"%')
@@ -411,7 +590,7 @@ class Store:
 
     def update(self, i: str, d: dict):
         with self.lock:
-            for k in ("rating", "comment", "credit"):
+            for k in ("rating", "comment", "credit", "label"):
                 if k in d:
                     self.db.execute(f"UPDATE assets SET {k}=? WHERE id=?", (d[k], i))
             if "tags" in d:
@@ -638,7 +817,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(st.search(qs.get("q", ""), qs.get("kind", ""), qs.get("tag", ""),
                                             qs.get("fav_user", ""), int(qs.get("limit", 200)), int(qs.get("offset", 0)),
                                             qs.get("dir", ""), qs.get("under", ""), qs.get("vfolder", ""),
-                                            qs.get("order", "added")))
+                                            qs.get("order", "added"), int(qs.get("rating_min", 0) or 0),
+                                            qs.get("label", ""), float(qs.get("since", 0) or 0)))
+            if parts[:2] == ["api", "browse"]:
+                return self._json(st.browse(qs.get("path", ""), qs.get("all", "") == "1"))
+            if parts[:2] == ["api", "duplicates"]:
+                return self._json(st.duplicates())
+            if parts[:2] == ["api", "stats"]:
+                return self._json(st.stats())
             if parts[:2] == ["api", "folders"]:
                 return self._json(st.folders(qs.get("parent", "")))
             if parts[:2] == ["api", "vfolders"]:
@@ -656,6 +842,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self._bytes(t, "image/jpeg") if t else self._json({"error": "no thumb"}, 404)
                 if parts[3] == "file":
                     return self._send_file(a["path"])
+                if parts[3] == "meta":
+                    return self._json(st.meta(parts[2]))
+                if parts[3] == "wave":
+                    return self._json(st.waveform(parts[2], int(qs.get("bins", 600))))
             if parts[:2] == ["api", "favorites"]:
                 return self._json(st.favorites(qs.get("user", "")))
             if parts[:2] == ["api", "projects"]:
@@ -683,6 +873,8 @@ class Handler(BaseHTTPRequestHandler):
         st = self.store
         try:
             if parts[:2] == ["api", "scan"]:
+                if qs.get("path"):
+                    return self._json(st.rescan_dir(qs["path"], qs.get("recursive", "") == "1"))
                 threading.Thread(target=st.scan, daemon=True).start()
                 return self._json({"ok": True})
             if parts[:2] == ["api", "upload"]:
