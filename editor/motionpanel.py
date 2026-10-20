@@ -2,7 +2,7 @@
 グラフエディター（キーフレームの値を曲線で編集）。"""
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Optional
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen

@@ -13,7 +13,7 @@ import shutil
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 APPS = {".psd": "Photoshop", ".psb": "Photoshop", ".aep": "After Effects", ".blend": "Blender",
         ".png": "画像編集", ".jpg": "画像編集", ".jpeg": "画像編集", ".tif": "画像編集", ".tiff": "画像編集",

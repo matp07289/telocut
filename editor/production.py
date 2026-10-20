@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import List, Optional
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QInputDialog,
                              QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QSplitter,
                              QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)

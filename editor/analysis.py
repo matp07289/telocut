@@ -157,3 +157,28 @@ def beats(media: MediaItem, clip: Clip, fps: float, every: int = 1) -> Tuple[flo
         t += lag_f
         k += 1
     return float(bpm), out
+
+
+def clip_loudness(media: MediaItem, clip: Clip, fps: float) -> Optional[float]:
+    """クリップが使っている範囲のラウドネス（LUFS の近似: 400ms ブロック・ゲート付き。音量・フェードは含めない）。"""
+    src = AudioSource(media.path)
+    if src.data is None:
+        return None
+    spf = SAMPLE_RATE / fps
+    sp = abs(float(clip.props.get("speed", 1.0) or 1.0)) or 1.0
+    buf = src.read(int(clip.src_in * spf), max(1, int(clip.duration * spf * sp))).astype(np.float64)
+    blk, hop = int(SAMPLE_RATE * 0.4), int(SAMPLE_RATE * 0.1)
+    if buf.shape[0] < blk:
+        blk = hop = max(1, buf.shape[0])
+    cs = np.concatenate([[0.0], np.cumsum((buf ** 2).sum(axis=1))])
+    ms = np.array([(cs[i + blk] - cs[i]) / blk / CHANNELS for i in range(0, buf.shape[0] - blk + 1, hop)])
+    if ms.size == 0:
+        return None
+    lk = -0.691 + 10 * np.log10(np.maximum(ms * 2, 1e-12))
+    ms = ms[lk > -70]
+    if ms.size == 0:
+        return None
+    rel = -0.691 + 10 * np.log10(ms.mean() * 2) - 10
+    lk = -0.691 + 10 * np.log10(np.maximum(ms * 2, 1e-12))
+    ms = ms[lk > rel]
+    return float(-0.691 + 10 * np.log10(ms.mean() * 2)) if ms.size else None

@@ -140,9 +140,12 @@ class DynLink(QObject):
 
     # ── 見張り ──
     def poll(self):
+        self._polls = getattr(self, "_polls", 0) + 1
         for m in self.linked():
             if m.id in self._busy:
                 continue
+            if self._polls % 30 == 0 and os.path.exists(m.path):
+                self._cleanup(m)
             sig = self._stat(m.link_src)
             old = self._sig.get(m.id)
             if old is None:

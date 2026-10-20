@@ -244,6 +244,20 @@ COMMANDS = [
     ("update_panel", "更新履歴（自動同期・前の版に戻す）", "連携・管理", "履歴"),
     ("production_panel", "制作管理（ショット・担当・期限）", "連携・管理", "管理"),
     ("shots_from_markers", "マーカーからショットを作る", "連携・管理", "◆→S"),
+    # ── クリップ（ほかの編集ソフトにある機能）──
+    ("select_at_playhead", "再生ヘッドのクリップを選択", "クリップ", "▼選"),
+    ("duplicate_after", "選んだクリップをすぐ後ろに複製", "クリップ", "複製"),
+    ("speed_ramp", "スピードランプ（速度カーブ）", "クリップ", "Ramp"),
+    ("speed_ramp_clear", "スピードランプを外す", "クリップ", "Ramp✕"),
+    ("clip_anim_in", "クリップの登場アニメ", "クリップ", "入"),
+    ("clip_anim_out", "クリップの退場アニメ", "クリップ", "出"),
+    ("nest", "ネスト（選んだクリップを 1 本にまとめる）", "クリップ", "Nest"),
+    ("nest_open", "ネストを開く", "クリップ", "Nest↗"),
+    ("take_add", "テイクを追加（別テイクを見比べる）", "クリップ", "Take+"),
+    ("take_next", "次のテイクに切り替え", "クリップ", "Take▶"),
+    ("match_loudness", "選んだ音声のラウドネスをそろえる", "クリップ", "LUFS="),
+    ("compare_seq", "シーケンスを比較", "クリップ", "比較"),
+    ("collect_files", "ファイルの収集（素材をプロジェクトに集める）", "クリップ", "収集"),
 ]
 
 # 後から追加したコマンドの既定キー（プリセットの他のキーと重ならなければ割り当てる）
@@ -253,7 +267,8 @@ NEW_COMMAND_KEYS = {"command_palette": ["Ctrl+Shift+P"], "drag_zoom": ["Ctrl+Alt
                     "node_editor": ["Ctrl+Shift+N"], "preflight": ["Ctrl+Alt+K"],
                     "next_gap": ["Ctrl+Alt+Right"], "prev_gap": ["Ctrl+Alt+Left"],
                     "marker_panel": ["Ctrl+Alt+M"], "snapshot": ["Ctrl+Alt+S"],
-                    "graph_editor": ["Shift+F3"], "motion_panel": ["Ctrl+Alt+G"]}
+                    "graph_editor": ["Shift+F3"], "motion_panel": ["Ctrl+Alt+G"],
+                    "select_at_playhead": ["D"], "take_next": ["Ctrl+Alt+T"], "nest": ["Ctrl+Alt+N"]}
 
 COMMAND_INFO = OrderedDict((c[0], c) for c in COMMANDS)
 CATEGORIES = list(OrderedDict.fromkeys(c[2] for c in COMMANDS))

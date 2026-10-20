@@ -458,6 +458,38 @@ class Store:
                 "scanning": self.scanning, "last_scan": self.last_scan, "indexing": len(self._indexing),
                 "roots": self.roots}
 
+    # ── 片付け（プロキシの容量・消えた素材のサムネイル / プロキシ）──
+    def housekeeping(self, proxy_gb: float = 20.0) -> dict:
+        """ブラウザ用プロキシを proxy_gb 以下に（古く使っていない物から消す）、消えた素材のサムネイル等を消す。"""
+        with self.lock:
+            alive = {r[0] for r in self.db.execute("SELECT id FROM assets WHERE missing=0")}
+        removed = freed = 0
+        for d in ("thumbs", "proxies"):
+            for f in (self.data / d).iterdir() if (self.data / d).is_dir() else []:
+                aid = f.name.split("_", 1)[0].split(".", 1)[0]
+                if aid not in alive or f.name.endswith(".part.mp4") and time.time() - f.stat().st_mtime > 3600:
+                    try:
+                        freed += f.stat().st_size
+                        f.unlink()
+                        removed += 1
+                    except OSError:
+                        pass
+        px = sorted(((f.stat().st_atime, f.stat().st_size, f) for f in (self.data / "proxies").glob("*")
+                     if f.is_file()), key=lambda x: x[0])
+        total = sum(x[1] for x in px)
+        limit = proxy_gb * 1024 ** 3
+        for _t, size, f in px:
+            if total <= limit:
+                break
+            try:
+                f.unlink()
+                total -= size
+                freed += size
+                removed += 1
+            except OSError:
+                pass
+        return {"removed": removed, "freed": freed, "proxies": total}
+
     # ── 素材フォルダの情報（Windows のドライブ・ネットワークパス）──
     def roots_info(self) -> list:
         """素材フォルダごとの {path, name, unc, drive}。
@@ -1020,43 +1052,11 @@ class Store:
         return out
 
 
-WEB = """<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TeloCut アセットサーバー</title><style>
-body{margin:0;font-family:"Segoe UI","Yu Gothic UI",sans-serif;background:#1b1b1d;color:#ddd}
-header{display:flex;gap:8px;align-items:center;padding:10px 16px;background:#2c2c30;flex-wrap:wrap}
-h1{font-size:16px;margin:0 12px 0 0;color:#a99cff}input,select,button{background:#111;color:#ddd;border:1px solid #444;padding:6px 8px;border-radius:4px}
-button{background:#7c6cf2;color:#fff;border:0;cursor:pointer}main{padding:12px 16px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
-.card{background:#242427;border:1px solid #333;border-radius:6px;overflow:hidden}.card img{width:100%;aspect-ratio:16/9;object-fit:cover;background:#000;display:block}
-.card .n{padding:6px 8px;font-size:12px;word-break:break-all}.card .m{padding:0 8px 8px;font-size:11px;color:#888;display:flex;justify-content:space-between}
-.star{cursor:pointer;color:#666}.star.on{color:#ffd257}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #333;padding:4px 6px;font-size:12px;text-align:left}
-nav a{color:#bbb;margin-right:12px;cursor:pointer}nav a.on{color:#fff;font-weight:bold}
-</style></head><body><header><h1>TeloCut アセットサーバー</h1>
-<nav><a id="t1" class="on" onclick="tab(1)">素材</a><a id="t2" onclick="tab(2)">プロジェクト</a><a id="t3" onclick="tab(3)">レンダーファーム</a></nav>
-<input id="q" placeholder="検索（名前・タグ）" oninput="load()"><select id="k" onchange="load()"><option value="">すべて</option><option value="video">映像</option><option value="audio">音声</option><option value="image">画像</option><option value="project">プロジェクト</option></select>
-<label><input type="checkbox" id="fav" onchange="load()"> お気に入り</label>
-<input id="user" placeholder="ユーザー名" style="width:110px" onchange="localStorage.u=this.value;load()">
-<input type="file" id="up" multiple style="display:none" onchange="upload(this.files)"><button onclick="up.click()">アップロード</button>
-<button onclick="fetch('/api/scan',{method:'POST'}).then(()=>setTimeout(load,1500))">再スキャン</button></header>
-<main><div id="p1" class="grid"></div><div id="p2" style="display:none"></div><div id="p3" style="display:none"></div></main>
-<script>
-const $=id=>document.getElementById(id);$('user').value=localStorage.u||'';
-function tab(n){for(const i of [1,2,3]){$('p'+i).style.display=i==n?'':'none';$('t'+i).className=i==n?'on':''}if(n==2)projects();if(n==3)farm()}
-async function load(){const u=$('user').value;const r=await fetch(`/api/assets?q=${encodeURIComponent($('q').value)}&kind=${$('k').value}&fav_user=${$('fav').checked?encodeURIComponent(u):''}`);
-const a=await r.json();const favs=u?await (await fetch('/api/favorites?user='+encodeURIComponent(u))).json():[];
-$('p1').innerHTML=a.map(x=>`<div class="card"><img loading="lazy" src="/api/assets/${x.id}/thumb" onerror="this.style.visibility='hidden'">
-<div class="n">${x.name}</div><div class="m"><span>${x.kind}${x.duration?' '+x.duration.toFixed(1)+'s':''}${x.width?' '+x.width+'×'+x.height:''}</span>
-<span class="star ${favs.includes(x.id)?'on':''}" onclick="fav('${x.id}',this)">★</span></div></div>`).join('')}
-async function fav(id,el){const u=$('user').value;if(!u){alert('ユーザー名を入れてください');return}const on=!el.classList.contains('on');
-await fetch('/api/favorites',{method:'POST',body:JSON.stringify({user:u,asset_id:id,on})});el.classList.toggle('on',on)}
-async function upload(files){for(const f of files){await fetch('/api/upload?name='+encodeURIComponent(f.name),{method:'POST',body:f})}load()}
-async function projects(){const p=await (await fetch('/api/projects')).json();$('p2').innerHTML='<table><tr><th>プロジェクト</th><th>更新</th><th>使用中</th><th>場所</th></tr>'+
-p.map(x=>`<tr><td>${x.name}</td><td>${new Date(x.mtime*1000).toLocaleString()}</td><td>${x.lock?'🔒 '+(x.lock.user||'')+' @ '+(x.lock.host||''):''}</td><td>${x.path}</td></tr>`).join('')+'</table>'}
-async function farm(){const n=await (await fetch('/api/render/nodes')).json();const j=await (await fetch('/api/render/jobs')).json();
-$('p3').innerHTML='<h3>レンダーノード</h3><table><tr><th>名前</th><th>状態</th><th>情報</th></tr>'+n.map(x=>`<tr><td>${x.name}</td><td>${x.online?'🟢 稼働中':'⚪ 停止'}</td><td>${JSON.stringify(x.info)}</td></tr>`).join('')+
-'</table><h3>ジョブ</h3><table><tr><th>ID</th><th>開始</th><th>進捗</th><th>状態</th><th>依頼元</th></tr>'+j.map(x=>`<tr><td>${x.id}</td><td>${new Date(x.created*1000).toLocaleString()}</td><td>${x.done}/${x.total}</td><td>${x.status}</td><td>${x.client}</td></tr>`).join('')+'</table>';
-if($('p3').style.display=='')setTimeout(farm,3000)}
-load();</script></body></html>"""
+# assetweb.html が見つからないとき（配布物が壊れている）だけ使う
+WEB = """<!doctype html><meta charset="utf-8"><title>TeloCut アセットサーバー</title>
+<body style="font-family:sans-serif;background:#1b1b1d;color:#ddd;padding:24px">
+<h2>TeloCut アセットサーバー</h2><p>画面のファイル（editor/assetweb.html）が見つかりません。サーバーを入れ直してください。</p>
+<p>API は動いています: <a style="color:#a99cff" href="/api/info">/api/info</a></p></body>"""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1209,6 +1209,8 @@ class Handler(BaseHTTPRequestHandler):
         parts = [p for p in u.path.split("/") if p]
         st = self.store
         try:
+            if parts[:2] == ["api", "housekeeping"]:
+                return self._json(st.housekeeping(float(qs.get("proxy_gb", 20))))
             if parts[:2] == ["api", "scan"]:
                 if qs.get("path"):
                     return self._json(st.rescan_dir(qs["path"], qs.get("recursive", "") == "1"))
@@ -1304,7 +1306,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": str(ex)}, 500)
 
 
-def serve(roots, data_dir: str, port: int = 8770, rescan_min: int = 10, block: bool = True):
+def serve(roots, data_dir: str, port: int = 8770, rescan_min: int = 10, block: bool = True, proxy_gb: float = 20.0):
     store = Store(data_dir, roots)
     Handler.store = store
     ThreadingHTTPServer.daemon_threads = True
@@ -1312,8 +1314,15 @@ def serve(roots, data_dir: str, port: int = 8770, rescan_min: int = 10, block: b
     httpd = ThreadingHTTPServer(("0.0.0.0", port), Handler)
 
     def rescan():
+        last_clean = 0.0
         while True:
             store.scan()
+            if time.time() - last_clean > 6 * 3600:          # 6 時間ごとに片付け
+                try:
+                    store.housekeeping(proxy_gb)
+                except Exception:
+                    pass
+                last_clean = time.time()
             time.sleep(max(60, rescan_min * 60))
     threading.Thread(target=rescan, daemon=True).start()
     print(f"TeloCut アセットサーバー: http://localhost:{port}/  （素材フォルダ: {', '.join(store.roots)}）")
@@ -1333,8 +1342,9 @@ def main(argv=None):
     ap.add_argument("--data", default=str(Path.home() / "TeloCutServer"), help="データ（DB・サムネイル・アップロード）の保存先")
     ap.add_argument("--port", type=int, default=8770)
     ap.add_argument("--rescan", type=int, default=10, help="再スキャン間隔（分）")
+    ap.add_argument("--proxy-gb", type=float, default=20.0, help="ブラウザ用プロキシの容量の上限（GB）")
     a = ap.parse_args(argv)
-    serve(a.root, a.data, a.port, a.rescan)
+    serve(a.root, a.data, a.port, a.rescan, proxy_gb=a.proxy_gb)
 
 
 if __name__ == "__main__":

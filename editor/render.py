@@ -20,7 +20,8 @@ from PIL import Image, ImageEnhance, ImageOps, ImageDraw
 from .media import DecoderPool, SAMPLE_RATE, CHANNELS, has_proxy
 from .model import Clip, Project, Sequence
 
-_VISUAL = ("video", "image", "text", "color", "character", "shape", "adjust")
+_VISUAL = ("video", "image", "text", "color", "character", "shape", "adjust", "nest")
+_NEST_DEPTH = [0]           # 入れ子シーケンスの深さ（自分を入れ子にしても止まるように）
 _text_src: "OrderedDict[str, tuple]" = OrderedDict()     # key -> (rgba ndarray, x, y) フル解像度
 _text_scaled: "OrderedDict[tuple, tuple]" = OrderedDict()  # (key, scale) -> (rgba, x, y)
 _offline: dict = {}
@@ -310,8 +311,32 @@ def _cf_in(clip: Clip, cf: int) -> int:
     return max(clip.start, min(clip.end - 1, cf))
 
 
+_RAMP: "OrderedDict[tuple, np.ndarray]" = OrderedDict()
+
+
+def ramp_table(clip: Clip) -> Optional[np.ndarray]:
+    """スピードランプ（props["speed_keys"] = [[相対フレーム, 速度, イージング], ...]）の
+    「クリップ先頭から k フレーム目までに進む素材のフレーム数」の表（長さ duration+1）。無ければ None。"""
+    keys = clip.props.get("speed_keys") if clip.props else None
+    if not keys:
+        return None
+    k = (clip.id, clip.duration, json.dumps(keys))
+    t = _RAMP.get(k)
+    if t is None:
+        sp = np.array([max(0.0, float(key_value(keys, i))) for i in range(clip.duration)], np.float64)
+        t = np.concatenate([[0.0], np.cumsum(sp)])
+        _RAMP[k] = t
+        while len(_RAMP) > 256:
+            _RAMP.popitem(last=False)
+    return t
+
+
 def src_frame(clip: Clip, cf: int) -> float:
-    """タイムラインのフレーム cf に対応する素材のフレーム（速度・逆再生・フリーズ対応）。"""
+    """タイムラインのフレーム cf に対応する素材のフレーム（速度・逆再生・フリーズ・スピードランプ対応）。"""
+    rt = ramp_table(clip)
+    if rt is not None:
+        rel = max(0.0, min(float(clip.duration), float(cf - clip.start)))
+        return float(clip.src_in + np.interp(rel, np.arange(len(rt)), rt))
     sp = float(clip.prop("speed", 1.0) or 0.0)
     rel = cf - clip.start
     if sp == 0:
@@ -401,6 +426,7 @@ def frame_signature(seq: Sequence, frame: int, project: Project, scale: float, u
     """フレームの見た目を決める情報のハッシュ（レンダーキャッシュのキー）。"""
     from . import motion as MO
     MO.FPS[0] = seq.fps
+    W_sig, H_sig = int(seq.width * scale), int(seq.height * scale)
     parts = [round(scale, 4), seq.width, seq.height]
     for L in active_layers(seq, frame):
         c = L.clip
@@ -417,6 +443,14 @@ def frame_signature(seq: Sequence, frame: int, project: Project, scale: float, u
             item.append(_text_key(project, c))
         elif c.kind == "color":
             item.append(c.prop("color", "#000000"))
+        elif c.kind == "nest":
+            nested = project.sequence_by_id(c.props.get("seq_id", ""))
+            if nested is not None and nested is not seq and _NEST_DEPTH[0] < 4:
+                _NEST_DEPTH[0] += 1
+                try:
+                    item.append(frame_signature(nested, int(round(src_frame(c, L.cf))), project, scale, use_proxy))
+                finally:
+                    _NEST_DEPTH[0] -= 1
         elif c.kind == "character":
             path, dy = character_state(project, seq, c, L.cf, _SIG_POOL)
             item += [path, dy, c.prop("flip", False)]
@@ -435,6 +469,8 @@ def frame_signature(seq: Sequence, frame: int, project: Project, scale: float, u
             if is_animated(c.prop("effects")):
                 item.append(("fx_t", L.cf - c.start))
         item.append([prop_at(c, k, L.cf) for k in ("scale", "rotation", "pos_x", "pos_y", "opacity")])
+        if c.props.get("clip_in") or c.props.get("clip_out"):
+            item.append(("ca", [round(v, 3) for v in MO.clip_anim(c, L.cf, seq.fps, W_sig, H_sig)]))
         if MO.is_dynamic(seq, c):
             item.append(("xf", [round(v, 3) for v in MO.transform(seq, c, L.cf, scale)]))
             if c.prop("motion_blur"):
@@ -694,6 +730,17 @@ def _source_image(project: Project, seq: Sequence, clip: Clip, cf: int,
         return out, False
     if clip.kind == "shape":
         return _shape_image(seq, clip, cf, W, H), False
+    if clip.kind == "nest":
+        nested = project.sequence_by_id(clip.props.get("seq_id", ""))
+        if nested is None or nested is seq or _NEST_DEPTH[0] >= 4:
+            return None, True
+        sc = min(W / max(1, nested.width), H / max(1, nested.height))
+        _NEST_DEPTH[0] += 1
+        try:
+            arr = render_frame_np(nested, int(round(src_frame(clip, cf))), project, pool, sc)
+        finally:
+            _NEST_DEPTH[0] -= 1
+        return Image.fromarray(arr, "RGB").convert("RGBA"), False
     if clip.kind == "image":
         if m is None:
             return None, True
@@ -717,7 +764,10 @@ def _overlay(out: np.ndarray, project: Project, seq: Sequence, L: Layer,
         return
     from . import motion as MO
     s, rot, px, py = MO.transform(seq, clip, cf, scale)
-    if s <= 0:
+    if clip.kind != "text" and (clip.props.get("clip_in") or clip.props.get("clip_out")):
+        ds, dr, dx, dy, da = MO.clip_anim(clip, cf, seq.fps, W, H)
+        s, rot, px, py, alpha = s * ds, rot + dr, px + dx, py + dy, alpha * da
+    if s <= 0 or alpha <= 0:
         return
     effects = clip.prop("effects") or ([1] if clip.prop("fx_mode") == "nodes" and clip.prop("fx_graph") else [])
     bm = clip.prop("blend") or "normal"
@@ -928,7 +978,7 @@ def render_frame_np(seq: Sequence, frame: int, project: Project, pool: DecoderPo
         L = layers[0]
         c = L.clip
         if c.props.get("mask") or c.props.get("motion_blur") or c.props.get("parent") or c.props.get("layer3d") \
-                or c.props.get("expr"):
+                or c.props.get("expr") or c.props.get("clip_in") or c.props.get("clip_out") or c.props.get("speed_keys"):
             L = None
     if layers and L is not None:
         m0 = project.media_by_id(c.media_id) if c.kind == "video" and c.media_id else None
@@ -1026,15 +1076,11 @@ def mix_audio(seq: Sequence, project: Project, pool: DecoderPool,
         a_frame = int(start_sample / spf)
         b_frame = int((start_sample + n) / spf) + 1
         for c in track.clips_in(a_frame, b_frame):
-            if not c.enabled or c.kind != "audio":
+            if not c.enabled or c.kind not in ("audio", "nest"):
                 continue
             sp = float(c.prop("speed", 1.0) or 0.0)
             if sp == 0:
                 continue                   # フリーズフレームは無音
-            m = project.media_by_id(c.media_id)
-            if m is None:
-                continue
-            src = pool.audio(m.path)
             cs = int(round(c.start * spf))
             ce = int(round(c.end * spf))
             a = max(start_sample, cs)
@@ -1042,7 +1088,37 @@ def mix_audio(seq: Sequence, project: Project, pool: DecoderPool,
             if b <= a:
                 continue
             src0 = int(round(c.src_in * spf))
-            if sp == 1.0:
+            if c.kind == "nest":
+                nested = project.sequence_by_id(c.props.get("seq_id", ""))
+                if nested is None or nested is seq or _NEST_DEPTH[0] >= 4:
+                    continue
+                _NEST_DEPTH[0] += 1
+                try:
+                    buf = mix_audio(nested, project, pool, src0 + (a - cs), b - a).copy()
+                finally:
+                    _NEST_DEPTH[0] -= 1
+                m = None
+            else:
+                m = project.media_by_id(c.media_id)
+                if m is None:
+                    continue
+                src = pool.audio(m.path)
+            rt = ramp_table(c) if m is not None else None
+            if m is None:
+                pass                       # 入れ子シーケンス: buf はもうある
+            elif rt is not None:
+                # スピードランプ: 素材上の位置を表から求めて補間（音程も速度に合わせて変わる）
+                xs = (np.arange(a, b, dtype=np.float64) - cs) / spf
+                pos = src0 + np.interp(xs, np.arange(len(rt)), rt) * spf
+                lo = int(max(0, np.floor(pos.min())))
+                hi = int(np.ceil(pos.max())) + 2
+                raw = src.read(lo, hi - lo)
+                idx = pos - lo
+                buf = np.empty((b - a, CHANNELS), np.float32)
+                base = np.arange(raw.shape[0])
+                for ch in range(CHANNELS):
+                    buf[:, ch] = np.interp(idx, base, raw[:, ch])
+            elif sp == 1.0:
                 buf = src.read(src0 + (a - cs), b - a)
             else:
                 # 速度変更: 素材上の位置を計算して補間（逆再生も対応）

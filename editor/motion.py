@@ -229,3 +229,42 @@ def star_points(cx, cy, r_out, r_in, n, rot=-90.0):
 def polygon_points(cx, cy, r, n, rot=-90.0):
     return [(cx + r * math.cos(math.radians(rot + i * 360.0 / n)), cy + r * math.sin(math.radians(rot + i * 360.0 / n)))
             for i in range(max(3, n))]
+
+
+# ─────────────────────────── クリップの登場 / 退場アニメ（CapCut 風）───────────────────────────
+CLIP_ANIMS = [("", "なし"), ("fade", "フェード"), ("zoom_in", "ズーム（小→等倍）"), ("zoom_out", "ズーム（大→等倍）"),
+              ("slide_left", "左から"), ("slide_right", "右から"), ("slide_up", "下から"), ("slide_down", "上から"),
+              ("spin", "回転"), ("pop", "ポップ（弾む）")]
+
+
+def clip_anim(clip, cf: float, fps: float, W: int, H: int):
+    """(拡大の倍率, 回転の足し算, x, y, 不透明度の倍率)。登場は先頭、退場は最後の clip_anim_len フレーム（既定 0.4 秒）。"""
+    n = int(clip.props.get("clip_anim_len") or 0) or max(1, int(round(fps * 0.4)))
+    n = max(1, min(n, clip.duration // 2 or 1))
+    ds, dr, dx, dy, da = 1.0, 0.0, 0.0, 0.0, 1.0
+    for kind, k, d in ((clip.props.get("clip_in"), (cf - clip.start + 1) / n, 1),
+                       (clip.props.get("clip_out"), (clip.end - cf) / n, -1)):
+        if not kind or k >= 1.0:
+            continue
+        k = max(0.0, k)
+        e = 1 - (1 - k) ** 3
+        if kind == "fade":
+            da *= e
+        elif kind == "zoom_in":
+            ds *= 0.3 + 0.7 * e
+            da *= e
+        elif kind == "zoom_out":
+            ds *= 1.0 + 0.8 * (1 - e)
+            da *= e
+        elif kind in ("slide_left", "slide_right"):
+            dx += (-1 if kind == "slide_left" else 1) * (1 - e) * W
+        elif kind in ("slide_up", "slide_down"):
+            dy += (1 if kind == "slide_up" else -1) * (1 - e) * H
+        elif kind == "spin":
+            dr += (1 - e) * 180 * d
+            ds *= 0.5 + 0.5 * e
+            da *= e
+        elif kind == "pop":
+            t = k - 1
+            ds *= max(0.05, 1 + 2.70158 * t ** 3 + 1.70158 * t ** 2)
+    return ds, dr, dx, dy, da

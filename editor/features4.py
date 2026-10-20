@@ -16,12 +16,10 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
-                             QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QListWidget,
-                             QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget,
-                             QTableWidgetItem, QVBoxLayout, QWidget)
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout,
+                             QInputDialog, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QSpinBox,
+                             QVBoxLayout)
 
 from core.timecode import frames_to_timecode
 from . import model as M

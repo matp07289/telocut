@@ -22,6 +22,7 @@ from .features3d import Features3DMixin
 from .features4 import Features4Mixin
 from .features5 import Features5Mixin
 from .production import ProductionMixin
+from .features6 import Features6Mixin
 from .dualdisplay import DualDisplayMixin
 from . import media as MD
 from . import render as R
@@ -82,8 +83,8 @@ class SequenceDialog(QDialog):
         f.addRow(bb)
 
 
-class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin, ProductionMixin, DualDisplayMixin,
-                 QMainWindow):
+class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin, ProductionMixin, Features6Mixin,
+                 DualDisplayMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         SETTINGS.ensure_dirs()
@@ -223,6 +224,7 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         self._build_feature4_menus()
         self._build_feature5_menus()
         self._build_production_menus()
+        self._build_feature6_menus()
         self._build_toolbar()
         from .commands import add_new_keys
         self.apply_keymap(add_new_keys(dict(SETTINGS.keymap)) if SETTINGS.keymap else preset_keymap(SETTINGS.keyboard_preset))
@@ -373,6 +375,7 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         self.cmd_fns.update(self._feature4_commands())
         self.cmd_fns.update(self._feature5_commands())
         self.cmd_fns.update(self._production_commands())
+        self.cmd_fns.update(self._feature6_commands())
         for i in range(4):
             self.cmd_fns[f"toggle_v{i + 1}"] = lambda i=i: self.toggle_track("video", i)
             self.cmd_fns[f"toggle_a{i + 1}"] = lambda i=i: self.toggle_track("audio", i)
@@ -703,7 +706,8 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
 
     def _update_title(self):
         name = Path(self.project_path).name if self.project_path else "無題"
-        self.setWindowTitle(f"{'*' if self.dirty else ''}{name} — {APP_NAME}")
+        from .version import VERSION
+        self.setWindowTitle(f"{'*' if self.dirty else ''}{name} — {APP_NAME} {VERSION}")
 
     def _on_selection(self):
         self.inspector.load([c for _, c in self.canvas.selected_clips()])

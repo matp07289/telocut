@@ -61,7 +61,7 @@ def handle(msg: dict):
         if method == "initialize":
             res = {"protocolVersion": params.get("protocolVersion", PROTOCOL),
                    "capabilities": {"tools": {}},
-                   "serverInfo": {"name": "telocut", "version": "0.9.0"},
+                   "serverInfo": {"name": "telocut", "version": __import__("editor.version", fromlist=["VERSION"]).VERSION},
                    "instructions": "起動中の TeloCut（動画編集ソフト）を操作します。まず get_state で状況を確認し、"
                                    "編集は apply_ops でまとめて行ってください。"}
         elif method == "ping":

@@ -28,7 +28,7 @@ NVENC での書き出しだけは、ffmpeg.exe が PATH 上か TeloCut.exe と�
 build\build_telocut.bat
 ```
 
-- 生成物: `dist_telocut\TeloCut\`（フォルダ形式。フォルダごと配布）と `dist_telocut\TeloCut_v0.9.0.zip`
+- 生成物: `dist_telocut\TeloCut\`（フォルダ形式。フォルダごと配布）と `dist_telocut\TeloCut_v<バージョン>.zip`（バージョンは `editor/version.py` の 1 か所で決まる）
   - `TeloCut.exe`（動画編集）/ `DavinTelop.exe`（テロップ編集）/ `TeloCutCLI.exe`（コンソール版: MCP・サーバー・レンダーノード）
 - バッチは最後に `TeloCut.exe --selftest` で合成・テロップ描画・書き出し・デコードを確認します
 - 予期しないエラーは `%USERPROFILE%\.davintelop\telocut_crash.log` に記録されます
@@ -190,6 +190,29 @@ Avid 標準で未割り当ての機能には TeloCut が独自にキーを付け
 30. スマート書き出し: 2 秒ごとの区間をキャッシュし、変わった区間だけレンダリングして結合（テロップの部分修正の再書き出しが数倍速い）
 31. 並列書き出し（この PC の CPU コアを全部使う）
 32. レンダーファーム: アセットサーバー経由で複数のレンダリング用 PC に区間を分散
+
+## v0.10.0 で追加した機能（ほかの編集ソフトにある機能・メンテ）
+
+### クリップ（メニュー「クリップ」）
+
+| 機能 | 元になったソフト | 内容 |
+|---|---|---|
+| スピードランプ | Premiere の速度カーブ / CapCut | モンタージュ・ヒーロー・バレット・だんだん速く / 遅く・ジャンプ。クリップの長さはそのままで速度だけ変わる（音も追従） |
+| 登場 / 退場アニメ | CapCut | 映像・画像・図形に フェード・ズーム・左右上下から・回転・ポップ（0.4 秒） |
+| ネスト（Ctrl+Alt+N） | Premiere のネスト / AE のプリコンポーズ | 選んだクリップを新しいシーケンスにまとめて 1 本のクリップに（映像と音声）。「ネストを開く」で中身を編集 |
+| テイク（Ctrl+Alt+T で切り替え） | Final Cut Pro のオーディション | クリップに別テイクを足して、同じ位置・長さのまま入れ替えて見比べる |
+| ラウドネスをそろえる | Premiere のエッセンシャルサウンド | 選んだセリフの音量を、それぞれ目標の LUFS に（大きい声・小さい声をそろえる） |
+| シーケンスを比較 | Resolve の Timeline Compare | スナップショットや複製との違い（追加・削除・移動・長さ・設定・マーカー）を一覧、ダブルクリックで移動 |
+| ファイルの収集 | AE の Collect Files / Premiere のプロジェクトマネージャー | 使っている素材をプロジェクトの `Media` フォルダにコピーしてつなぎ直す（持ち運び・納品・バックアップ） |
+| 再生ヘッドのクリップを選択（D） | Premiere | 選択トラックの、再生ヘッドの位置のクリップを選ぶ |
+| すぐ後ろに複製 | Alt ドラッグ | 選んだクリップをすぐ後ろにコピー（後ろが空いているときだけ） |
+
+### メンテ
+
+- バージョンを `editor/version.py` の 1 か所に（EXE・zip の名前・MCP・ウィンドウのタイトル）
+- アセットサーバー: 6 時間ごとに片付け（ブラウザ用プロキシを `--proxy-gb`（既定 20 GB）以下に・消えた素材のサムネイル / プロキシを削除）
+- Dynamic Link: 前のレンダリング結果を自動で片付け
+- 使っていない import の整理、macOS の `._*` ファイルを Git の対象外に
 
 ## v0.9.0 で追加した機能（AE / Blender 風・Dynamic Link・自動同期・制作管理）
 
@@ -444,6 +467,7 @@ YouTube → テロップエディター（Ctrl+Shift+T）。DavinTelop のメイ
 | `assistant.py` / `mcp_server.py` / `ops.py` / `bridge.py` | Claude Code アシスト / MCP サーバー / 編集命令 / ローカル連携（DavinTelop・MCP） |
 | `motion.py` / `motionpanel.py` / `tracker.py` / `features5.py` | AE / Blender 風のモーション（描画・パネル・グラフエディター・トラッキング） |
 | `dynlink.py` / `history.py` / `production.py` | Dynamic Link 風の連携・更新履歴と版・制作管理 |
+| `features6.py` / `version.py` | ほかの編集ソフト由来のクリップ機能 / バージョン |
 | `features4.py` | テロップ・整理・チェックの追加機能 |
 | `assetweb.html` | ブラウザのアセット画面（サーバーが配る） |
 | `assetbrowser.py` | アセットサーバーの画面（実フォルダ・マイフォルダ・再生・整理・取り込み） |

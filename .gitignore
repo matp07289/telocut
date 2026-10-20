@@ -29,6 +29,7 @@ __pycache__/
 # macOS
 .DS_Store
 ._*
+._*
 .AppleDouble
 .LSOverride
 

@@ -350,7 +350,7 @@ class Inspector(QScrollArea):
             off = self.mw.tc_offset(seq)
             self.sub.setText(f"開始 {frames_to_timecode(c.start + off, seq.fps)}   "
                              f"長さ {frames_to_timecode(c.duration, seq.fps)}")
-            visual = kinds & {"video", "image", "text", "color", "character", "shape", "adjust", "null", "camera"}
+            visual = kinds & {"video", "image", "text", "color", "character", "shape", "adjust", "null", "camera", "nest"}
             if visual:
                 from .render import prop_at
                 f = self.mw.record_player.position
