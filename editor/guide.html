@@ -225,7 +225,7 @@ footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
   <li><b>保存</b> — <kbd>Ctrl</kbd>+<kbd>S</kbd>。自動保存（5 分ごと）とバックアップ（Attic）もあります。</li>
   <li><b>書き出し</b> — <kbd>Ctrl</kbd>+<kbd>E</kbd>。形式は「H.264（MP4）」のままで OK。保存先を選んで書き出します。</li>
 </ol>
-<div class="box tip"><b>ヒント</b>タイムラインの上に赤い線が出ている所は、重くてそのままでは滑らかに再生できない区間です。<span class="menu">レンダリング → 要レンダリング部分をすべてレンダリング</span> で滑らかになります。</div>
+<div class="box tip"><b>ヒント</b>タイムラインの上に赤い線が出ている所は、重くてそのままでは滑らかに再生できない区間です。<span class="menu">再生 → レンダリング・プロキシ → 要レンダリング部分をすべてレンダリング</span> で滑らかになります。</div>
 </section>
 
 <!-- 4 -->
@@ -237,14 +237,14 @@ footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
 <p>自分で作ったテロップは、タイムラインで選んで <span class="menu">テロップ → 選んだテロップをテンプレートとして保存</span> すれば次から同じ見た目で使えます <span class="pro">Pro</span>。</p>
 <h3>字幕を自動で作る</h3>
 <ol class="steps">
-  <li><span class="menu">YouTube → 文字起こしで字幕を作成</span>。音声を聞き取って、読みやすい長さ（10〜20 文字ほど）で区切った字幕を並べます。</li>
+  <li><span class="menu">テロップ → 文字起こしで字幕を作成</span>。音声を聞き取って、読みやすい長さ（10〜20 文字ほど）で区切った字幕を並べます。</li>
   <li><span class="menu">ウィンドウ → テロップ一覧</span> で、表のまま誤字を直せます。</li>
-  <li><span class="menu">YouTube → テロップの読みやすさチェック</span> で、読む速さが速すぎる字幕にマーカーが付きます。</li>
+  <li><span class="menu">テロップ → 整える・直す → テロップの読みやすさチェック</span> で、読む速さが速すぎる字幕にマーカーが付きます。</li>
 </ol>
 <h3>見た目を一気にそろえる</h3>
 <ul>
   <li>テロップスタイル: YouTube 黄色・極太縁・強調・ニュース帯などをワンクリック</li>
-  <li><span class="menu">便利 → テロップのフォントを一括変更</span> / <span class="menu">便利 → はみ出すテロップを画面に収める</span></li>
+  <li><span class="menu">テロップ → テロップのフォントを一括変更</span> / <span class="menu">テロップ → 整える・直す → はみ出すテロップを画面に収める</span></li>
   <li>文字アニメ（ポップ・スライドアップ・タイプライター）とカラオケ表示</li>
   <li>細かい編集は <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> のテロップエディター（DavinTelop と同じ画面）</li>
 </ul>
@@ -255,20 +255,30 @@ footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
 <section id="yukkuri">
 <h2><span class="no">5</span>ゆっくり実況・解説動画</h2>
 <ol class="steps">
-  <li><b>キャラクターを登録</b> — <span class="menu">YouTube → キャラクター（立ち絵）を登録</span>。口閉じ・口開き・目閉じの PNG を選ぶか、PSD から自動で作ります。</li>
+  <li><b>キャラクターを登録</b> — <span class="menu">キャラクター・声 → キャラクター（立ち絵）を登録</span>。口閉じ・口開き・目閉じの PNG を選ぶか、PSD から自動で作ります。</li>
   <li><b>台本を書く</b> — 「霊夢：こんにちは」「魔理沙：今日は〜」のように、1 行に 1 セリフ。</li>
   <li><b>一括生成</b> — <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Y</kbd>（台本から一括生成）に台本を貼ると、音声（VOICEVOX か Windows の音声）・字幕・立ち絵がまとめて並びます。口パクとまばたきも自動です。</li>
   <li><b>セリフを直す</b> — <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Y</kbd> のセリフパネルで文を直すと、その音声だけ作り直し、長さが変わった分は後ろを自動で詰めます。</li>
-  <li><b>BGM と効果音</b> — <span class="menu">YouTube → BGM を最後までループ</span>。<span class="menu">YouTube → 選択トラックのダッキング</span> で、声の所だけ BGM が自動で下がります。効果音は SE パッドからクリックで置けます。</li>
+  <li><b>BGM と効果音</b> — <span class="menu">オーディオ → BGM を最後までループ</span>。<span class="menu">オーディオ → 選択トラックのダッキング</span> で、声の所だけ BGM が自動で下がります。効果音は SE パッドからクリックで置けます。</li>
+</ol>
+<h3>メニューの並び（v0.25 から）</h3>
+<p>上のメニューは仕事の流れの順です: <b>ファイル / 編集 / クリップ / シーケンス / テロップ / オーディオ / 再生 /
+キャラクター・声 / 演出 / 取り込み・収録 / 書き出し・公開 / チェック・管理 / 連携 / 設定</b>。
+場所がわからないときは、ツールバーの「🔍 やりたいこと」に言葉を入れると探せます。</p>
+<h3>MMD のキャラクターをセリフに合わせて動かす</h3>
+<ol class="steps">
+  <li><span class="menu">キャラクター・声 → MMD をセリフに合わせて動かす</span> を開き、モデル（PMX）と声の音声トラックを選びます。</li>
+  <li>使う身振り（説明する手・両手を広げる・胸に手・指さし など）と大きさ、うなずき・体の揺れ・まばたきを選んで「作る」。</li>
+  <li>Blender が背景透明の動画を作り、声の位置に置きます。「MME 風エフェクト」でアニメ調にもできます（そのクリップだけに掛かります）。</li>
 </ol>
 <h3>ずんだもん などの立ち絵を目パチ・口パクに（立ち絵メーカー）</h3>
 <ol class="steps">
-  <li><span class="menu">YouTube → 立ち絵メーカー</span> を開き、「フォルダ…」で立ち絵の素材のフォルダ（または PSD・PsdSplitter の JSON）を選びます。</li>
+  <li><span class="menu">キャラクター・声 → 立ち絵メーカー</span> を開き、「フォルダ…」で立ち絵の素材のフォルダ（または PSD・PsdSplitter の JSON）を選びます。</li>
   <li>左のリストで衣装・表情を選びます（◉ は 1 つだけ）。右の「目パチ」「口パク」は名前から自動で入っています。プレビューの「▶ 動かして見る」で確認。</li>
   <li>まばたきの間隔・ばらつき、口が開く音の大きさを好みに。「テンプレートとして保存」で「ずんだもん 通常」のように名前を付けて残せます。</li>
-  <li>「作ってタイムラインに置く」で、選んでいる音声トラックの声に合わせて口パクします。次からは <span class="menu">YouTube → 立ち絵テンプレートから置く</span> で選ぶだけ。</li>
+  <li>「作ってタイムラインに置く」で、選んでいる音声トラックの声に合わせて口パクします。次からは <span class="menu">キャラクター・声 → 立ち絵テンプレートから置く</span> で選ぶだけ。</li>
 </ol>
-<div class="box warn"><b>注意</b>VOICEVOX を使うときは、VOICEVOX を先に起動しておいてください。動画の概要欄には「VOICEVOX:キャラ名」のクレジットが必要です（<span class="menu">YouTube → 概要欄テキスト</span> で自動で入ります）。</div>
+<div class="box warn"><b>注意</b>VOICEVOX を使うときは、VOICEVOX を先に起動しておいてください。動画の概要欄には「VOICEVOX:キャラ名」のクレジットが必要です（<span class="menu">書き出し・公開 → 概要欄テキスト</span> で自動で入ります）。</div>
 </section>
 
 <!-- 6 -->
@@ -277,7 +287,7 @@ footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
 <ol class="steps">
   <li>新規プロジェクトのテンプレートで <b>biim 式</b> を選びます（あとからでも OK）。</li>
   <li>ゲーム画面の動画をタイムラインに置き、そのクリップを選びます。</li>
-  <li><span class="menu">YouTube → 素材の配置テンプレート</span> で配置を選びます: biim 全画面 / サイド / 4:3＋余白 / ワイプ / 比較。</li>
+  <li><span class="menu">演出 → 素材の配置テンプレート</span> で配置を選びます: biim 全画面 / サイド / 4:3＋余白 / ワイプ / 比較。</li>
   <li>ゲーム画面・RTA タイマー・区間名・倍速の表示（×N）・立ち絵・話者ごとの色の字幕がまとめて置かれます。</li>
   <li>区間の切れ目（ボス撃破など）で <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>W</kbd>（区間を追加）。タイマーに区間名と区間タイムが出ます。</li>
 </ol>
@@ -303,25 +313,25 @@ footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
 <h2><span class="no">8</span>YouTube 向けの仕上げ</h2>
 <div class="tbl"><table>
   <tr><th>やりたいこと</th><th>場所</th></tr>
-  <tr><td>サムネイルを作る（1280×720）</td><td><span class="menu">YouTube → サムネイルを作成</span></td></tr>
-  <tr><td>ショート（縦 1080×1920）を作る</td><td><span class="menu">YouTube → ショート動画（縦型）を作成</span></td></tr>
-  <tr><td>音量を YouTube の基準にそろえる</td><td><span class="menu">YouTube → ラウドネス測定（-14 LUFS に合わせる）</span></td></tr>
-  <tr><td>チャプター・クレジット付きの概要欄</td><td>マーカー（<kbd>Shift</kbd>+<kbd>M</kbd>）を付けてから <span class="menu">YouTube → 概要欄テキスト（チャプター・クレジット）</span></td></tr>
-  <tr><td>書き出す前に間違いを探す</td><td><span class="menu">整理・チェック → 書き出し前チェック</span>（オフライン素材・はみ出し・音割れなど）</td></tr>
-  <tr><td>字幕ファイルを付ける</td><td><span class="menu">便利 → ASS 字幕 / WebVTT 字幕を書き出し</span></td></tr>
+  <tr><td>サムネイルを作る（1280×720）</td><td><span class="menu">書き出し・公開 → サムネイルを作成</span></td></tr>
+  <tr><td>ショート（縦 1080×1920）を作る</td><td><span class="menu">書き出し・公開 → ショート動画（縦型）を作成</span></td></tr>
+  <tr><td>音量を YouTube の基準にそろえる</td><td><span class="menu">オーディオ → ラウドネス測定（-14 LUFS に合わせる）</span></td></tr>
+  <tr><td>チャプター・クレジット付きの概要欄</td><td>マーカー（<kbd>Shift</kbd>+<kbd>M</kbd>）を付けてから <span class="menu">書き出し・公開 → 概要欄テキスト（チャプター・クレジット）</span></td></tr>
+  <tr><td>書き出す前に間違いを探す</td><td><span class="menu">チェック・管理 → 書き出し前チェック</span>（オフライン素材・はみ出し・音割れなど）</td></tr>
+  <tr><td>字幕ファイルを付ける</td><td><span class="menu">テロップ → 字幕ファイル・翻訳 → ASS 字幕 / WebVTT 字幕を書き出し</span></td></tr>
   <tr><td>ショートで隠れる所を確かめる</td><td><span class="menu">再生 → ガイドを表示</span> →「ショート / TikTok の UI の位置」</td></tr>
 </table></div>
 <h3>公開前のチェック（テレビの「放送前チェック」）</h3>
-<p><span class="menu">整理・チェック → 放送前チェック → まとめてチェック</span>（<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F5</kbd>）。
+<p><span class="menu">チェック・管理 → 放送前チェック → まとめてチェック</span>（<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F5</kbd>）。
 点滅・黒い画面・音割れ・長い無音・テロップの重なり・チャプターの決まり・冒頭のつかみ・NG ワード・クレジットの抜けなどを一度に調べ、一覧から直したい所へ飛べます。</p>
 <h3>YouTube にアップロード</h3>
 <ol class="steps">
   <li>はじめに 1 回だけ: Google Cloud で「YouTube Data API v3」を有効にして、OAuth クライアント ID（種類: デスクトップ アプリ）を作り、JSON をダウンロードします。</li>
-  <li><span class="menu">YouTube → YouTube にアップロード</span>（仕上げのページの「▶ YouTube へ」）。「設定ファイルを選ぶ」でその JSON を読み込み、「Google にログイン」→ ブラウザで許可。</li>
+  <li><span class="menu">書き出し・公開 → YouTube にアップロード</span>（仕上げのページの「▶ YouTube へ」）。「設定ファイルを選ぶ」でその JSON を読み込み、「Google にログイン」→ ブラウザで許可。</li>
   <li>最後に書き出した動画・タイトル・概要欄（チャプター）が入っています。公開範囲・予約公開・サムネイル・再生リストを選んで「アップロード」。終わると URL がコピーされます。</li>
 </ol>
 <div class="box warn"><b>注意</b>Google の審査を通していないクライアントで上げた動画は「非公開」になります（YouTube の決まり）。途中で切れたら「アップロード履歴」の「続きから送る」。</div>
-<h3>演出（<span class="menu">YouTube → 演出</span>）</h3>
+<h3>演出（<span class="menu">演出 → 演出</span>）</h3>
 <div class="tbl"><table>
   <tr><th>演出</th><th>使い方</th></tr>
   <tr><td>ピー音</td><td>消したい言葉に IN / OUT を付けて実行。声が消えて 1kHz のピーが入ります</td></tr>
@@ -343,9 +353,9 @@ footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
   <tr><td>色の雰囲気をすぐ変える</td><td>クリップを選んで <kbd>Alt</kbd>+<kbd>L</kbd>（ルック）</td></tr>
   <tr><td>クリップを別のトラックへ</td><td><kbd>Alt</kbd>+<kbd>↑</kbd> / <kbd>Alt</kbd>+<kbd>↓</kbd></td></tr>
   <tr><td>さっき直した所に戻る</td><td><kbd>Alt</kbd>+<kbd>B</kbd></td></tr>
-  <tr><td>動画を目標の長さに収める</td><td><span class="menu">整理・チェック → 目標の長さ</span>。ステータスバーに「あと何秒 / 何秒超過」</td></tr>
+  <tr><td>動画を目標の長さに収める</td><td><span class="menu">シーケンス → 目標の長さ</span>。ステータスバーに「あと何秒 / 何秒超過」</td></tr>
 </table></div>
-<p>テロップの仕上げには <span class="menu">テロップ → テロップの表記チェック</span>（「のの」などの打ち間違い・全角英数・カッコの対応）と <span class="menu">テロップ → 句読点を整える</span> も便利です。</p>
+<p>テロップの仕上げには <span class="menu">テロップ → 整える・直す → テロップの表記チェック</span>（「のの」などの打ち間違い・全角英数・カッコの対応）と <span class="menu">テロップ → 整える・直す → 句読点を整える</span> も便利です。</p>
 </section>
 
 <!-- 9 -->
@@ -359,8 +369,8 @@ footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
   <tr><td>ProRes / DNxHR（MOV / MXF） <span class="pro">Pro</span></td><td>ほかの編集ソフトに渡す・高画質で保存する</td></tr>
   <tr><td>透明付き（ProRes 4444 など） <span class="pro">Pro</span></td><td>テロップだけを別のソフトで重ねる</td></tr>
 </table></div>
-<p><b>トランスコード</b> <span class="pro">Pro</span>: <span class="menu">変換・仕上げ</span> から、素材をまとめて編集しやすい形式（DNxHR LB など）に変換できます。</p>
-<p>ほかの編集ソフトとのやり取りは <span class="menu">ファイル → 他ソフトから読み込み</span>（<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>I</kbd>）と <span class="menu">ファイル → 他の形式で書き出し</span>。AAF・Premiere Pro・Final Cut Pro XML・EDL に対応しています。</p>
+<p><b>トランスコード</b> <span class="pro">Pro</span>: <span class="menu">書き出し・公開</span> から、素材をまとめて編集しやすい形式（DNxHR LB など）に変換できます。</p>
+<p>ほかの編集ソフトとのやり取りは <span class="menu">ファイル → 他ソフトから読み込み</span>（<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>I</kbd>）と <span class="menu">書き出し・公開 → 他の形式で書き出し</span>。AAF・Premiere Pro・Final Cut Pro XML・EDL に対応しています。</p>
 </section>
 
 <!-- 10 -->
@@ -368,8 +378,8 @@ footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
 <h2><span class="no">10</span>3D テロップ（Blender） <span class="pro">Pro</span></h2>
 <ol class="steps">
   <li>Blender をインストールしておきます（ふつうの場所に入れれば TeloCut が自動で見つけます。見つからないときは環境設定で <code>blender.exe</code> の場所を指定）。</li>
-  <li><span class="menu">3D / MMD → 3D テキスト（Blender）</span> を開き、テンプレートを選んで文字などを決めて OK。Blender が裏で動いて、できた映像がタイムラインに入ります。</li>
-  <li>直したいときは、その 3D テロップを選んで <span class="menu">3D / MMD → 3D テロップを直す（Blender）</span>。同じ場所で作り直されます。</li>
+  <li><span class="menu">演出 → モーション・3D → 3D テキスト（Blender）</span> を開き、テンプレートを選んで文字などを決めて OK。Blender が裏で動いて、できた映像がタイムラインに入ります。</li>
+  <li>直したいときは、その 3D テロップを選んで <span class="menu">演出 → モーション・3D → 3D テロップを直す（Blender）</span>。同じ場所で作り直されます。</li>
   <li>気に入った設定は「テンプレートとして保存」で、次から選べるようになります。</li>
 </ol>
 </section>
@@ -387,12 +397,12 @@ footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
   <tr><td>環境設定</td><td>ドライブ・キャッシュの場所・サーバーなど</td><td>この PC</td></tr>
 </table></div>
 <h3>保存と書き出しの名前</h3>
-<p><span class="menu">整理・チェック → 保存のたびにバックアップするフォルダ</span> を決めると、保存するたびに日時付きのコピーが残ります（新しい 20 個）。
-<span class="menu">整理・チェック → 書き出しファイル名のルール</span> で「{project}_{seq}_v{v}」のようにすると、書き出しの名前が自動で付き、版の番号も増えます。</p>
+<p><span class="menu">チェック・管理 → 保存のたびにバックアップするフォルダ</span> を決めると、保存するたびに日時付きのコピーが残ります（新しい 20 個）。
+<span class="menu">書き出し・公開 → 書き出しファイル名のルール</span> で「{project}_{seq}_v{v}」のようにすると、書き出しの名前が自動で付き、版の番号も増えます。</p>
 <h3>画面と操作</h3>
 <p><span class="menu">設定 → ユーザー設定 → 画面と操作</span> で、メニュー（かんたん / すべて）・ツールバーの大きさ・パネルの配置のロック・スタート画面・書き出しが終わったときの知らせ方を選べます。</p>
 <h3>ショートカット</h3>
-<p><span class="menu">ファイル → キーボード設定</span>。画面のキーボードに、コマンドをドラッグして割り当てます。「Avid 標準」と「Premiere 風」のプリセットがあります。</p>
+<p><span class="menu">設定 → キーボード設定</span>。画面のキーボードに、コマンドをドラッグして割り当てます。「Avid 標準」と「Premiere 風」のプリセットがあります。</p>
 </section>
 
 <!-- 12 -->
@@ -423,7 +433,7 @@ footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
 <!-- 付録 -->
 <section id="keys">
 <h2><span class="no">付録</span>ショートカット早見表</h2>
-<p>キーの並びは <span class="menu">ファイル → キーボード設定</span> で切り替えられます。<kbd>F1</kbd> で今の一覧が見られます。</p>
+<p>キーの並びは <span class="menu">設定 → キーボード設定</span> で切り替えられます。<kbd>F1</kbd> で今の一覧が見られます。</p>
 <div class="tbl"><table>
   <tr><th>操作</th><th>Avid 標準</th><th>Premiere 風</th></tr>
   <tr><td>素材を読み込み</td><td><kbd>Ctrl</kbd>+<kbd>I</kbd></td><td><kbd>Ctrl</kbd>+<kbd>I</kbd></td></tr>

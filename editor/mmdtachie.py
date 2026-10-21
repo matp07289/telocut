@@ -208,9 +208,12 @@ bpy.context.view_layer.update()
 
 # ── モーフ
 ALL = set()
-for st in P["states"].values():
-    ALL |= set(st)
+VARS = P.get("variants") or {"": P.get("states") or {}}
+for sts in VARS.values():
+    for st in sts.values():
+        ALL |= set(st)
 ALL |= set(P.get("base") or {})
+ALL |= set(((P.get("anim") or {}).get("morph_keys") or {}).keys())
 
 def set_morphs(vals):
     for m in meshes:
@@ -255,6 +258,11 @@ xmin, xmax = min(p.x for p in sel), max(p.x for p in sel)
 ymin = min(p.y for p in pts)
 w, h = (xmax - xmin), (zmax - bottom)
 pad = 1.0 + float(P.get("margin", 0.04)) * 2
+if P.get("anim"):
+    # 身振りで手が出ても切れないように左右を広げる
+    cx = (xmin + xmax) / 2
+    w = max(w, (zmax - bottom) * 0.62)
+    xmin, xmax = cx - w / 2, cx + w / 2
 H = int(P.get("height", 1600))
 W = max(64, int(round(H * w / h)))
 W += W % 2
@@ -295,12 +303,62 @@ if P.get("save_blend"):
     bpy.ops.wm.save_as_mainfile(filepath=P["save_blend"], copy=True)
 
 os.makedirs(P["out_dir"], exist_ok=True)
-for key, vals in P["states"].items():
-    set_morphs(vals)
-    scn.render.filepath = os.path.join(P["out_dir"], key + ".png")
-    bpy.ops.render.render(write_still=True)
-    print("TELOCUT_STATE", key, flush=True)
-print("TELOCUT_DONE")
+A = P.get("anim")
+if A:
+    # ── 身振り手振り・口パク・まばたき（キーフレーム）→ 背景透明の動画
+    fps = float(A.get("fps", 30))
+    if abs(fps - 29.97) < 0.01:
+        scn.render.fps, scn.render.fps_base = 30000, 1001
+    elif abs(fps - 59.94) < 0.01:
+        scn.render.fps, scn.render.fps_base = 60000, 1001
+    else:
+        scn.render.fps, scn.render.fps_base = int(round(fps)), 1
+    for name, keys in (A.get("bone_keys") or {}).items():
+        pb = by_j.get(name) or arm.pose.bones.get(name)
+        if pb is None:
+            continue
+        pb.rotation_mode = "QUATERNION"
+        rest = pb.bone.matrix_local.to_quaternion()
+        for f, rots in keys:
+            q = Quaternion()
+            for axis, deg in rots:
+                q = (rest.inverted() @ Quaternion(AX[axis], math.radians(deg)) @ rest) @ q
+            pb.rotation_quaternion = q
+            pb.keyframe_insert("rotation_quaternion", frame=int(f))
+    base = P.get("base") or {}
+    for m in meshes:
+        sk = m.data.shape_keys
+        if not sk:
+            continue
+        for k in sk.key_blocks:
+            if k.name in ALL:
+                k.value = float(base.get(k.name, 0.0))
+        for name, keys in (A.get("morph_keys") or {}).items():
+            kb = sk.key_blocks.get(name)
+            if kb is None:
+                continue
+            for f, v in keys:
+                kb.value = float(v)
+                kb.keyframe_insert("value", frame=int(f))
+    scn.frame_start = 0
+    scn.frame_end = max(1, int(A["frames"])) - 1
+    scn.render.image_settings.file_format = "FFMPEG"
+    scn.render.ffmpeg.format = "QUICKTIME"
+    scn.render.ffmpeg.codec = "PNG"
+    scn.render.image_settings.color_mode = "RGBA"
+    scn.render.filepath = os.path.join(P["out_dir"], "anim_")
+    bpy.ops.render.render(animation=True)
+    print("TELOCUT_DONE")
+else:
+    for vname, states in VARS.items():
+        d = os.path.join(P["out_dir"], vname) if vname else P["out_dir"]
+        os.makedirs(d, exist_ok=True)
+        for key, vals in states.items():
+            set_morphs(vals)
+            scn.render.filepath = os.path.join(d, key + ".png")
+            bpy.ops.render.render(write_still=True)
+            print("TELOCUT_STATE", (vname + "/" if vname else "") + key, flush=True)
+    print("TELOCUT_DONE")
 '''
 
 EDIT_SCRIPT = r'''
@@ -314,7 +372,8 @@ print("TeloCut: ポーズを直したら Ctrl+S で保存して、TeloCut の「
 
 
 def run_blender(exe: str, script: str, params: dict, work_dir: str, background: bool = True,
-                progress: Optional[Callable[[str], None]] = None, cancel=None, timeout: float = 1800) -> str:
+                progress: Optional[Callable[[str], None]] = None, cancel=None, timeout: float = 1800,
+                line_cb: Optional[Callable[[str], None]] = None) -> str:
     """Blender でスクリプトを実行（params は JSON で渡す）。標準出力をまとめて返す。エラーなら例外。"""
     os.makedirs(work_dir, exist_ok=True)
     sp = os.path.join(work_dir, "telocut_mmd.py")
@@ -335,6 +394,8 @@ def run_blender(exe: str, script: str, params: dict, work_dir: str, background: 
         out.append(line)
         if progress and line.startswith("TELOCUT_STATE"):
             progress(line.split(" ", 1)[1])
+        if line_cb is not None:
+            line_cb(line)
         if cancel is not None and cancel():
             p.kill()
             raise InterruptedError("中止しました")
@@ -379,6 +440,58 @@ def render_params(pmx: str, morphs: List[str], expression: str = "通常", pose:
     return {"pmx": pmx, "blend": blend, "vpd": vpd, "pose": pose_rotations(pose, arm, tilt) if not blend else {},
             "yaw": yaw, "framing": framing, "height": int(height), "outline": bool(outline), "base": base,
             "states": state_morphs(roles, base), "roles": roles, "out_dir": out_dir, "save_blend": save_blend}
+
+
+def variants_params(params: dict, morphs: List[str], expressions: List[str],
+                    extra_morphs: Optional[Dict[str, float]] = None) -> dict:
+    """表情差分をまとめて作る（Blender は 1 回だけ起動）。params は render_params の結果。"""
+    roles = roles_for(morphs)
+    var = {}
+    for i, ex in enumerate(expressions):
+        base = expression_morphs(ex, morphs)
+        base.update(extra_morphs or {})
+        var[f"{i:02d}"] = state_morphs(roles, base)
+    return {**params, "variants": var, "variant_names": {f"{i:02d}": ex for i, ex in enumerate(expressions)},
+            "states": {}}
+
+
+def render_variants(exe: str, params: dict, progress=None, cancel=None) -> Dict[str, Dict[str, str]]:
+    """{表情の名前: {キー: PNG}}"""
+    run_blender(exe, RENDER_SCRIPT, params, params["out_dir"], progress=progress, cancel=cancel)
+    out = {}
+    for vk, name in params["variant_names"].items():
+        d = os.path.join(params["out_dir"], vk)
+        paths = {k: os.path.join(d, k + ".png") for k in params["variants"][vk] if os.path.exists(os.path.join(d, k + ".png"))}
+        if "closed" in paths:
+            out[name] = paths
+    if not out:
+        raise RuntimeError("レンダリングした絵がありません")
+    return out
+
+
+def render_animation(exe: str, params: dict, progress=None, cancel=None) -> str:
+    """身振り手振り・口パクの動画（背景透明の MOV）を作ってパスを返す。"""
+    frames = int(params["anim"]["frames"])
+    done = [0]
+
+    def prog(line):
+        if progress:
+            progress(line)
+    import re
+    p = dict(params)
+
+    def watch(line):
+        m = re.match(r"Fra:(\d+)", line)
+        if m and progress:
+            f = int(m.group(1))
+            if f > done[0]:
+                done[0] = f
+                progress(f"{f}/{frames}")
+    run_blender(exe, RENDER_SCRIPT, p, p["out_dir"], progress=None, cancel=cancel, line_cb=watch, timeout=6 * 3600)
+    hits = sorted(Path(p["out_dir"]).glob("anim_*.mov"), key=lambda x: x.stat().st_mtime)
+    if not hits:
+        raise RuntimeError("動画ができませんでした")
+    return str(hits[-1])
 
 
 def render(exe: str, params: dict, progress=None, cancel=None) -> Dict[str, str]:

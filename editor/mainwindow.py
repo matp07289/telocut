@@ -34,6 +34,7 @@ from .features11 import Features11Mixin
 from .features12 import Features12Mixin
 from .features13 import Features13Mixin
 from .features14 import Features14Mixin
+from .features15 import Features15Mixin
 from .dualdisplay import DualDisplayMixin
 from . import media as MD
 from . import render as R
@@ -95,7 +96,7 @@ class SequenceDialog(QDialog):
 
 
 class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin, ProductionMixin, Features6Mixin,
-                 Features7Mixin, FarmUIMixin, AutoClipMixin, StudioMixin, Features11Mixin, Features12Mixin, Features13Mixin, Features14Mixin, Features8Mixin, Features9Mixin, Features10Mixin, DualDisplayMixin,
+                 Features7Mixin, FarmUIMixin, AutoClipMixin, StudioMixin, Features11Mixin, Features12Mixin, Features13Mixin, Features14Mixin, Features15Mixin, Features8Mixin, Features9Mixin, Features10Mixin, DualDisplayMixin,
                  QMainWindow):
     def __init__(self):
         super().__init__()
@@ -248,6 +249,7 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         self._build_feature12_menus()
         self._build_feature13_menus()
         self._build_feature14_menus()
+        self._build_feature15_menus()          # 最後にメニューを仕事の流れで並べ直す（menulayout.py）
         self._build_toolbar()
         from .commands import add_new_keys
         self.apply_keymap(add_new_keys(dict(SETTINGS.keymap)) if SETTINGS.keymap else preset_keymap(SETTINGS.keyboard_preset))
@@ -413,6 +415,7 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         self.cmd_fns.update(self._feature12_commands())
         self.cmd_fns.update(self._feature13_commands())
         self.cmd_fns.update(self._feature14_commands())
+        self.cmd_fns.update(self._feature15_commands())
         # エディション（無料版 / Pro / Studio）で使えない機能は、どこから呼んでも案内を出す
         from . import license as LIC
         for cid, feat in LIC.GATED_COMMANDS.items():

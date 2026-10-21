@@ -71,6 +71,7 @@ class AppSettings:
     obs: dict = field(default_factory=dict)   # OBS 連携（アドレス・ポート・パスワード・録画後の処理）
     pen_mode: str = "auto"             # ペン（板タブ）: auto（ペンを使ったら）/ on / off
     bmd_device: int = 0                # Blackmagic の出力に使う機器（番号）
+    mmd_last_model: str = ""           # MMD を動かすときに最後に使ったモデル
     auto_dual: bool = True             # ディスプレイをつないだら自動でマルチディスプレイ用レイアウトに
     dual_swap: bool = False            # 編集画面とパネル画面を入れ替える
     screen_roles: dict = field(default_factory=dict)   # 画面の組み合わせ → 各画面の役割（edit/panel/finish/client/none）

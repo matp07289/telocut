@@ -243,6 +243,45 @@ def character_state(project: Project, seq: Sequence, clip: Clip, cf: int, pool: 
     return imgs.get(key) or imgs.get("closed"), dy
 
 
+def idle_motion(clip: Clip, cf: int, fps: float) -> Tuple[float, float]:
+    """立ち絵の待機中の動き: (呼吸で縦に伸びる割合, 体の揺れの角度°)。足元を中心に。クリップごとに位相をずらす。"""
+    from .motion import stable_seed
+    t = (cf - clip.start) / max(1.0, fps)
+    ph = (stable_seed(clip.id) % 1000) / 1000.0 * 6.283
+    k = 0.0
+    if clip.prop("breath", False):
+        amp = float(clip.prop("breath_amp", 1.0)) / 100.0          # % → 割合（既定 1%）
+        period = float(clip.prop("breath_sec", 3.6))
+        k = amp * (0.5 + 0.5 * np.sin(6.283 * t / period + ph))
+    ang = 0.0
+    if clip.prop("sway", False):
+        deg = float(clip.prop("sway_deg", 1.2))
+        period = float(clip.prop("sway_sec", 7.0))
+        ang = deg * (np.sin(6.283 * t / period + ph * 1.7) * 0.8 + np.sin(6.283 * t / (period * 0.43) + ph) * 0.2)
+    return round(float(k), 4), round(float(ang), 3)
+
+
+def apply_idle(im: Image.Image, k: float, ang: float) -> Image.Image:
+    """足元（下の真ん中）を中心に、縦に伸ばして（呼吸）・傾ける（揺れ）。絵の大きさは少し余白を付けて同じ基準に。"""
+    if not k and not ang:
+        return im
+    w, h = im.size
+    if k:
+        nh = max(1, int(round(h * (1 + k))))
+        st = im.resize((w, nh), Image.BILINEAR)
+        top = int(round(h * 0.02))                       # 伸びても切れないように上に余白
+        canvas = Image.new("RGBA", (w, h + top), (0, 0, 0, 0))
+        canvas.paste(st, (0, h + top - nh), st)
+        im = canvas
+        w, h = im.size
+    if ang:
+        mx = int(round(h * abs(np.sin(np.radians(ang)))) + 2)
+        canvas = Image.new("RGBA", (w + mx * 2, h), (0, 0, 0, 0))
+        canvas.paste(im, (mx, 0), im)
+        im = canvas.rotate(ang, resample=Image.BILINEAR, center=(canvas.width / 2, h - 1))
+    return im
+
+
 # ─────────────────────────────────────────────
 #  図形（帯・プログレスバー・カウントダウン・エンドカード枠）
 # ─────────────────────────────────────────────
@@ -601,7 +640,7 @@ def frame_signature(seq: Sequence, frame: int, project: Project, scale: float, u
                     _NEST_DEPTH[0] -= 1
         elif c.kind == "character":
             path, dy = character_state(project, seq, c, L.cf, _SIG_POOL)
-            item += [path, dy, c.prop("flip", False)]
+            item += [path, dy, c.prop("flip", False), idle_motion(c, L.cf, seq.fps)]
         elif c.kind == "shape":
             item += [c.prop("shape"), c.prop("color"), c.prop("rect"), c.prop("fill_opacity"), c.prop("radius")]
             if c.prop("shape") == "progress":
@@ -937,6 +976,14 @@ def _source_image(project: Project, seq: Sequence, clip: Clip, cf: int,
         out = im.resize((max(1, fw), max(1, fh)), Image.BILINEAR)
         if clip.prop("flip", False):
             out = out.transpose(Image.FLIP_LEFT_RIGHT)
+        k, ang = idle_motion(clip, cf, seq.fps)
+        if k or ang:
+            w0, h0 = out.size
+            out = apply_idle(out, k, ang)
+            # 足元の位置を変えない（大きくなった分を上・左右に振り分け → 下の真ん中を合わせる）
+            pad = Image.new("RGBA", (out.width, out.height + (out.height - h0)), (0, 0, 0, 0))
+            pad.paste(out, (0, 0))
+            out = pad
         if dy:
             pad = Image.new("RGBA", (out.width, out.height + abs(dy) * 2), (0, 0, 0, 0))
             pad.paste(out, (0, abs(dy) + dy))

@@ -91,6 +91,21 @@ class Features14Mixin:
         expr = QComboBox()
         expr.addItems(list(MT.EXPRESSIONS))
         f.addRow("表情", expr)
+        from PyQt6.QtWidgets import QListWidget, QListWidgetItem
+        vlist = QListWidget()
+        vlist.setMaximumHeight(96)
+        vlist.setToolTip("チェックした表情もまとめて作ります（Blender は 1 回だけ）。\n"
+                         "「キャラクター・声 → 立ち絵の表情を切り替える」で、セリフごとに表情を変えられます。")
+
+        def fill_vlist(names):
+            vlist.clear()
+            for t in names:
+                it = QListWidgetItem(t)
+                it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                it.setCheckState(Qt.CheckState.Unchecked)
+                vlist.addItem(it)
+        fill_vlist(list(MT.EXPRESSIONS))
+        f.addRow("表情差分もまとめて作る", vlist)
         extra = QLineEdit()
         extra.setPlaceholderText("例: 照れ１=1, 頬染め=0.5（モーフを直接）")
         f.addRow("モーフを足す", extra)
@@ -189,6 +204,7 @@ class Features14Mixin:
                 ok_ex = [k for k in MT.EXPRESSIONS if k == "通常" or MT.expression_morphs(k, r["morphs"])]
                 expr.clear()
                 expr.addItems(ok_ex)
+                fill_vlist(ok_ex)
                 name.setText(name.text() or r.get("name") or Path(p).stem)
                 miss = [k for k, v in roles.items() if not v]
                 info.setText(f"{r.get('name')}: モーフ {len(r['morphs'])} 個・ボーン {len(r['bones'])} 本。"
@@ -234,6 +250,32 @@ class Features14Mixin:
             nm = name.text().strip() or "MMD 立ち絵"
             out_dir = os.path.join(MT._work_dir(), "render_" + time.strftime("%Y%m%d_%H%M%S"))
             P = params(out_dir)
+            more = [vlist.item(i).text() for i in range(vlist.count())
+                    if vlist.item(i).checkState() == Qt.CheckState.Checked and vlist.item(i).text() != expr.currentText()]
+            if more:
+                # 表情差分をまとめて（1 枚目 = 選んだ表情）
+                PV = MT.variants_params(P, (st["info"] or {"morphs": []})["morphs"], [expr.currentText()] + more)
+
+                def work_v(task):
+                    n = sum(len(v) for v in PV["variants"].values())
+                    done_n = [0]
+
+                    def prog(key):
+                        done_n[0] += 1
+                        task.progress.emit(done_n[0], n, f"{key} をレンダリング")
+                    return MT.render_variants(exe, PV, progress=prog, cancel=lambda: task.cancelled)
+
+                def done_v(by_expr):
+                    chars = self.mmd_tachie_finish_variants(nm, by_expr, template=tmpl.isChecked(), place=place.isChecked(),
+                                                            source=src.text().strip())
+                    first = next(iter(by_expr.values()))
+                    im = QImage(first.get("closed", ""))
+                    if not im.isNull():
+                        pv.setPixmap(QPixmap.fromImage(im).scaled(pv.width(), pv.height(), Qt.AspectRatioMode.KeepAspectRatio,
+                                                                  Qt.TransformationMode.SmoothTransformation))
+                    self.status.showMessage(f"立ち絵を {len(chars)} 表情 作りました（{nm}）", 8000)
+                self._run_task("MMD の立ち絵（表情差分）を作る", work_v, on_done=done_v)
+                return
 
             def work(task):
                 n = len(P["states"])
@@ -272,10 +314,33 @@ class Features14Mixin:
         imgs = MT.load_images(paths)
         params = {"bounce": False}
         ch = T.save_character(name, imgs, params, source=source)
+        ch["family"] = name
         if template:
             T.save_template(name, None, {}, {}, params, imgs)
         self.add_character(ch, place)
         return ch
+
+    def mmd_tachie_finish_variants(self, name: str, by_expr: dict, template: bool = True, place: bool = True,
+                                   source: str = "") -> list:
+        """表情差分 → キャラクター（「名前（表情）」・同じ family）。1 つ目だけ置く。"""
+        from . import mmdtachie as MT
+        from . import tachie as T
+        out = []
+        # 表情ごとに大きさがそろうよう、全部が入る範囲で切り抜く
+        allp = {f"{i}:{k}": p for i, d in enumerate(by_expr.values()) for k, p in d.items()}
+        imgs_all = MT.load_images(allp)
+        for i, ex in enumerate(by_expr):
+            imgs = {k.split(":", 1)[1]: im for k, im in imgs_all.items() if k.startswith(f"{i}:")}
+            nm = name if ex == "通常" else f"{name}（{ex}）"
+            params = {"bounce": False}
+            ch = T.save_character(nm, imgs, params, source=source)
+            ch["family"] = name
+            ch["expression"] = ex
+            if template:
+                T.save_template(nm, None, {}, {}, params, imgs)
+            self.add_character(ch, place and i == 0)
+            out.append(ch)
+        return out
 
     # ═════════════════════════════════════════
     #  OBS 連携

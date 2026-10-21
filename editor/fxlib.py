@@ -119,6 +119,7 @@ def load(force: bool = False):
         return
     from . import fx_builtin  # noqa: F401  （import で登録される）
     from . import fx_quick  # noqa: F401  （すぐ使う: ルック・背景を抜く・モザイク など）
+    from . import fx_mme  # noqa: F401  （MME 風: セル調・輪郭線・ディフュージョン など）
     if force:
         for k in [k for k, e in REGISTRY.items() if e.source != "組み込み"]:
             REGISTRY.pop(k)

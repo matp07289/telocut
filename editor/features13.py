@@ -47,7 +47,8 @@ class Features13Mixin:
             clip = M.Clip(M.new_id(), "character", f, max(1, dur), name=ch.get("name", "立ち絵"),
                           props={**M.default_props("character"), "char_id": ch["id"], "audio_track": ai,
                                  "scale": 0.55, "pos_x": round(seq.width * 0.3, 1), "pos_y": round(seq.height * 0.12, 1),
-                                 "bounce": bool(p.get("bounce", True)), "vowel_sync": bool(p.get("vowel_sync", True))})
+                                 "bounce": bool(p.get("bounce", True)), "vowel_sync": bool(p.get("vowel_sync", True)),
+                                 "breath": True, "sway": True})
             t.clips.append(clip)
         self.end_edit(f"立ち絵「{ch.get('name', '')}」" + ("を置く" if place else "を追加"))
         if hasattr(self, "voice_panel"):
