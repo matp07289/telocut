@@ -485,9 +485,13 @@ class ServerBrowser(QWidget):
         self.note_in.returnPressed.connect(self.add_note)
         v.addWidget(self.note_in)
         br = QHBoxLayout()
-        for txt, tip, fn in (("取り込む", "ビンに取り込む（Enter）", lambda: self.import_selected()),
+        alone = getattr(self.panel, "standalone", False)          # TeloCut Assets（編集ソフトなし）では「配置」「ソース」は出さない
+        for txt, tip, fn in (("取り込む", "ビンに取り込む（Enter）" if not alone else "TeloCut に送る / ダウンロード先にコピー（Enter）",
+                              lambda: self.import_selected()),
                              ("配置", "取り込んで再生ヘッドに配置", lambda: self.import_selected(place=True)),
                              ("ソース", "取り込んでソースモニターで開く", lambda: self.import_selected(source=True))):
+            if alone and txt != "取り込む":
+                continue
             b = QPushButton(txt)
             b.setToolTip(tip)
             b.clicked.connect(fn)
@@ -947,7 +951,7 @@ class ServerBrowser(QWidget):
         elif r["kind"] == "image":
             self.pv_stack.setCurrentIndex(0)
             self.pv_img.setText("読み込み中…")
-            self.psd_btn.setVisible(r["name"].lower().endswith((".psd", ".psb")))
+            self.psd_btn.setVisible(r["name"].lower().endswith((".psd", ".psb")) and not getattr(self.panel, "standalone", False))
             if r.get("id"):
                 self._pv_id = r["id"]
                 self.f.run(("br_pv", r["id"]), _get, f"{url}/api/assets/{r['id']}/preview?size=640", 60, True)
@@ -1285,14 +1289,16 @@ class ServerBrowser(QWidget):
         files = [r for r in rows if r["kind"] != "folder"]
         src = self.list if self.stack.currentIndex() == 0 else self.detail
         m = QMenu(self)
+        alone = getattr(self.panel, "standalone", False)
         if files:
             m.addAction("取り込む", lambda: self.import_rows(files))
-            m.addAction("取り込んで再生ヘッドに配置", lambda: self.import_rows(files, place=True))
-            m.addAction("ソースモニターで開く", lambda: self.import_rows(files[:1], source=True))
+            if not alone:
+                m.addAction("取り込んで再生ヘッドに配置", lambda: self.import_rows(files, place=True))
+                m.addAction("ソースモニターで開く", lambda: self.import_rows(files[:1], source=True))
         if len(rows) == 1 and rows[0]["kind"] == "folder":
             m.addAction("開く", lambda: self.go_to(rows[0]["path"]))
             m.addAction("フォルダごと取り込み（ビンもフォルダ名で作る）", lambda: self.import_folder(rows[0]["path"]))
-        if len(files) == 1 and files[0]["name"].lower().endswith((".psd", ".psb")):
+        if len(files) == 1 and files[0]["name"].lower().endswith((".psd", ".psb")) and not alone:
             m.addAction("PSD を立ち絵（キャラクター）として登録", lambda: self.panel.register_psd_from_row(files[0]))
         m.addSeparator()
         if len(rows) == 1:

@@ -18,6 +18,9 @@ from PyInstaller.utils.hooks import collect_submodules  # noqa: E402
 
 ICON = os.path.abspath(os.path.join('editor', 'telocut.ico'))
 make_ico(ICON)
+from editor.assetclient import make_ico as make_assets_ico  # noqa: E402
+ICON_ASSETS = os.path.abspath(os.path.join('editor', 'telocut_assets.ico'))
+make_assets_ico(ICON_ASSETS)
 
 from editor.version import VERSION  # noqa: E402
 # ビルドの種類（personal = 自分用 / free = 無料版 / paid = 有料版）。EXE の中に書き込む
@@ -49,7 +52,7 @@ a = Analysis(
     ['telocut.py'],
     pathex=['.'],
     binaries=[],
-    datas=[(ICON, '.'), (os.path.join('editor', 'assetweb.html'), 'editor'),
+    datas=[(ICON, '.'), (ICON_ASSETS, '.'), (os.path.join('editor', 'assetweb.html'), 'editor'),
            (os.path.join('editor', 'guide.html'), 'editor')],
     hiddenimports=[
         *collect_submodules('editor'), 'editor.build_kind', 'core.telocut_link', 'core.voicevox', 'core.transcribe',
@@ -128,6 +131,22 @@ exe_cli = EXE(
     version=VERSION_FILE,
 )
 
+# アセットサーバーにつなぐだけのアプリ（中身は TeloCut.exe と同じ。名前が TeloCutAssets なら素材の画面で起動する）
+exe_assets = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name='TeloCutAssets',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=False,
+    icon=ICON_ASSETS,
+    version=VERSION_FILE,
+)
+
 # ── DavinTelop（tkinter のテロップ編集ソフト）─────────────
 import sv_ttk  # noqa: E402
 b = Analysis(
@@ -173,7 +192,7 @@ exe_dt = EXE(
 )
 
 coll = COLLECT(
-    exe, exe_cli, a.binaries, a.datas,
+    exe, exe_cli, exe_assets, a.binaries, a.datas,
     exe_dt, b.binaries, b.datas,
     strip=False,
     upx=False,

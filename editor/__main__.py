@@ -149,6 +149,10 @@ def main():
         except KeyboardInterrupt:
             pass
         return
+    if "--assets" in sys.argv or Path(sys.argv[0]).stem.lower().startswith("telocutassets"):
+        # アセットサーバーにつなぐだけの独立したアプリ（TeloCutAssets.exe / python telocut.py --assets）
+        from editor import assetclient
+        sys.exit(assetclient.main())
     if "--telop" in sys.argv:
         # DavinTelop（テロップ編集）をソースから起動
         import runpy

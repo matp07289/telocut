@@ -4,6 +4,7 @@ rem   build_telocut.bat            3 種類すべて（自分用・無料版・�
 rem   build_telocut.bat personal   自分用（キーなしで Studio。配らない）
 rem   build_telocut.bat free       無料版（配布用）
 rem   build_telocut.bat paid       有料版（購入者用。キーで Pro / Studio）
+rem 中身: TeloCut.exe / TeloCutCLI.exe / TeloCutAssets.exe（アセットサーバーにつなぐだけのアプリ）/ DavinTelop.exe
 cd /d %~dp0..
 for /f %%v in ('python -c "from editor.version import VERSION; print(VERSION)"') do set VER=%%v
 set KINDS=%*
@@ -21,6 +22,9 @@ python -m PyInstaller telocut_win.spec --noconfirm --distpath dist_telocut\%1 --
 dist_telocut\%1\TeloCut\TeloCut.exe --selftest dist_telocut\%1\selftest.txt
 type dist_telocut\%1\selftest.txt
 findstr /c:"RESULT PASS" dist_telocut\%1\selftest.txt >nul || exit /b 1
+dist_telocut\%1\TeloCut\TeloCutAssets.exe --selftest dist_telocut\%1\assets_selftest.txt
+type dist_telocut\%1\assets_selftest.txt
+findstr /c:"RESULT PASS" dist_telocut\%1\assets_selftest.txt >nul || exit /b 1
 copy /Y server\install_server_windows.ps1 dist_telocut\%1\TeloCut\ >nul
 copy /Y server\install_render_node.ps1 dist_telocut\%1\TeloCut\ >nul
 powershell -NoProfile -Command "Compress-Archive -Force -Path dist_telocut\%1\TeloCut -DestinationPath dist_telocut\TeloCut_v%VER%_%1.zip"
