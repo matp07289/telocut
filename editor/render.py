@@ -126,8 +126,9 @@ def _load_char_image(path: str) -> Optional[Image.Image]:
     return im
 
 
-def mouth_level(project: Project, seq: Sequence, clip: Clip, cf: int, pool: DecoderPool) -> int:
-    """キャラクターの口の開き（0=閉 / 1=半開き / 2=開き）。指定した音声トラックの音量で決める。"""
+def mouth_level(project: Project, seq: Sequence, clip: Clip, cf: int, pool: DecoderPool,
+                open_db: float = -24.0, half_db: float = -36.0) -> int:
+    """キャラクターの口の開き（0=閉 / 1=半開き / 2=開き）。指定した音声トラックの音量で決める（しきい値はキャラクターの設定）。"""
     ti = int(clip.prop("audio_track", 0) or 0)
     if ti < 0 or ti >= len(seq.audio_tracks):
         return 0
@@ -145,7 +146,7 @@ def mouth_level(project: Project, seq: Sequence, clip: Clip, cf: int, pool: Deco
         return 0
     rms = float(np.sqrt((buf.astype(np.float64) ** 2).mean()))
     db = 20 * np.log10(max(rms, 1e-6)) + float(a.prop("volume_db", 0.0))
-    return 2 if db > -24 else (1 if db > -36 else 0)
+    return 2 if db > open_db else (1 if db > half_db else 0)
 
 
 def mouth_vowel(project: Project, seq: Sequence, clip: Clip, cf: int) -> Optional[str]:
@@ -177,24 +178,65 @@ def _blink(clip: Clip, cf: int, fps: float) -> bool:
     return (cf - clip.start) % period < 3
 
 
+def _rand01(seed: int, k: int) -> float:
+    v = (seed * 1103515245 + k * 2654435761 + 12345) & 0x7FFFFFFF
+    v = (v * 1103515245 + 12345) & 0x7FFFFFFF
+    return (v % 100000) / 100000.0
+
+
+def blink_state(clip: Clip, cf: int, fps: float, params: Optional[dict] = None) -> str:
+    """目パチ: "" = 開いている / "half" = 半目（閉じる前と開く前の 1 コマ）/ "closed" = 閉じている。
+    間隔は「まばたきの間隔 ± ばらつき」で毎回少し変わり、ときどき 2 回続ける（クリップごとに同じ並び）。"""
+    if not clip.prop("blink", True):
+        return ""
+    p = params or {}
+    interval = max(0.5, float(p.get("blink_interval", 4.0)))
+    jitter = max(0.0, float(p.get("blink_jitter", 1.5)))
+    n = max(1, int(p.get("blink_frames", 3)))
+    dbl = float(p.get("double_blink", 0.15))
+    from .motion import stable_seed
+    seed = stable_seed(clip.id)
+    rel = cf - clip.start
+    pos, k = 0, 0
+    while pos <= rel + 1:
+        gap = interval + (_rand01(seed, k) - 0.5) * 2 * jitter
+        start = pos + max(int(fps * 0.8), int(round(fps * gap)))
+        starts = [start]
+        if _rand01(seed, k + 7777) < dbl:
+            starts.append(start + n + 2 + int(fps * 0.12))       # 2 回目
+        for s in starts:
+            if s <= rel < s + n:
+                return "closed"
+            if rel == s - 1 or rel == s + n:
+                return "half"
+        pos = starts[-1] + n
+        k += 1
+    return ""
+
+
 def character_state(project: Project, seq: Sequence, clip: Clip, cf: int, pool: DecoderPool):
     """(画像パス, 揺れの y オフセット px)"""
     ch = project.character(clip.prop("char_id", ""))
     if not ch:
         return None, 0
     imgs = ch.get("images", {})
+    params = ch.get("params") or {}
     vowel = mouth_vowel(project, seq, clip, cf) if clip.prop("vowel_sync", True) else None
     if vowel is not None:
         # 母音に合わせた口（あいうえおん）。その口の画像が無ければ 開き / 半開き / 閉じ で代用
         lv = 0 if vowel in ("closed", "N") else (2 if vowel in ("a", "o") else 1)
         key = vowel if imgs.get(vowel) else {0: "closed", 1: "half", 2: "open"}[lv]
     else:
-        lv = mouth_level(project, seq, clip, cf, pool)
+        lv = mouth_level(project, seq, clip, cf, pool, float(params.get("open_db", -24.0)), float(params.get("half_db", -36.0)))
         key = {0: "closed", 1: "half", 2: "open"}[lv]
     if key == "half" and not imgs.get("half"):
         key = "open"
-    if lv == 0 and _blink(clip, cf, seq.fps) and imgs.get("blink"):
-        key = "blink"
+    if lv == 0:
+        bs = blink_state(clip, cf, seq.fps, params) if params else ("closed" if _blink(clip, cf, seq.fps) else "")
+        if bs == "closed" and imgs.get("blink"):
+            key = "blink"
+        elif bs == "half" and imgs.get("blink_half"):
+            key = "blink_half"
     dy = 0
     if clip.prop("bounce", True) and lv > 0:
         dy = -int(round(abs(np.sin((cf - clip.start) * 0.9)) * 6))

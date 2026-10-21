@@ -32,6 +32,7 @@ from .features9 import Features9Mixin
 from .features10 import Features10Mixin
 from .features11 import Features11Mixin
 from .features12 import Features12Mixin
+from .features13 import Features13Mixin
 from .dualdisplay import DualDisplayMixin
 from . import media as MD
 from . import render as R
@@ -93,7 +94,7 @@ class SequenceDialog(QDialog):
 
 
 class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin, ProductionMixin, Features6Mixin,
-                 Features7Mixin, FarmUIMixin, AutoClipMixin, StudioMixin, Features11Mixin, Features12Mixin, Features8Mixin, Features9Mixin, Features10Mixin, DualDisplayMixin,
+                 Features7Mixin, FarmUIMixin, AutoClipMixin, StudioMixin, Features11Mixin, Features12Mixin, Features13Mixin, Features8Mixin, Features9Mixin, Features10Mixin, DualDisplayMixin,
                  QMainWindow):
     def __init__(self):
         super().__init__()
@@ -244,6 +245,7 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         self._build_feature10_menus()
         self._build_feature11_menus()
         self._build_feature12_menus()
+        self._build_feature13_menus()
         self._build_toolbar()
         from .commands import add_new_keys
         self.apply_keymap(add_new_keys(dict(SETTINGS.keymap)) if SETTINGS.keymap else preset_keymap(SETTINGS.keyboard_preset))
@@ -407,6 +409,7 @@ class MainWindow(FeaturesMixin, Features3DMixin, Features4Mixin, Features5Mixin,
         self.cmd_fns.update(self._feature10_commands())
         self.cmd_fns.update(self._feature11_commands())
         self.cmd_fns.update(self._feature12_commands())
+        self.cmd_fns.update(self._feature13_commands())
         # エディション（無料版 / Pro / Studio）で使えない機能は、どこから呼んでも案内を出す
         from . import license as LIC
         for cid, feat in LIC.GATED_COMMANDS.items():

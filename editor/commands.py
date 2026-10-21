@@ -345,6 +345,8 @@ COMMANDS = [
     ("youtube_upload", "YouTube にアップロード（書き出したファイル・概要欄を入れて）", "YouTube", "▶YT"),
     ("youtube_history", "YouTube アップロード履歴", "YouTube", "YT履"),
     ("dm_toggle", "レコードモニターで直接動かす（位置・大きさ・回転）", "クリップ", "直動"),
+    ("tachie_maker", "立ち絵メーカー（目パチ・口パクを作る・テンプレート）", "YouTube", "立絵作"),
+    ("tachie_template", "立ち絵テンプレートから置く", "YouTube", "立絵T"),
     ("chk_all", "まとめてチェック（放送前チェック）", "整理・チェック", "✓全"),
     ("chk_flash", "チェック: 点滅（光の点滅）", "整理・チェック", "点滅"),
     ("chk_black", "チェック: 黒い画面", "整理・チェック", "黒"),
