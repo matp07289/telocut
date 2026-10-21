@@ -6525,6 +6525,27 @@ class DavinTelopApp(tk.Tk):
                         value="device", command=self._on_bg_mode_change).pack(side='left', padx=4)
         ttk.Radiobutton(mode_row, text="スクリーン", variable=self._comp_bg_mode_var,
                         value="screen", command=self._on_bg_mode_change).pack(side='left', padx=4)
+        ttk.Radiobutton(mode_row, text="TeloCut", variable=self._comp_bg_mode_var,
+                        value="telocut", command=self._on_bg_mode_change).pack(side='left', padx=4)
+
+        # ── TeloCut（連携で今の絵をそのまま受け取る）──────
+        self._bg_telocut_frame = ttk.Frame(bg_lf)
+        tc_row = ttk.Frame(self._bg_telocut_frame)
+        tc_row.pack(fill='x')
+        ttk.Label(tc_row, text="大きさ:").pack(side='left')
+        self._comp_tc_width_var = tk.StringVar(value="960")
+        ttk.Combobox(tc_row, textvariable=self._comp_tc_width_var, values=["640", "960", "1280", "1920"],
+                     state='readonly', width=6).pack(side='left', padx=4)
+        ttk.Label(tc_row, text="FPS:").pack(side='left', padx=(8, 0))
+        self._comp_tc_fps_var = tk.IntVar(value=12)
+        ttk.Spinbox(tc_row, from_=1, to=30, textvariable=self._comp_tc_fps_var, width=4).pack(side='left', padx=4)
+        self._comp_tc_telops_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(self._bg_telocut_frame, text="TeloCut のテロップも入れる（外すと DavinTelop のテロップだけを重ねる）",
+                        variable=self._comp_tc_telops_var).pack(anchor='w', pady=(2, 0))
+        ttk.Label(self._bg_telocut_frame,
+                  text="TeloCut のレコードモニター（再生ヘッドの絵）をそのまま背景にします。\n"
+                       "画面キャプチャより正確で、TeloCut のウィンドウが隠れていても動きます。",
+                  foreground='gray', font=('', 8), justify='left').pack(anchor='w', pady=(2, 0))
 
         # ── NDI 設定エリア ────────────────────────────
         self._bg_ndi_frame = ttk.Frame(bg_lf)
@@ -6717,13 +6738,16 @@ class DavinTelopApp(tk.Tk):
         # まず全て隠す
         for fr in (getattr(self, '_bg_ndi_frame', None),
                    getattr(self, '_bg_device_frame', None),
-                   getattr(self, '_bg_screen_frame', None)):
+                   getattr(self, '_bg_screen_frame', None),
+                   getattr(self, '_bg_telocut_frame', None)):
             if fr is not None:
                 fr.pack_forget()
         if mode == "ndi":
             self._bg_ndi_frame.pack(fill='x', padx=4, pady=2)
         elif mode == "device":
             self._bg_device_frame.pack(fill='x', padx=4, pady=2)
+        elif mode == "telocut":
+            self._bg_telocut_frame.pack(fill='x', padx=4, pady=2)
         else:
             self._bg_screen_frame.pack(fill='x', padx=4, pady=2)
 
@@ -6913,6 +6937,19 @@ class DavinTelopApp(tk.Tk):
             self._comp_bg_thread = t
             dev_name = self._comp_devices[idx] if idx < len(self._comp_devices) else f"#{idx}"
             self._comp_bg_status_var.set(f"キャプチャ開始: {dev_name}")
+
+        elif mode == "telocut":
+            # ── TeloCut（連携で今の絵を受け取る）─────────
+            from core.capture import TeloCutFrameThread
+            try:
+                width = int(self._comp_tc_width_var.get() or 960)
+            except ValueError:
+                width = 960
+            t = TeloCutFrameThread(self._comp_bg_queue, fps=self._comp_tc_fps_var.get(), width=width,
+                                   telops=bool(self._comp_tc_telops_var.get()))
+            t.start()
+            self._comp_bg_thread = t
+            self._comp_bg_status_var.set("TeloCut に接続中…")
 
         else:
             # ── スクリーンキャプチャモード ─────────────

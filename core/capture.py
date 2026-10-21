@@ -203,6 +203,56 @@ class CaptureDeviceThread(threading.Thread):
 #  スクリーンキャプチャスレッド
 # ─────────────────────────────────────────────
 
+class TeloCutFrameThread(threading.Thread):
+    """TeloCut の再生ヘッドの絵を取り続けて out_queue に ("frame", PIL.Image) を積む（画面キャプチャより正確・軽い）。
+    TeloCut が起動していなければ待ち続け、起動したら自動でつながる。"""
+
+    def __init__(self, out_queue: queue.Queue, fps: float = 12.0, width: int = 960, telops: bool = False):
+        super().__init__(daemon=True)
+        self._q = out_queue
+        self.fps = max(1.0, min(30.0, float(fps)))
+        self.width = int(width)
+        self.telops = bool(telops)
+        self._running = False
+
+    def stop(self):
+        self._running = False
+
+    def run(self):
+        from core import telocut_link as L
+        self._running = True
+        client = None
+        waiting = False
+        last_tc = ""
+        while self._running:
+            t0 = time.perf_counter()
+            try:
+                if client is None:
+                    client = L.FrameClient(timeout=3.0)
+                    self._q.put(("status", "TeloCut につながりました"))
+                    waiting = False
+                img, tc = client.get_frame(self.width, self.telops)
+                if img is not None:
+                    self._q.put(("frame", img))
+                if tc and tc != last_tc:
+                    last_tc = tc
+                    self._q.put(("status", f"TeloCut  {tc}"))
+            except Exception as ex:
+                if client is not None:
+                    client.close()
+                client = None
+                if not waiting:
+                    self._q.put(("status", f"TeloCut を待っています…（{str(ex)[:30]}）"))
+                    waiting = True
+                time.sleep(1.0)
+                continue
+            wait = 1.0 / self.fps - (time.perf_counter() - t0)
+            if wait > 0:
+                time.sleep(wait)
+        if client is not None:
+            client.close()
+
+
 class ScreenCaptureThread(threading.Thread):
     """指定画面領域を連続キャプチャして out_queue に ("frame", PIL.Image) を積む。"""
 

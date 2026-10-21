@@ -155,6 +155,34 @@ class Bridge(QObject):
             self._last_tc = tc
             self.broadcast({"event": "playhead", "tc": tc})
 
+    # ── 今の絵（DavinTelop の合成の背景）──────────
+    def frame_payload(self, req: dict) -> dict:
+        """再生ヘッドの絵を JPEG で返す。since（前の印）と同じ絵なら {"same": True} だけ返す（描き直さない）。
+        telops=False なら TeloCut のテロップを外した絵（DavinTelop が自分のテロップを重ねる）。"""
+        import base64
+        import io
+        from PIL import Image
+        from . import media as MD, render as R
+        mw = self.mw
+        seq = mw.project.sequence
+        f = mw.record_player.position
+        width = max(64, min(3840, int(req.get("width", 960) or 960)))
+        scale = width / max(1, seq.width)
+        telops = bool(req.get("telops", False))
+        target = seq if telops else _no_text(seq)
+        tc = frames_to_timecode(f + mw.tc_offset(seq), seq.fps)
+        sig = f"{R.frame_signature(target, f, mw.project, scale, False)}|{int(telops)}|{width}"
+        if sig == req.get("since"):
+            return {"same": True, "sig": sig, "tc": tc}
+        pool = getattr(self, "_frame_pool", None)
+        if pool is None:
+            pool = self._frame_pool = MD.DecoderPool()
+        arr = R.render_frame_np(target, f, mw.project, pool, scale)
+        buf = io.BytesIO()
+        Image.fromarray(arr).save(buf, "JPEG", quality=int(req.get("quality", 85) or 85))
+        return {"sig": sig, "tc": tc, "w": int(arr.shape[1]), "h": int(arr.shape[0]),
+                "jpeg": base64.b64encode(buf.getvalue()).decode("ascii")}
+
     # ── 命令 ─────────────────────────────────
     def handle(self, req: dict):
         from . import ops
@@ -197,6 +225,8 @@ class Bridge(QObject):
         if cmd == "import_files":
             mw.import_files([p for p in req.get("paths", []) if os.path.exists(p)])
             return True
+        if cmd == "get_frame":
+            return self.frame_payload(req)
         if cmd == "render_frame":
             from . import media as MD, render as R
             out = req.get("path") or str(BASE_DIR / "telocut_frame.png")
@@ -207,6 +237,19 @@ class Bridge(QObject):
                 pool.close()
             return out
         raise ValueError(f"未対応のコマンド: {cmd}")
+
+
+def _no_text(seq):
+    """テロップ（文字のクリップ）を外したシーケンスの写し（DavinTelop が自分のテロップを重ねるとき）。"""
+    import copy as _copy
+    s2 = _copy.copy(seq)
+    tracks = []
+    for t in seq.video_tracks:
+        t2 = _copy.copy(t)
+        t2.clips = [c for c in t.clips if c.kind != "text"]
+        tracks.append(t2)
+    s2.video_tracks = tracks
+    return s2
 
 
 def find_running_port() -> int:

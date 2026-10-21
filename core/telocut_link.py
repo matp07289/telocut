@@ -62,6 +62,50 @@ def call(cmd: str, timeout: float = 10.0, port: int = 0, **kw):
             return d.get("result")
 
 
+class FrameClient:
+    """TeloCut の今の絵を取る（つなぎっぱなし。同じ絵なら送ってこない）。"""
+
+    def __init__(self, timeout: float = 5.0, port: int = 0):
+        try:
+            self.sock = socket.create_connection(("127.0.0.1", port or find_port()), timeout=timeout)
+        except OSError:
+            raise ConnectionError("TeloCut が起動していません")
+        self.f = self.sock.makefile("rb")
+        self.n = 0
+        self.last = ""
+
+    def get_frame(self, width: int = 960, telops: bool = False, quality: int = 85):
+        """(PIL の画像 または None（変わっていない）, タイムコード)"""
+        import base64
+        import io
+        self.n += 1
+        req = {"id": self.n, "cmd": "get_frame", "token": find_token(), "width": int(width), "telops": bool(telops),
+               "since": self.last, "quality": int(quality)}
+        self.sock.sendall((json.dumps(req) + "\n").encode("utf-8"))
+        while True:
+            line = self.f.readline()
+            if not line:
+                raise ConnectionError("TeloCut との接続が切れました")
+            d = json.loads(line.decode("utf-8"))
+            if "event" in d or d.get("id") != self.n:
+                continue
+            if not d.get("ok"):
+                raise RuntimeError(d.get("error"))
+            r = d.get("result") or {}
+            self.last = r.get("sig", "")
+            if r.get("same"):
+                return None, r.get("tc", "")
+            from PIL import Image
+            img = Image.open(io.BytesIO(base64.b64decode(r["jpeg"]))).convert("RGB")
+            return img, r.get("tc", "")
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
 def is_running() -> bool:
     try:
         call("ping", timeout=1.5)
