@@ -36,14 +36,12 @@ class Segment:
 
 _CUDA_READY = None
 
-
-def cuda_ready() -> bool:
-    """faster-whisper（CTranslate2）が GPU で動くか。CUDA / cuDNN の DLL が無いと落ちる（例外にならない）ので先に調べる。
-    pip の nvidia-cublas-cu12 / nvidia-cudnn-cu12 が入っていれば、その DLL の場所も使う。"""
-    global _CUDA_READY
-    if _CUDA_READY is not None:
-        return _CUDA_READY
-    _CUDA_READY = False
+# CUDA が使えるかを調べるコード（この Python でも、EXE から呼ぶ外の Python でも同じものを使う）
+_CUDA_SRC = r"""
+def _cuda_ok():
+    # faster-whisper（CTranslate2）が GPU で動くか。CUDA / cuDNN の DLL が無いと落ちる（例外にならない）ので先に調べる。
+    # pip の nvidia-cublas-cu12 / nvidia-cudnn-cu12 が入っていれば、その DLL の場所も使えるようにする。
+    import os, sys
     try:
         import ctranslate2
         if ctranslate2.get_cuda_device_count() <= 0:
@@ -51,17 +49,13 @@ def cuda_ready() -> bool:
         ver = tuple(int(x) for x in ctranslate2.__version__.split(".")[:2])
     except Exception:
         return False
-    import os
     if os.name != "nt":
-        _CUDA_READY = True
         return True
-    import ctypes
-    import site
-    import sys
+    import ctypes, site
     from pathlib import Path
     roots = [Path(p) for p in (site.getsitepackages() + [site.getusersitepackages()])] + [Path(sys.prefix) / "Lib" / "site-packages"]
     for r in roots:
-        for sub in ("cublas", "cudnn", "cuda_runtime"):
+        for sub in ("cublas", "cudnn", "cuda_runtime", "cuda_nvrtc"):
             d = r / "nvidia" / sub / "bin"
             if d.is_dir():
                 try:
@@ -80,8 +74,36 @@ def cuda_ready() -> bool:
             ctypes.WinDLL(n)
     except OSError:
         return False
-    _CUDA_READY = True
     return True
+"""
+exec(_CUDA_SRC)
+
+
+def cuda_ready() -> bool:
+    """文字起こし（faster-whisper）を GPU で動かせるか。EXE（faster-whisper を同梱しない）なら、使う外の Python で調べる。"""
+    global _CUDA_READY
+    if _CUDA_READY is None:
+        if HAS_FASTER_WHISPER:
+            _CUDA_READY = bool(_cuda_ok())   # noqa: F821（_CUDA_SRC で作る）
+        else:
+            _CUDA_READY = _external_cuda_ready()
+    return _CUDA_READY
+
+
+def _external_cuda_ready() -> bool:
+    import subprocess
+    for py in _find_system_python():
+        try:
+            r = subprocess.run([py, "-c", _CUDA_SRC + "\nimport faster_whisper\nprint('CUDA_OK' if _cuda_ok() else 'CUDA_NG')"],
+                               capture_output=True, timeout=60, creationflags=0x08000000 if __import__("os").name == "nt" else 0)
+        except Exception:
+            continue
+        out = r.stdout.decode("utf-8", "replace")
+        if "CUDA_OK" in out:
+            return True
+        if "CUDA_NG" in out:
+            return False
+    return False
 
 
 def _get_model(model_size: str, use_gpu: bool):
@@ -121,10 +143,12 @@ def _find_system_python() -> list:
     return cands
 
 
-_HELPER = r'''
+_HELPER = _CUDA_SRC + r'''
 import sys, json
-from faster_whisper import WhisperModel
 audio, model_size, lang, gpu = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+if gpu == "1" and not _cuda_ok():
+    gpu = "0"                     # CUDA の DLL が足りない → CPU（落ちないように）
+from faster_whisper import WhisperModel
 device = "cuda" if gpu == "1" else "cpu"
 compute = "float16" if gpu == "1" else "int8"
 try:

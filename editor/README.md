@@ -199,6 +199,11 @@ Avid 標準で未割り当ての機能には TeloCut が独自にキーを付け
 31. 並列書き出し（この PC の CPU コアを全部使う）
 32. レンダーファーム: アセットサーバー経由で複数のレンダリング用 PC に区間を分散
 
+## v0.23.1: 文字起こしも GPU で（EXE からも）
+
+- `pip install nvidia-cublas-cu12 nvidia-cudnn-cu12` で入れた CUDA の部品を自動で見つけて使う（手元: small モデルで CPU 1.75 秒 → GPU 0.26 秒）
+- EXE（faster-whisper を同梱しない）から呼ぶ外の Python でも同じように調べて GPU を使う。部品が足りないときは CPU（落ちない）
+
 ## v0.23.0: NVIDIA の GPU を優先・英語の声を日本語に吹き替え・DavinTelop のタイムラインに TeloCut の素材
 
 **NVIDIA の GPU を優先して使う**（設定 → 再生・レンダリング → GPU（NVIDIA）。既定は「優先して使う」）
