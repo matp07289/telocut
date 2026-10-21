@@ -1434,6 +1434,8 @@ class TimelineView(ttk.Frame):
         df = int(round((ev.x - d['x0']) / self._pps * nom))
         if df == 0 and not d['moved']:
             return
+        if not d['moved'] and abs(ev.x - d['x0']) < self._app._pen_dead_zone():
+            return
         d['moved'] = True
         from core.timecode import frames_to_timecode
         excl = {t.id for t in d['targets']}
@@ -4784,6 +4786,7 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
 
         # 表示設定
         self._show_timeline = tk.BooleanVar(value=cfg.get("show_timeline", True))
+        self._pen_mode = tk.BooleanVar(value=bool(cfg.get("pen_mode", False)))      # ペン（板タブ）で操作
         self._place_now = tk.BooleanVar(value=bool(cfg.get("place_now", True)))   # 作ったらすぐ再生ヘッドに配置
         self._layout_mode = tk.StringVar(value=cfg.get("layout_mode", "tfx"))     # tfx = TFX-Artist 風 / classic = 従来
         self._show_quick_add = tk.BooleanVar(value=cfg.get("show_quick_add", False))
@@ -4875,6 +4878,8 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
         self._reset_undo()
         self._schedule_preview_update()
         self._start_tc_timeline()       # TeloCut のトラック（素材）・再生ヘッドをタイムラインに
+        if self._pen_mode.get():
+            TimelineView.EDGE = 11
 
     # ─── スタイル ───────────────────────────────
 
@@ -5132,6 +5137,8 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
                                  command=lambda: (self._show_quick_add.set(not self._show_quick_add.get()),
                                                   self._toggle_quick_add()))
         win_menu.add_command(label="パネル幅を初期状態に戻す", command=lambda: self._init_main_sashes())
+        win_menu.add_checkbutton(label="✏ ペン（板タブ・液タブ）で操作", variable=self._pen_mode,
+                                 command=self._apply_pen_mode)
         lay_m = tk.Menu(win_menu, tearoff=0)
         win_menu.add_cascade(label="レイアウト（次の起動から）", menu=lay_m)
         for val, lab in (("tfx", "TFX-Artist 風（中央に大きなプレビュー）"), ("classic", "従来（3 列）")):
@@ -7642,14 +7649,30 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
         except Exception:
             return None
 
+    def _pen_dead_zone(self) -> int:
+        pm = getattr(self, "_pen_mode", None)
+        return 8 if pm is not None and pm.get() else 0
+
+    def _apply_pen_mode(self):
+        """ペンモード: ドラッグの動き始めの遊び・タイムラインの端（尺の調整）をつかみやすく。"""
+        on = self._pen_mode.get()
+        TimelineView.EDGE = 11 if on else 6
+        self._save_app_config()
+        self._progress_var.set("ペン（板タブ）モード: " + ("オン（押したときのぶれで動かない・端をつかみやすい）" if on else "オフ"))
+
     def _telocut_run(self, name: str):
-        """TeloCut の画面を開く（吹き替え など）。"""
+        """TeloCut の画面を開く（吹き替え など）。待っている間も画面を止めない（裏で頼んで、結果を知らせる）。"""
+        import threading
         from core import telocut_link as TL
-        try:
-            TL.call("run_command", timeout=5, name=name)
-            self._progress_var.set("TeloCut で開きました")
-        except Exception as ex:
-            messagebox.showwarning("TeloCut", f"TeloCut が起動していないか、開けませんでした。\n{ex}", parent=self)
+        self._progress_var.set("TeloCut に頼んでいます…")
+
+        def work():
+            try:
+                TL.call("run_command", timeout=8, name=name)
+                self._tc_tl_q.put(("msg", "TeloCut で開きました"))
+            except Exception as ex:
+                self._tc_tl_q.put(("err", f"TeloCut が起動していないか、開けませんでした。\n{ex}"))
+        threading.Thread(target=work, daemon=True).start()
 
     def _telocut_seek_seconds(self, sec: float):
         from core import telocut_link as TL
@@ -7711,6 +7734,12 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
                 kind, data = self._tc_tl_q.get_nowait()
                 tl = self._timeline
                 if tl is None:
+                    continue
+                if kind == "msg":
+                    self._progress_var.set(data)
+                    continue
+                if kind == "err":
+                    messagebox.showwarning("TeloCut", data, parent=self)
                     continue
                 if kind == "none":
                     if tl._tc_tracks or tl._tc_playhead is not None:
@@ -9022,6 +9051,7 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
         self._preview_canvas.focus_set()
         self._drag_start_x = event.x
         self._drag_start_y = event.y
+        self._drag_live = False
         try:
             self._drag_start_offset_x = self._offset_x_var.get()
             self._drag_start_offset_y = self._offset_y_var.get()
@@ -9035,6 +9065,11 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
             return
         dx = event.x - self._drag_start_x
         dy = event.y - self._drag_start_y
+        if not getattr(self, "_drag_live", True):
+            # ペンは押した瞬間に少しぶれる → 少し動かしてから動き始める
+            if abs(dx) + abs(dy) < self._pen_dead_zone():
+                return
+            self._drag_live = True
         # キャンバスピクセル差をイメージ空間に変換
         img_dx = int(dx / self._canvas_scale)
         img_dy = int(dy / self._canvas_scale)
@@ -10679,6 +10714,7 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
                 "show_timeline":             self._show_timeline.get(),
                 "layout_mode":               self._layout_mode.get(),
                 "place_now":                 self._place_now.get() if hasattr(self, "_place_now") else True,
+                "pen_mode":                  self._pen_mode.get() if hasattr(self, "_pen_mode") else False,
                 "show_quick_add":            self._show_quick_add.get(),
                 "telocut_sync":              self._tc_sync.get() if hasattr(self, "_tc_sync") else False,
                 "telocut_sync_seek":         self._tc_sync_seek.get() if hasattr(self, "_tc_sync_seek") else True,

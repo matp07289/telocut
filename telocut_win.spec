@@ -81,7 +81,7 @@ a = Analysis(
         'matplotlib', 'scipy', 'pandas', 'IPython', 'jupyter', 'notebook',
         'torch', 'faster_whisper', 'ctranslate2', 'onnxruntime', 'tokenizers',
         'huggingface_hub', 'sympy', 'cv2', 'mss', 'NDIlib',
-        'pygrabber', 'comtypes', 'DaVinciResolveScript',
+        'pygrabber', 'DaVinciResolveScript',
     ],
     noarchive=False,
 )

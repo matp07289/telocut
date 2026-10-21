@@ -68,6 +68,9 @@ class AppSettings:
     bridge_enabled: bool = True        # DavinTelop / MCP 連携用のローカル接続を開く
     gpu_mode: str = "auto"             # NVIDIA の GPU: auto（あれば優先して使う）/ off（使わない）
     gpu_decode: bool = True            # 再生のデコードにも GPU を使う（続けて再生している間）
+    obs: dict = field(default_factory=dict)   # OBS 連携（アドレス・ポート・パスワード・録画後の処理）
+    pen_mode: str = "auto"             # ペン（板タブ）: auto（ペンを使ったら）/ on / off
+    bmd_device: int = 0                # Blackmagic の出力に使う機器（番号）
     auto_dual: bool = True             # ディスプレイをつないだら自動でマルチディスプレイ用レイアウトに
     dual_swap: bool = False            # 編集画面とパネル画面を入れ替える
     screen_roles: dict = field(default_factory=dict)   # 画面の組み合わせ → 各画面の役割（edit/panel/finish/client/none）
