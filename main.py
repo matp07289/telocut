@@ -32,6 +32,7 @@ from core.timecode import (parse_timecode, seconds_to_timecode, normalize_timeco
                            shift_timecode, timecode_to_frames, seconds_to_frames,
                            _nominal_fps)
 from core.preset import PresetManager
+from dt_layout import TfxLayoutMixin
 from core.exporter import (import_csv, export_png, export_srt, export_fcpxml,
                             export_resolve_script, export_csv, import_srt,
                             ResolveConnector)
@@ -4605,7 +4606,7 @@ class LipSyncDialog(tk.Toplevel):
 
 # ─────────────────────────────────────────────
 
-class DavinTelopApp(tk.Tk):
+class DavinTelopApp(TfxLayoutMixin, tk.Tk):
 
     # ── デフォルトショートカット ─────────────────────
     _DEFAULT_SHORTCUTS: dict = {
@@ -4719,6 +4720,7 @@ class DavinTelopApp(tk.Tk):
 
         # 表示設定
         self._show_timeline = tk.BooleanVar(value=cfg.get("show_timeline", True))
+        self._layout_mode = tk.StringVar(value=cfg.get("layout_mode", "tfx"))     # tfx = TFX-Artist 風 / classic = 従来
         self._show_quick_add = tk.BooleanVar(value=cfg.get("show_quick_add", False))
         self._style_clipboard: Optional[dict] = None
         self._pv_entry: Optional[TelopEntry] = None
@@ -5055,7 +5057,13 @@ class DavinTelopApp(tk.Tk):
         win_menu.add_checkbutton(label="直接入力エリアを表示", variable=self._show_quick_add,
                                  command=lambda: (self._show_quick_add.set(not self._show_quick_add.get()),
                                                   self._toggle_quick_add()))
-        win_menu.add_command(label="パネル幅を初期状態に戻す", command=self._init_main_sashes)
+        win_menu.add_command(label="パネル幅を初期状態に戻す", command=lambda: self._init_main_sashes())
+        lay_m = tk.Menu(win_menu, tearoff=0)
+        win_menu.add_cascade(label="レイアウト（次の起動から）", menu=lay_m)
+        for val, lab in (("tfx", "TFX-Artist 風（中央に大きなプレビュー）"), ("classic", "従来（3 列）")):
+            lay_m.add_radiobutton(label=lab, value=val, variable=self._layout_mode,
+                                  command=lambda: (self._save_app_config(), messagebox.showinfo(
+                                      "レイアウト", "次に DavinTelop を起動したときに切り替わります。", parent=self)))
         win_menu.add_separator()
         win_menu.add_command(label="🎬 テロッププレビュー ウィンドウ",
                              command=self._toggle_telop_preview_window)
@@ -5095,6 +5103,13 @@ class DavinTelopApp(tk.Tk):
     # ─── メインUI ────────────────────────────────
 
     def _setup_ui(self):
+        if self._layout_mode.get() == "tfx":
+            # TFX-Artist 風（中央に大きな Program・左にプロパティとレイヤー・右に色・下にスタイル）。dt_layout.py
+            self._setup_ui_tfx()
+            self._timeline = TimelineView(self._root_pane, self)
+            if self._show_timeline.get():
+                self._root_pane.add(self._timeline, weight=0)
+            return
         # ツールバー（上）とステータスバー（下）を先に pack して、ウィンドウを
         # 縮めても見切れないようにする
         self._setup_toolbar()
@@ -8677,6 +8692,13 @@ class DavinTelopApp(tk.Tk):
             self._canvas_ox = ox
             self._canvas_oy = oy
             self._preview_canvas.create_image(ox, oy, anchor='nw', image=photo)
+            sg = getattr(self, "_safe_guides", None)
+            if sg is not None and sg.get():
+                # TFX のようなセーフエリア（アクション 93% / タイトル 90%）の赤い点線
+                for k in (0.93, 0.90):
+                    mx, my = pw * (1 - k) / 2, ph * (1 - k) / 2
+                    self._preview_canvas.create_rectangle(ox + mx, oy + my, ox + pw - mx, oy + ph - my,
+                                                          outline='#C03030', dash=(4, 3))
 
             # 解像度表示 (チェッカー上で見やすい黒テキスト)
             info = f"{s.canvas_width}×{s.canvas_height}  {s.frame_rate}fps"
@@ -10354,6 +10376,7 @@ class DavinTelopApp(tk.Tk):
                 "speaker_rules":             getattr(self, "_speaker_rules", {}),
                 "new_telop":                 getattr(self, "_new_telop_cfg", {}),
                 "show_timeline":             self._show_timeline.get(),
+                "layout_mode":               self._layout_mode.get(),
                 "show_quick_add":            self._show_quick_add.get(),
                 "telocut_sync":              self._tc_sync.get() if hasattr(self, "_tc_sync") else False,
                 "telocut_sync_seek":         self._tc_sync_seek.get() if hasattr(self, "_tc_sync_seek") else True,
