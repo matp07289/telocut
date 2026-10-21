@@ -342,6 +342,8 @@ COMMANDS = [
     ("export_name_rule", "書き出しファイル名のルール", "整理・チェック", "名前"),
     ("key_cheatsheet", "ショートカット早見表（印刷用）", "ウィンドウ", "早見"),
     ("timeline_image", "タイムラインを画像に（保存・コピー）", "ウィンドウ", "TL画"),
+    ("youtube_upload", "YouTube にアップロード（書き出したファイル・概要欄を入れて）", "YouTube", "▶YT"),
+    ("youtube_history", "YouTube アップロード履歴", "YouTube", "YT履"),
     # ── 便利 ──
     ("mixdown_video", "ビデオミックスダウン（IN〜OUT を 1 本の映像に）", "便利", "MixV"),
     ("mixdown_audio", "オーディオミックスダウン（IN〜OUT の音を 1 本に）", "便利", "MixA"),

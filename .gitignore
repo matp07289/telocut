@@ -60,3 +60,6 @@ editor/telocut.png
 *.license_key
 editor/build_kind.py
 editor/telocut_assets.ico
+client_secret*.json
+youtube_client_secret.json
+youtube_token*.json

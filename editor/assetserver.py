@@ -492,7 +492,8 @@ class Store(FarmMixin):
                 "preset_label": BY_ID[p["preset"]].label if p.get("preset") in BY_ID else p.get("preset"),
                 "status": j["status"], "progress": j["progress"], "out_asset": j.get("result_asset", ""),
                 "out_path": j.get("result_path", ""), "error": j.get("error", ""), "user": j.get("user", ""),
-                "created": j["created"], "nodes": j.get("nodes", [])}
+                "created": j["created"], "nodes": j.get("nodes", []),
+                "asset_id": p.get("asset_id", ""), "dest": p.get("dest", ""), "sub": p.get("sub", "")}   # やり直し用
 
     def transcode_jobs(self, limit: int = 100) -> list:
         return [self._tc_view(j) for j in self.farm_jobs(limit, "transcode")]
@@ -1392,6 +1393,8 @@ class Handler(BaseHTTPRequestHandler):
             from . import farm as FARM
             if FARM.handle(self, "POST", parts, qs):
                 return
+            if parts[:2] in (["api", "housekeeping"], ["api", "scan"]):
+                self._body()                            # 送られてきた中身を読み捨てる（読まずに答えると Windows で接続が切れる）
             if parts[:2] == ["api", "housekeeping"]:
                 return self._json(st.housekeeping(float(qs.get("proxy_gb", 20))))
             if parts[:2] == ["api", "scan"]:

@@ -303,6 +303,13 @@ footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
   <tr><td>字幕ファイルを付ける</td><td><span class="menu">便利 → ASS 字幕 / WebVTT 字幕を書き出し</span></td></tr>
   <tr><td>ショートで隠れる所を確かめる</td><td><span class="menu">再生 → ガイドを表示</span> →「ショート / TikTok の UI の位置」</td></tr>
 </table></div>
+<h3>YouTube にアップロード</h3>
+<ol class="steps">
+  <li>はじめに 1 回だけ: Google Cloud で「YouTube Data API v3」を有効にして、OAuth クライアント ID（種類: デスクトップ アプリ）を作り、JSON をダウンロードします。</li>
+  <li><span class="menu">YouTube → YouTube にアップロード</span>（仕上げのページの「▶ YouTube へ」）。「設定ファイルを選ぶ」でその JSON を読み込み、「Google にログイン」→ ブラウザで許可。</li>
+  <li>最後に書き出した動画・タイトル・概要欄（チャプター）が入っています。公開範囲・予約公開・サムネイル・再生リストを選んで「アップロード」。終わると URL がコピーされます。</li>
+</ol>
+<div class="box warn"><b>注意</b>Google の審査を通していないクライアントで上げた動画は「非公開」になります（YouTube の決まり）。途中で切れたら「アップロード履歴」の「続きから送る」。</div>
 <h3>演出（<span class="menu">YouTube → 演出</span>）</h3>
 <div class="tbl"><table>
   <tr><th>演出</th><th>使い方</th></tr>

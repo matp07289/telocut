@@ -1327,4 +1327,7 @@ class ServerBrowser(QWidget):
             d = cur.data(0, Qt.ItemDataRole.UserRole) if cur else None
             if self.view() == "vfolders" and d and d[0] == "vf":
                 m.addAction("このマイフォルダから外す", lambda: self.add_to_vfolder(d[1], files, on=False))
+        extra = getattr(self.panel, "extra_item_menu", None)          # TeloCut Assets: 変換・YouTube・共有リンク など
+        if extra is not None:
+            extra(m, rows)
         m.exec(src.viewport().mapToGlobal(pos))

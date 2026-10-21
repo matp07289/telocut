@@ -33,6 +33,33 @@ def _get(url: str, timeout=15, raw=False):
     return b if raw else json.loads(b.decode("utf-8"))
 
 
+def download(url: str, dst: str, progress=None, cancel=None, timeout: float = 600) -> str:
+    """少しずつファイルに書く（大きな動画でもメモリを使わない・途中で切れたら消す）。progress(済み, 全体)。"""
+    tmp = dst + ".part"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=timeout) as r, open(tmp, "wb") as f:
+            total = int(r.headers.get("Content-Length") or 0)
+            done = 0
+            while True:
+                if cancel is not None and cancel.is_set():
+                    raise InterruptedError("中止しました")
+                buf = r.read(1 << 20)
+                if not buf:
+                    break
+                f.write(buf)
+                done += len(buf)
+                if progress:
+                    progress(done, total)
+        os.replace(tmp, dst)
+        return dst
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def network_drives() -> List[str]:
     """この PC のネットワークドライブ（例 ["Z:", "Y:"]）。切断中のドライブで止まらないよう種類だけで調べる。"""
     if os.name != "nt":
@@ -346,8 +373,7 @@ class AssetPanel(QWidget):
             if p is None:
                 p = str(d / a["name"])
                 if not os.path.exists(p) or os.path.getsize(p) != a.get("size"):
-                    data = _get(f"{url}/api/assets/{a['id']}/file", 600, True)
-                    Path(p).write_bytes(data)
+                    download(f"{url}/api/assets/{a['id']}/file", p)
             out.append(p)
             if a.get("credit"):
                 credits[p] = a["credit"]

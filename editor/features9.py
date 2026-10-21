@@ -491,6 +491,8 @@ class Features9Mixin:
     # ── 書き出しの完了 ──
     def on_export_done(self, path: str):
         """書き出しが終わったら知らせる（音・タスクバーの点滅・設定でフォルダを開く）。"""
+        if path:
+            SETTINGS.last_export = str(path)                 # YouTube にアップロードの既定のファイル
         if SETTINGS.notify_export:
             QApplication.beep()
             QApplication.alert(self, 0)

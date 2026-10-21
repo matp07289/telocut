@@ -47,7 +47,8 @@ PAGE_TOOLS: Dict[str, List[Optional[Tuple[str, str]]]] = {
                 ("frame_step", "カクカク"), ("motion_panel", "モーション")],
     "finish": [("preflight", "✓ 書き出し前チェック"), ("telop_check", "表記チェック"), ("loudness", "−14 LUFS"),
                ("target_length", "⏱ 目標の長さ"), ("todo_panel", "☑ やること"), None, ("thumbnail", "サムネイル"),
-               ("description", "概要欄"), ("export", "📤 書き出し"), ("work_report", "作業レポート")],
+               ("description", "概要欄"), ("export", "📤 書き出し"), ("youtube_upload", "▶ YouTube へ"),
+               ("work_report", "作業レポート")],
 }
 
 # エフェクトエディターの「すぐ使う」ボタン（選んだクリップの種類ごと）
@@ -209,6 +210,7 @@ class Features10Mixin:
             "todo_panel": lambda: self.show_dock(self.dock_todo), "backup_folder": self.backup_folder_dialog,
             "export_name_rule": self.export_name_dialog, "key_cheatsheet": self.key_cheatsheet_dialog,
             "copy_clip_info": self.copy_clip_info, "timeline_image": self.timeline_image,
+            "youtube_upload": self.youtube_upload_dialog, "youtube_history": self.youtube_history_dialog,
         }
 
     def _init_features10(self):
@@ -250,6 +252,7 @@ class Features10Mixin:
         into("整理・チェック", ("target_length", "todo_panel", "backup_folder", "export_name_rule"))
         into("ウィンドウ", ("todo_panel", "timeline_image"))
         into("ヘルプ", ("key_cheatsheet",))
+        into("YouTube", ("youtube_upload", "youtube_history"))
 
     # ─────────────────────────── 置き場所 ───────────────────────────
     def _init_feature10_ui(self):
@@ -881,6 +884,26 @@ td{{padding:2px 4px;border-bottom:1px solid #ddd}}kbd{{font-family:Consolas,mono
         QApplication.clipboard().setText(txt)
         self.status.showMessage("クリップの情報をコピーしました", 3000)
         return txt
+
+    def youtube_upload_dialog(self, path: str = ""):
+        """YouTube にアップロード（最後に書き出したファイル・シーケンス名・概要欄のテキストを最初から入れておく）。"""
+        from .ytdialog import YouTubeUploadDialog
+        from .youtube import description_text
+        seq = self.project.sequence
+        path = path or (SETTINGS.last_export if SETTINGS.last_export and os.path.exists(SETTINGS.last_export) else "")
+        try:
+            desc = description_text(self.project, seq, seq.name)
+        except Exception:
+            desc = ""
+        tags = sorted({t for m in self.project.media for t in (m.tags or [])})[:10]
+        dlg = YouTubeUploadDialog(self, path, seq.name, desc, tags)
+        self._yt_dialog = dlg
+        dlg.show()
+        return dlg
+
+    def youtube_history_dialog(self):
+        from .ytdialog import YouTubeHistoryDialog
+        YouTubeHistoryDialog(self).exec()
 
     def timeline_image(self) -> str:
         """タイムライン（見えている所）を画像にして保存・クリップボードへ（進み具合の共有に）。"""

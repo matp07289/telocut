@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (QApplication, QComboBox, QFileDialog, QLabel, QMain
                              QToolButton, QWidget)
 
 from . import model as M
+from .assetclient2 import ClientFeatures
 from .assetpanel import AssetPanel
 from .settings import SETTINGS
 
@@ -132,8 +133,8 @@ class ClientPanel(AssetPanel):
     standalone = True
 
     def server_upload(self, paths: Optional[List[str]] = None):
-        url = self._server()
-        if not url:
+        """ファイルを選んで（または渡して）アップロード。進み具合・中止・アップロード先は窓の機能で。"""
+        if not self._server():
             self.msg.setText("アセットサーバーの URL を入れて「接続」してください")
             return None
         if paths is None:
@@ -141,26 +142,17 @@ class ClientPanel(AssetPanel):
         paths = [p for p in (paths or []) if os.path.isfile(p)]
         if not paths:
             return None
-        folder = getattr(self.browser, "cur_dir", "") or ""
+        return paths if self.mw.window.upload_files(paths) else None
 
-        def send():
-            from .rendercluster import _req
-            out = []
-            for p in paths:
-                q = f"{url}/api/upload?name={urllib.parse.quote(Path(p).name)}"
-                with open(p, "rb") as fp:
-                    out.append(_req(q, fp.read(), timeout=600))
-            return out
-        self.msg.setText(f"{len(paths)} 個をアップロード中…" + (f"（{folder}）" if folder else ""))
-        self.f.run(("br_done", True), send)
-        return paths
+    def extra_item_menu(self, menu, rows):
+        self.mw.window.extra_item_menu(menu, rows)
 
     def register_psd_from_row(self, row):
         self.msg.setText("PSD の立ち絵登録は TeloCut のアセットパネルで行ってください（キャラクターはプロジェクトに入るため）")
 
 
 # ─────────────────────────── 画面 ───────────────────────────
-class AssetClientWindow(QMainWindow):
+class AssetClientWindow(ClientFeatures, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
@@ -189,6 +181,7 @@ class AssetClientWindow(QMainWindow):
         self.panel.tabs.setCurrentWidget(self.browser)
         if SETTINGS.asset_server:
             QTimer.singleShot(300, self.browser.connect_server)
+        self._init_features()
 
     # ── 設定 ──
     def download_dir(self) -> str:
@@ -360,6 +353,11 @@ class AssetClientWindow(QMainWindow):
 
     def closeEvent(self, e):
         self.qs.setValue("geometry", self.saveGeometry())
+        self.remember_place()
+        if self.tray_close(e):
+            return
+        if self.tray is not None:
+            self.tray.hide()
         super().closeEvent(e)
 
 
@@ -378,7 +376,7 @@ def selftest(out: str) -> int:
         lines.append(f"tabs: {tabs}")
         lines.append(f"modes: {[w.mode_cb.itemText(i) for i in range(w.mode_cb.count())]}")
         lines.append(f"icon: {not w.windowIcon().isNull()}")
-        ok = len(tabs) == 3 and w.browser is not None and w.mode_cb.count() == 3
+        ok = "サーバー" in tabs and "変換ジョブ" in tabs and w.browser is not None and w.mode_cb.count() == 3
         lines.append("RESULT PASS" if ok else "RESULT FAIL")
         w.close()
     except Exception as ex:
