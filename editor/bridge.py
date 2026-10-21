@@ -227,6 +227,20 @@ class Bridge(QObject):
             return True
         if cmd == "get_frame":
             return self.frame_payload(req)
+        if cmd == "run_command":
+            # DavinTelop から TeloCut の画面を開く（決めたものだけ）。ダイアログは応答を返してから開く
+            name = str(req.get("name", ""))
+            if name not in RUNNABLE:
+                raise ValueError(f"この命令は外から実行できません: {name}")
+            from PyQt6.QtCore import QTimer
+
+            def go():
+                mw.showNormal()
+                mw.raise_()
+                mw.activateWindow()
+                mw.run_command(name)
+            QTimer.singleShot(0, go)
+            return True
         if cmd == "render_frame":
             from . import media as MD, render as R
             out = req.get("path") or str(BASE_DIR / "telocut_frame.png")
@@ -237,6 +251,10 @@ class Bridge(QObject):
                 pool.close()
             return out
         raise ValueError(f"未対応のコマンド: {cmd}")
+
+
+# DavinTelop から開ける TeloCut の画面（run_command）
+RUNNABLE = {"dub_en_ja", "transcribe_subs", "voice_panel", "tachie_maker"}
 
 
 def _no_text(seq):

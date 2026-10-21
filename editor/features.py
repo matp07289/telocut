@@ -103,6 +103,8 @@ class FeaturesMixin:
         self.record_mon.view.zoom_rect.connect(self.drag_zoom)
         self.watcher = MediaWatcher(self)
         self.watcher.changed.connect(self._on_media_changed)
+        from . import gpu as _G
+        _G.detect_async()           # NVIDIA の GPU があるかを裏で調べておく（再生・書き出しで使う）
         self.bridge = None
         if SETTINGS.bridge_enabled and os.environ.get("TELOCUT_NO_BRIDGE") != "1":
             try:
@@ -316,6 +318,8 @@ class FeaturesMixin:
         if seq.mark_in >= 0 and seq.mark_out > seq.mark_in:
             rng.setCurrentIndex(1)
         gpu = QCheckBox("GPU を使う（CUDA）")
+        from . import gpu as G
+        gpu.setChecked(G.use_whisper_gpu())
         f.addRow("モデル", model)
         f.addRow("1 枚の最大文字数", maxc)
         f.addRow("範囲", rng)

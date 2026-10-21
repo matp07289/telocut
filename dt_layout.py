@@ -509,7 +509,7 @@ class TfxLayoutMixin:
         right = ttk.PanedWindow(self._main_pane, orient=tk.VERTICAL)
         self._main_pane.add(right, weight=2)
         self._tfx_right = right
-        p_sh = _Panel(right, "シェーダー")
+        p_sh = _Panel(right, "シェーダー・合成")
         right.add(p_sh, weight=3)
         snb = ttk.Notebook(p_sh.body)
         snb.pack(fill="both", expand=True)
@@ -517,10 +517,17 @@ class TfxLayoutMixin:
         self._color_panel = ColorPanel(snb, self)
         snb.add(self._color_panel, text=" カラー ")
         snb.add(self._build_gradient_tab(snb), text=" グラデーション ")
-        p_br = _Panel(right, "ブラウザ（合成・VoiceVox）")
-        right.add(p_br, weight=3)
-        self._right2_frame = p_br.body
-        self._setup_right2_panel(p_br.body)
+        # 合成（背景ソース）と VoiceVox はタブに（合成の絵は Program に出るので、別の小さなプレビューは出さない）
+        br = ttk.Frame(snb)
+        snb.add(br, text=" 合成・声 ")
+        self._right2_frame = br
+        self._setup_right2_panel(br)
+        cc = getattr(self, "_comp_canvas", None)
+        if cc is not None:
+            cc.pack_forget()
+            ttk.Label(cc.master, text="合成の絵は Program（真ん中）に出ます。NDI 出力も Program と同じ背景＋テロップです。",
+                      foreground="gray", wraplength=300, justify="left").pack(anchor="w", padx=6, pady=4,
+                                                                             before=cc.master.winfo_children()[0])
 
         self._build_tfx_toolbar()
         self._build_output_bar()
@@ -545,9 +552,6 @@ class TfxLayoutMixin:
             h2 = self._tfx_left.winfo_height()
             if h2 > 400:
                 self._tfx_left.sashpos(0, int(h2 * 0.46))
-            h3 = self._tfx_right.winfo_height()
-            if h3 > 400:
-                self._tfx_right.sashpos(0, int(h3 * 0.52))
             ws = self._tfx_strip.winfo_width()
             if ws > 400:
                 self._tfx_strip.sashpos(0, int(ws * 0.20))
@@ -595,6 +599,7 @@ class TfxLayoutMixin:
             ("▦", "セーフエリアの表示", self._tool_toggle_safe),
             None,
             ("🎬", "TeloCut の絵を Program に敷く / やめる", self._tool_toggle_telocut),
+            ("⚡", "テロップを作ったらすぐ再生ヘッド（TeloCut / Resolve）に配置する・しない", self._tool_toggle_place_now),
         ]
         self._tool_btns = {}
         for t in tools:
@@ -656,6 +661,11 @@ class TfxLayoutMixin:
     def _tool_toggle_safe(self):
         self._safe_guides.set(not self._safe_guides.get())
         self._schedule_preview_update()
+
+    def _tool_toggle_place_now(self):
+        self._place_now.set(not self._place_now.get())
+        self._save_app_config()
+        self._progress_var.set("テロップを作ったらすぐ再生ヘッドに配置: " + ("する" if self._place_now.get() else "しない"))
 
     def _tool_toggle_telocut(self):
         self._pv_tc_var.set(not self._pv_tc_var.get())
@@ -927,6 +937,7 @@ class TfxLayoutMixin:
             if self._pv_tc_var.get() != running:
                 self._pv_tc_var.set(running)
             self._tool_btns["🎬"].configure(bg=ACCENT if running else PANEL_BG)
+            self._tool_btns["⚡"].configure(bg=ACCENT if self._place_now.get() else PANEL_BG)
             sel = self._tree.selection() if hasattr(self, "_tree") else ()
             n = len(self.telop_list)
             idx = ""

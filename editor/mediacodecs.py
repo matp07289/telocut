@@ -182,6 +182,9 @@ def transcode(src: str, dst: str, preset_id: str, size: str = "", progress: Opti
     preset = BY_ID[preset_id]
     tmp = str(Path(dst).with_name(Path(dst).stem + ".part" + Path(dst).suffix))
     Path(dst).parent.mkdir(parents=True, exist_ok=True)
+    if preset.vcodec in ("libx264", "libx265") and _transcode_nvenc(src, dst, tmp, preset, size, progress, cancel,
+                                                                     tc_start, tc_end):
+        return dst
     try:
         with av.open(src) as ic:
             vin = ic.streams.video[0] if ic.streams.video and preset.vcodec else None
@@ -252,6 +255,45 @@ def transcode(src: str, dst: str, preset_id: str, size: str = "", progress: Opti
         except OSError:
             pass
         raise
+
+
+def _transcode_nvenc(src, dst, tmp, preset, size, progress, cancel, tc_start, tc_end) -> bool:
+    """NVIDIA の GPU があれば H.264 / H.265 は CUDA デコード + NVENC で変換（速い）。できなければ False（PyAV で続ける）。"""
+    try:
+        from . import gpu as G
+    except Exception:
+        return False
+    codec = "h265" if preset.vcodec == "libx265" else "h264"
+    if not (G.use_nvenc(codec) and G.use_gpu_decode()):
+        return False
+    import av
+    try:
+        with av.open(src) as ic:
+            if not ic.streams.video:
+                return False
+            cc = ic.streams.video[0].codec_context
+            w, h = out_size(cc.width, cc.height, size)
+            dur = float(ic.duration / 1e6) if ic.duration else 0.0
+            has_audio = bool(ic.streams.audio)
+    except Exception:
+        return False
+    q = int(preset.options.get("crf", "20"))
+    acodec = {"aac": ["-c:a", "aac", "-b:a", "256k", "-ar", "48000"],
+              "pcm_s16le": ["-c:a", "pcm_s16le", "-ar", "48000"]}.get(preset.acodec, ["-c:a", "aac", "-b:a", "256k"])
+    ok = G.ffmpeg_transcode(src, tmp, G.nvenc_args(codec, q), w, h, audio=acodec if has_audio else None,
+                            progress=progress, cancel=cancel, duration=dur, t0=tc_start, t1=tc_end)
+    if ok:
+        os.replace(tmp, dst)
+        if progress:
+            progress(1.0)
+        return True
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
+    if cancel is not None and cancel.is_set():
+        raise InterruptedError("中止しました")
+    return False
 
 
 # 1080p 30fps のときのおおよそのビットレート（Mbps）。大きさの見積もりに使う

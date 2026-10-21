@@ -66,6 +66,8 @@ class AppSettings:
     palette_favorites: List[str] = field(default_factory=list)   # コマンドパレットの★
     effect_presets: List[dict] = field(default_factory=list)     # エフェクトプリセット {name, star, props}
     bridge_enabled: bool = True        # DavinTelop / MCP 連携用のローカル接続を開く
+    gpu_mode: str = "auto"             # NVIDIA の GPU: auto（あれば優先して使う）/ off（使わない）
+    gpu_decode: bool = True            # 再生のデコードにも GPU を使う（続けて再生している間）
     auto_dual: bool = True             # ディスプレイをつないだら自動でマルチディスプレイ用レイアウトに
     dual_swap: bool = False            # 編集画面とパネル画面を入れ替える
     screen_roles: dict = field(default_factory=dict)   # 画面の組み合わせ → 各画面の役割（edit/panel/finish/client/none）

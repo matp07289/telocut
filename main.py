@@ -1063,6 +1063,7 @@ class TimelineView(ttk.Frame):
     RULER_H = 18
     LANE_H = 26
     EDGE = 6
+    TC_LANE_H = 15            # TeloCut のトラック（素材）1 本の高さ
 
     def __init__(self, parent, app):
         super().__init__(parent)
@@ -1073,6 +1074,9 @@ class TimelineView(ttk.Frame):
         self._items: dict = {}    # canvas item id -> entry
         self._layout: list = []   # (entry, s, e, lane)
         self._fit_pending = True
+        self._tc_tracks: list = []     # TeloCut のトラック [(名前, 種類, [(開始秒, 終了秒, ラベル, 種類)])]
+        self._tc_playhead = None       # TeloCut の再生ヘッド（秒）
+        self._ph_items: list = []
 
         bar = ttk.Frame(self)
         bar.pack(fill='x')
@@ -1083,6 +1087,9 @@ class TimelineView(ttk.Frame):
         ttk.Button(bar, text="－", width=3, command=lambda: self.zoom(1 / 1.5)).pack(side='left', padx=1)
         self._snap_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(bar, text="隣接スナップ", variable=self._snap_var).pack(side='left', padx=8)
+        self._show_tc = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bar, text="🎬 TeloCut のトラック（素材）も表示", variable=self._show_tc,
+                        command=self.redraw).pack(side='left', padx=4)
         self._info_var = tk.StringVar(value="")
         ttk.Label(bar, textvariable=self._info_var, foreground='gray').pack(side='left', padx=8)
         ttk.Label(bar, text="ドラッグ: 移動 / 端: 尺調整 / Ctrl+ホイール: ズーム",
@@ -1127,8 +1134,38 @@ class TimelineView(ttk.Frame):
         except ValueError:
             return None
 
+    def _top(self) -> int:
+        """テロップの段が始まる高さ（上に TeloCut のトラックを並べる分だけ下げる）。"""
+        n = len(self._tc_tracks) if self._show_tc.get() else 0
+        return self.RULER_H + (n * self.TC_LANE_H + 3 if n else 0)
+
+    def set_telocut(self, tracks, playhead=None):
+        """TeloCut の状態（トラック・再生ヘッド）。変わったときだけ描き直す。"""
+        if tracks != self._tc_tracks:
+            first = not self._tc_tracks and tracks and not self._app.telop_list
+            self._tc_tracks = tracks
+            if first:
+                self._fit_pending = True
+            self.redraw()
+        self.set_playhead(playhead)
+
+    def set_playhead(self, t):
+        self._tc_playhead = t
+        c = self._canvas
+        for i in self._ph_items:
+            c.delete(i)
+        self._ph_items = []
+        if t is None:
+            return
+        x = self._x(t)
+        h = c.winfo_height()
+        self._ph_items = [c.create_line(x, 0, x, h, fill="#FF4040", width=1),
+                          c.create_polygon(x - 5, 0, x + 5, 0, x, 7, fill="#FF4040", outline="")]
+
     def _bounds(self):
         spans = [sp for sp in (self._span(e) for e in self._app.telop_list) if sp]
+        if self._show_tc.get():
+            spans += [(s, t) for _n, _k, clips in self._tc_tracks for s, t, _l, _ck in clips]
         if not spans:
             return 0.0, 10.0
         return min(s for s, _ in spans), max(t for _, t in spans)
@@ -1228,7 +1265,8 @@ class TimelineView(ttk.Frame):
         fps = self._fps()
         layout, lanes = self._assign_lanes()
         self._layout = layout
-        need_h = self.RULER_H + lanes * self.LANE_H + 8
+        top = self._top()
+        need_h = top + lanes * self.LANE_H + 8
         if int(c.cget('height')) != need_h and lanes <= 6:
             c.configure(height=need_h)
 
@@ -1246,6 +1284,24 @@ class TimelineView(ttk.Frame):
                           anchor='nw', fill=fg, font=('', 7))
             t += step
 
+        # TeloCut のトラック（素材・テロップ・音声）
+        if self._show_tc.get():
+            colors = {"video": "#3D5A99", "image": "#3D7A99", "audio": "#2F7D5B", "text": "#7B4FA0"}
+            for i, (name, kind, clips) in enumerate(self._tc_tracks):
+                y1 = self.RULER_H + 1 + i * self.TC_LANE_H
+                y2 = y1 + self.TC_LANE_H - 2
+                for s, t, label, ck in clips:
+                    x1, x2 = self._x(s), self._x(t)
+                    if x2 < -2 or x1 > w + 2:
+                        continue
+                    c.create_rectangle(x1, y1, max(x1 + 2, x2), y2, fill=colors.get(ck, "#666666"),
+                                       outline="#222222")
+                    if x2 - x1 > 30:
+                        c.create_text(max(x1, 26) + 3, (y1 + y2) / 2, anchor='w', text=label[:int((x2 - x1) / 6)],
+                                      fill='#E8E8F0', font=('', 7))
+                c.create_rectangle(0, y1, 24, y2, fill="#202027", outline="")
+                c.create_text(3, (y1 + y2) / 2, anchor='w', text=name, fill='#A0A0B0', font=('', 7, 'bold'))
+
         # ブロック
         issues = self._app._validate_entries()
         sel_ids = {e.id for e in self._app._get_selected_entries()}
@@ -1253,7 +1309,7 @@ class TimelineView(ttk.Frame):
             x1, x2 = self._x(s), self._x(t)
             if x2 < -2 or x1 > w + 2:
                 continue
-            y1 = self.RULER_H + 4 + lane * self.LANE_H
+            y1 = top + 4 + lane * self.LANE_H
             y2 = y1 + self.LANE_H - 4
             if not e.enabled:
                 fill = _tc("timeline_disabled")
@@ -1284,12 +1340,15 @@ class TimelineView(ttk.Frame):
         a = (self._t0 - lo) / total
         b = (self._t(w) - lo) / total
         self._hbar.set(max(0.0, min(1.0, a)), max(0.0, min(1.0, b)))
+        self._ph_items = []
+        self.set_playhead(self._tc_playhead)
 
     # ── マウス操作 ─────────────────────────────
     def _hit(self, x, y):
         """(entry, mode) mode = 'move' | 'start' | 'end'"""
+        top = self._top()
         for e, s, t, lane in reversed(self._layout):
-            y1 = self.RULER_H + 4 + lane * self.LANE_H
+            y1 = top + 4 + lane * self.LANE_H
             y2 = y1 + self.LANE_H - 4
             x1, x2 = self._x(s), self._x(t)
             if y1 <= y <= y2 and x1 - 2 <= x <= x2 + 2:
@@ -1314,6 +1373,11 @@ class TimelineView(ttk.Frame):
 
     def _on_press(self, ev):
         self._canvas.focus_set()
+        if ev.y < self._top() and self._tc_tracks:
+            # 目盛り・TeloCut のトラックをクリック → TeloCut の再生ヘッドをそこへ
+            self._app._telocut_seek_seconds(max(0.0, self._t(ev.x)))
+            self._drag = None
+            return
         e, mode = self._hit(ev.x, ev.y)
         tree = self._app._tree
         if e is None:
@@ -4720,6 +4784,7 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
 
         # 表示設定
         self._show_timeline = tk.BooleanVar(value=cfg.get("show_timeline", True))
+        self._place_now = tk.BooleanVar(value=bool(cfg.get("place_now", True)))   # 作ったらすぐ再生ヘッドに配置
         self._layout_mode = tk.StringVar(value=cfg.get("layout_mode", "tfx"))     # tfx = TFX-Artist 風 / classic = 従来
         self._show_quick_add = tk.BooleanVar(value=cfg.get("show_quick_add", False))
         self._style_clipboard: Optional[dict] = None
@@ -4809,6 +4874,7 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
         self._apply_shortcuts()
         self._reset_undo()
         self._schedule_preview_update()
+        self._start_tc_timeline()       # TeloCut のトラック（素材）・再生ヘッドをタイムラインに
 
     # ─── スタイル ───────────────────────────────
 
@@ -5038,6 +5104,14 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
         self._telocut_follow = tk.BooleanVar(value=False)
         tc_menu.add_checkbutton(label="TeloCut の再生位置のテロップを自動で選択",
                                 variable=self._telocut_follow, command=self._toggle_telocut_follow)
+        tc_menu.add_separator()
+        tc_menu.add_checkbutton(label="⚡ テロップを作ったらすぐ再生ヘッドに配置",
+                                variable=self._place_now, command=self._save_app_config)
+        tc_menu.add_separator()
+        tc_menu.add_command(label="🎙 英語の声 → 日本語の吹き替え（TeloCut で開く）",
+                            command=lambda: self._telocut_run("dub_en_ja"))
+        tc_menu.add_command(label="🎤 文字起こしで字幕（TeloCut で開く）",
+                            command=lambda: self._telocut_run("transcribe_subs"))
 
         # プリセットメニュー
         self._preset_menu = tk.Menu(mb, tearoff=0)
@@ -7149,10 +7223,11 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
             return
 
         canvas = self._comp_canvas
-        cw = canvas.winfo_width()
-        ch = canvas.winfo_height()
-        if cw < 10 or ch < 10:
-            return
+        sender = getattr(self, '_ndi_sender', None)
+        if not canvas.winfo_ismapped() and not (sender is not None and sender.active):
+            return                      # 見えていない・NDI も出していない → 合成しない（軽く）
+        cw = max(10, canvas.winfo_width())
+        ch = max(10, canvas.winfo_height())
 
         canvas.delete('all')
 
@@ -7540,7 +7615,10 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
             return 29.97
 
     def _get_playhead_tc(self) -> Optional[str]:
-        """Resolve の再生ヘッド TC を返す（未接続なら接続を試みる）。失敗時 None。"""
+        """再生ヘッドの TC。TeloCut が起動していれば TeloCut、無ければ Resolve（未接続なら接続を試みる）。失敗時 None。"""
+        tc = self._telocut_playhead_tc()
+        if tc:
+            return tc
         try:
             tc = self._resolve.get_current_timecode()
             if not tc and self._resolve.connect():
@@ -7548,6 +7626,131 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
             return tc or None
         except Exception:
             return None
+
+    def _telocut_playhead_tc(self) -> Optional[str]:
+        """起動中の TeloCut の再生ヘッド（起動していなければ None・すぐ返る）。
+        タイムラインの見張り（0.2 秒ごと）が読んだばかりの値があればそれを使う（待たない）。"""
+        import time as _time
+        rec = getattr(self, "_tc_tl_ph", None)
+        if rec is not None and _time.time() - rec[1] < 0.6:
+            return rec[0]
+        try:
+            from core import telocut_link as TL
+            if not TL._port_file().exists():
+                return None
+            return TL.call("get_playhead", timeout=1.5) or None
+        except Exception:
+            return None
+
+    def _telocut_run(self, name: str):
+        """TeloCut の画面を開く（吹き替え など）。"""
+        from core import telocut_link as TL
+        try:
+            TL.call("run_command", timeout=5, name=name)
+            self._progress_var.set("TeloCut で開きました")
+        except Exception as ex:
+            messagebox.showwarning("TeloCut", f"TeloCut が起動していないか、開けませんでした。\n{ex}", parent=self)
+
+    def _telocut_seek_seconds(self, sec: float):
+        from core import telocut_link as TL
+        tc = seconds_to_timecode(sec, getattr(self, "_tc_tl_fps", None) or self._current_fps())
+        self._tc_tl_seek = sec
+        import threading
+        threading.Thread(target=lambda: self._quiet(TL.seek, tc), daemon=True).start()
+        if self._timeline is not None:
+            self._timeline.set_playhead(sec)
+
+    @staticmethod
+    def _quiet(fn, *a):
+        try:
+            return fn(*a)
+        except Exception:
+            return None
+
+    # ── TeloCut のタイムライン（素材）を DavinTelop のタイムラインに表示 ──
+    def _start_tc_timeline(self):
+        """裏のスレッドで TeloCut の状態（2 秒ごと）と再生ヘッド（0.2 秒ごと）を読み、画面のスレッドで反映する。"""
+        import queue
+        import threading
+        import time as _time
+        self._tc_tl_q = queue.Queue()
+        self._tc_tl_alive = True
+        self._tc_tl_want = True
+
+        def loop():
+            from core import telocut_link as TL
+            last_state = 0.0
+            while self._tc_tl_alive:
+                try:
+                    if not TL._port_file().exists():
+                        self._tc_tl_q.put(("none", None))
+                        _time.sleep(1.0)
+                        continue
+                    now = _time.time()
+                    want = self._tc_tl_want          # Tk の変数は別スレッドから読まない（画面のスレッドが写す）
+                    if want and now - last_state > 2.0:
+                        last_state = now
+                        self._tc_tl_q.put(("state", TL.call("get_state", timeout=3)))
+                    self._tc_tl_q.put(("ph", TL.call("get_playhead", timeout=2)))
+                except Exception:
+                    self._tc_tl_q.put(("none", None))
+                    _time.sleep(1.0)
+                _time.sleep(0.2)
+        threading.Thread(target=loop, daemon=True).start()
+        self.after(200, self._tc_timeline_poll)
+
+    def _tc_timeline_poll(self):
+        import queue
+        tl = self._timeline
+        try:
+            self._tc_tl_want = tl is not None and bool(tl._show_tc.get())
+        except tk.TclError:
+            return
+        try:
+            while True:
+                kind, data = self._tc_tl_q.get_nowait()
+                tl = self._timeline
+                if tl is None:
+                    continue
+                if kind == "none":
+                    if tl._tc_tracks or tl._tc_playhead is not None:
+                        tl.set_telocut([], None)
+                elif kind == "state" and data:
+                    fps = float(data.get("fps") or 30)
+                    self._tc_tl_fps = fps
+                    tl.set_telocut(self._tc_tracks_from_state(data, fps), tl._tc_playhead)
+                elif kind == "ph" and data:
+                    import time as _time
+                    self._tc_tl_ph = (data, _time.time())
+                    try:
+                        tl.set_playhead(parse_timecode(data, getattr(self, "_tc_tl_fps", None) or self._current_fps()))
+                    except ValueError:
+                        pass
+        except queue.Empty:
+            pass
+        try:
+            self.after(200, self._tc_timeline_poll)
+        except tk.TclError:
+            pass
+
+    @staticmethod
+    def _tc_tracks_from_state(state: dict, fps: float) -> list:
+        """TeloCut の get_state → [(トラック名, 種類, [(開始秒, 終了秒, ラベル, クリックの種類)])]（上の映像トラックから）。"""
+        vids, auds = [], []
+        for t in state.get("tracks", []):
+            clips = []
+            for c in t.get("clips", []):
+                try:
+                    s = parse_timecode(c["start"], fps)
+                    e = parse_timecode(c["end"], fps)
+                except (KeyError, ValueError):
+                    continue
+                label = c.get("media") or c.get("text") or c.get("kind", "")
+                clips.append((s, e, str(label), c.get("kind", "")))
+            if not clips:
+                continue
+            (auds if t.get("kind") == "audio" else vids).append((t.get("name", ""), t.get("kind", ""), clips))
+        return list(reversed(vids)) + auds
 
     def _latest_end_entry(self) -> Optional[TelopEntry]:
         """終了TCが最も遅いテロップ。"""
@@ -7603,6 +7806,26 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
         end = seconds_to_timecode(parse_timecode(start, fps) + dur, fps)
         return start, end
 
+    def _place_new_entry(self, entry: TelopEntry):
+        """作ったテロップをすぐタイムラインに置く: TeloCut と連携中ならそのまま TeloCut に出る（連携で送る）。
+        TeloCut が無く Resolve につながるなら Resolve の再生ヘッドに置く。"""
+        if not (getattr(self, "_place_now", None) is not None and self._place_now.get()):
+            return ""
+        if getattr(self, "_tc_session", None) is not None:
+            self._progress_var.set(f"TeloCut の {entry.start_time} に置きました（連携）")
+            return "telocut"
+        from core import telocut_link as TL
+        if TL._port_file().exists():
+            self._progress_var.set("TeloCut にも出すには「TeloCut → リアルタイム連携」をオンにしてください")
+            return "telocut-off"
+        try:
+            if self._resolve.connect():
+                self.place_selected_at_playhead()
+                return "resolve"
+        except Exception:
+            pass
+        return ""
+
     def _dialog_keys(self) -> tuple[str, str]:
         return (self._shortcuts.get("dlg_submit") or "Return",
                 self._shortcuts.get("dlg_newline") or "")
@@ -7612,6 +7835,14 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
     def add_entry(self, after: Optional[TelopEntry] = None, start_tc: Optional[str] = None):
         """新規テロップ作成ダイアログ。開始/終了TCは自動反映、Enterで作成。"""
         fps = self._current_fps()
+        if after is None and start_tc is None and getattr(self, "_place_now", None) is not None and self._place_now.get():
+            # 「作ったらすぐ再生ヘッドに配置」: TeloCut（無ければ Resolve）の再生ヘッドから始める
+            tc = self._get_playhead_tc()
+            if tc:
+                try:
+                    start_tc = normalize_timecode(tc, fps)
+                except ValueError:
+                    start_tc = None
         if after is None and self._new_telop_cfg.get("start_mode", "auto") == "auto":
             sel = self._get_selected_entries()
             after = sel[-1] if sel else None
@@ -7649,6 +7880,7 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
             self._qa_start_var.set(nxt)
             self._qa_dur_var.set(prev_dur)
             self._progress_var.set(f"テロップを追加しました: {entry.text[:30]}")
+            self._place_new_entry(entry)
             return (nxt, "")
 
         dlg = TelopEditDialog(
@@ -8714,19 +8946,24 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
                 img = render_telop_image(preview_text, s)
                 self._pv_img_cache = (key, img)
 
+            # プレビューエリアの大きさ（ここで縮小してから合成する = 背景の映像が動いていても軽い）
+            scale = min(cw / s.canvas_width, ch / s.canvas_height)
+            pw = max(1, int(s.canvas_width * scale))
+            ph = max(1, int(s.canvas_height * scale))
+            tcache = getattr(self, '_pv_thumb_cache', None)
+            if tcache is not None and tcache[0] == (key, pw, ph):
+                tthumb = tcache[1]
+            else:
+                tthumb = img.resize((pw, ph), Image.LANCZOS)
+                self._pv_thumb_cache = ((key, pw, ph), tthumb)
+
             # 背景: 合成の背景ソース（TeloCut・NDI など）が動いていればその絵、無ければチェッカーボード（透過確認）
             frame = self._program_bg_frame()
             if frame is not None:
-                bg = frame.convert("RGB").resize((s.canvas_width, s.canvas_height), Image.BILINEAR)
+                thumb = frame.convert("RGB").resize((pw, ph), Image.BILINEAR)
             else:
-                bg = _make_checker_bg(s.canvas_width, s.canvas_height)
-            bg.paste(img, (0, 0), img)
-
-            # プレビューエリアに合わせてリサイズ
-            scale = min(cw / s.canvas_width, ch / s.canvas_height)
-            pw = int(s.canvas_width * scale)
-            ph = int(s.canvas_height * scale)
-            thumb = bg.resize((pw, ph), Image.LANCZOS)
+                thumb = _make_checker_bg(pw, ph, sq=max(4, int(16 * scale))).convert("RGB")
+            thumb.paste(tthumb, (0, 0), tthumb)
 
             photo = ImageTk.PhotoImage(thumb)
             self._preview_image_ref = photo
@@ -10441,6 +10678,7 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
                 "new_telop":                 getattr(self, "_new_telop_cfg", {}),
                 "show_timeline":             self._show_timeline.get(),
                 "layout_mode":               self._layout_mode.get(),
+                "place_now":                 self._place_now.get() if hasattr(self, "_place_now") else True,
                 "show_quick_add":            self._show_quick_add.get(),
                 "telocut_sync":              self._tc_sync.get() if hasattr(self, "_tc_sync") else False,
                 "telocut_sync_seek":         self._tc_sync_seek.get() if hasattr(self, "_tc_sync_seek") else True,
@@ -10480,6 +10718,7 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
         if not self._confirm_discard():
             return
         self._clear_autosave()   # 正常終了時は自動保存を消す
+        self._tc_tl_alive = False
         try:
             if self.state() == 'normal':
                 cfg = self._load_app_config()

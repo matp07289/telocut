@@ -93,6 +93,20 @@ class PreferencesDialog(QDialog):
         self.fx_mode.addItem("ノード（分岐・合成・Resolve Fusion / Blender 風）", "nodes")
         self.fx_mode.setCurrentIndex(max(0, self.fx_mode.findData(SETTINGS.fx_mode_default)))
         f2.addRow("エフェクトの管理方法（新しく付けるとき）", self.fx_mode)
+        # NVIDIA の GPU（gpu.py）
+        from . import gpu as G
+        self.gpu_mode = QComboBox()
+        self.gpu_mode.addItem("優先して使う（NVIDIA があれば）", "auto")
+        self.gpu_mode.addItem("使わない（CPU だけ）", "off")
+        self.gpu_mode.setCurrentIndex(max(0, self.gpu_mode.findData(getattr(SETTINGS, "gpu_mode", "auto"))))
+        f2.addRow("GPU（NVIDIA）", self.gpu_mode)
+        self.gpu_decode = QCheckBox("再生のデコードにも GPU を使う（続けて再生している間・CUDA）")
+        self.gpu_decode.setChecked(getattr(SETTINGS, "gpu_decode", True))
+        f2.addRow(self.gpu_decode)
+        gl = QLabel(G.summary() + "\n書き出し・変換（H.264 / H.265）・プロキシ作成は NVENC、文字起こしは CUDA を使います。")
+        gl.setWordWrap(True)
+        gl.setStyleSheet("color: gray;")
+        f2.addRow(gl)
         tabs.addTab(t2, "再生・レンダリング")
 
         # NAS・共有
@@ -153,6 +167,8 @@ class PreferencesDialog(QDialog):
         SETTINGS.idle_render = self.idle.isChecked()
         SETTINGS.render_threads = self.threads.value()
         SETTINGS.fx_mode_default = self.fx_mode.currentData()
+        SETTINGS.gpu_mode = self.gpu_mode.currentData()
+        SETTINGS.gpu_decode = self.gpu_decode.isChecked()
         SETTINGS.user_name = self.user.text().strip() or SETTINGS.user_name
         maps = []
         for r in range(self.maps.rowCount()):

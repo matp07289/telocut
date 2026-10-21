@@ -46,7 +46,11 @@ class ExportWorker(QThread):
         self.cancel = threading.Event()
 
     def run(self):
-        if self.encoder == "h264_nvenc":
+        # NVIDIA の GPU があれば H.264 / H.265 は NVENC で（設定 → GPU を優先）
+        from . import gpu as G
+        if self.encoder in ("h264", "h264_mov", "h265") and not self.alpha and G.use_nvenc(self.encoder):
+            self.encoder = "hevc_nvenc" if self.encoder == "h265" else "h264_nvenc"
+        if self.encoder in ("h264_nvenc", "hevc_nvenc"):
             self._run_ffmpeg_cli()
         else:
             self._run_pyav()
@@ -105,6 +109,8 @@ class ExportWorker(QThread):
                 vcodec += ["-crf", str(self.quality), "-preset", "medium", "-pix_fmt", "yuv420p"]
             elif self.encoder == "h264_nvenc":
                 vcodec += ["-cq", str(self.quality), "-preset", "p5", "-pix_fmt", "yuv420p"]
+            elif self.encoder == "hevc_nvenc":
+                vcodec += ["-cq", str(self.quality), "-preset", "p5", "-pix_fmt", "yuv420p", "-tag:v", "hvc1"]
             elif self.encoder == "prores_ks":
                 vcodec += ["-profile:v", "3", "-pix_fmt", "yuv422p10le"]
             acodec = ["-c:a", "pcm_s16le"] if self.path.lower().endswith(".mov") else \

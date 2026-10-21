@@ -274,6 +274,11 @@ class AudioSource:
 #  映像デコード
 # ─────────────────────────────────────────────
 
+# GPU（NVDEC）でデコードできるもの
+_GPU_CODECS = {"h264", "hevc", "av1", "vp9", "vp8", "mpeg2video", "mpeg4", "mjpeg"}
+_GPU_PIXFMTS = {"yuv420p", "yuvj420p", "nv12", "yuv420p10le", "p010le"}
+
+
 class VideoDecoder:
     """1ファイル分のデコーダ。get(t) で t 秒のフレームを PIL.Image で返す。"""
 
@@ -294,12 +299,44 @@ class VideoDecoder:
         self._iter = None
         self._last = None          # (t, frame)
         self._next = None
+        # NVIDIA の GPU でのデコード（続けて再生している間だけ。gpu.py）
+        cc = self.stream.codec_context
+        self._gpu_ok = (not self.has_alpha and str(cc.name) in _GPU_CODECS and pf in _GPU_PIXFMTS)
+        self._gpu = None
+        self._gpu_last = None
+        self._gpu_prev = None
 
     def close(self):
+        if self._gpu is not None:
+            self._gpu.close()
+            self._gpu = None
         try:
             self.container.close()
         except Exception:
             pass
+
+    def _gpu_array(self, t: float, size):
+        """続けて再生しているときは GPU（ffmpeg の CUDA デコード + 縮小）の絵を使う。使えなければ None。"""
+        from . import gpu as G
+        prev, self._gpu_prev = self._gpu_prev, t
+        r = self._gpu
+        if r is not None and r.covers(t, size):
+            if not r.ready.is_set():
+                return None                      # ffmpeg の立ち上がり中は今まで通り
+            a = r.read_until(t, self._gpu_last)
+            if a is not None:
+                self._gpu_last = a
+                return a
+        if r is not None:
+            r.close()
+            self._gpu = None
+            self._gpu_last = None
+        if prev is not None and 0 < t - prev <= self.frame_dur * 3.5 and G.use_gpu_decode():
+            try:
+                self._gpu = G.GpuReader(self.path, t, size, self.frame_dur)
+            except Exception:
+                self._gpu_ok = False
+        return None
 
     def _frames(self):
         for f in self.container.decode(self.stream):
@@ -314,6 +351,10 @@ class VideoDecoder:
 
     def get_array(self, t: float, size, alpha: bool = False) -> Optional[np.ndarray]:
         """t 秒のフレームを size に縮小した RGB（alpha=True なら RGBA）配列で返す（PIL を経由しないので速い）。"""
+        if self._gpu_ok and not alpha:
+            a = self._gpu_array(t, size)
+            if a is not None:
+                return a
         f = self._get_frame(t)
         if f is None:
             return None
@@ -473,6 +514,21 @@ def build_proxy(item: MediaItem, cancel: Optional[threading.Event] = None, progr
     tmp = out.with_suffix(".part.mp4")
     w = min(SETTINGS.proxy_width, item.width or SETTINGS.proxy_width) & ~1
     h = max(2, int(round((item.height or 540) * w / max(1, item.width or 960)))) & ~1
+    from . import gpu as G
+    if G.use_nvenc("h264") and G.use_gpu_decode():
+        # NVIDIA: CUDA でデコード → GPU で縮小 → NVENC（全イントラ）。CPU の何倍も速い
+        ok = G.ffmpeg_transcode(item.path, str(tmp), G.nvenc_args("h264", 23, intra=True, fast=True), w, h,
+                                audio=None, progress=(lambda p: progress(int(p * 1000), 1000)) if progress else None,
+                                cancel=cancel, duration=item.duration_s or 0)
+        if ok:
+            os.replace(tmp, out)
+            return out
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if cancel is not None and cancel.is_set():
+            return None
     try:
         with av.open(item.path) as src:
             vs = src.streams.video[0]

@@ -199,6 +199,29 @@ Avid 標準で未割り当ての機能には TeloCut が独自にキーを付け
 31. 並列書き出し（この PC の CPU コアを全部使う）
 32. レンダーファーム: アセットサーバー経由で複数のレンダリング用 PC に区間を分散
 
+## v0.23.0: NVIDIA の GPU を優先・英語の声を日本語に吹き替え・DavinTelop のタイムラインに TeloCut の素材
+
+**NVIDIA の GPU を優先して使う**（設定 → 再生・レンダリング → GPU（NVIDIA）。既定は「優先して使う」）
+| 処理 | GPU での動き |
+|---|---|
+| 再生 | 続けて再生している間は ffmpeg の CUDA デコード＋GPU で縮小（scale_cuda）。シーク・コマ送り・逆再生は今まで通り。4K HEVC で約 3 倍速い（手元の RTX 3070: 150 → 490 fps） |
+| プロキシ作成 | CUDA デコード → GPU で縮小 → NVENC（全イントラ） |
+| 変換（H.264 / H.265） | CUDA デコード → NVENC（範囲・半分の大きさ・音声も） |
+| 書き出し（H.264 / H.265） | NVENC（h264_nvenc / hevc_nvenc） |
+| 文字起こし | CUDA（faster-whisper）。CUDA 12 の cuBLAS / cuDNN 9 が無いときは自動で CPU（落ちない）。`pip install nvidia-cublas-cu12 nvidia-cudnn-cu12` で GPU に |
+外部の ffmpeg（NVENC / CUDA 入り。winget の Gyan.FFmpeg など）を使う。無い・NVIDIA が無いときは今まで通り CPU。
+
+**英語の声 → 日本語の吹き替え**（YouTube → 英語の声 → 日本語の吹き替え。DavinTelop の TeloCut メニューからも開ける）
+範囲の声を faster-whisper で文字起こし → Claude Code（claude -p）でセリフごとに日本語に訳す → VOICEVOX / AivisSpeech などで日本語の声を合成 →
+同じ時間に 日本語テロップ（新しい映像トラック）・日本語の声（新しい音声トラック）を置く。日本語が長くて収まらないときは話速を上げる（最大 160%）。
+元の声を小さく（-14 dB など）・元の言葉の字幕も残す・訳さない も選べる。元に戻せる。
+
+**DavinTelop**
+- タイムラインに TeloCut のトラック（素材・テロップ・音声）と再生ヘッドを表示（2 秒ごとに同期・再生ヘッドは 0.2 秒ごと）。目盛りや TeloCut の段をクリックすると TeloCut の再生ヘッドが動く
+- ⚡ テロップを作ったらすぐ再生ヘッドに配置（既定オン）: TeloCut が起動していれば TeloCut の再生ヘッドから始まり、連携中ならそのまま TeloCut に出る。TeloCut が無ければ Resolve の再生ヘッドに置く
+- 右下の小さな合成プレビューをやめて、合成（背景ソース・NDI）と VoiceVox はシェーダーの「合成・声」タブに。合成の絵は Program に出る
+- Program の描き直しを軽く（縮小してから合成・テロップの絵を使い回す。TeloCut の背景つきで 1 回 6 ms ほど）
+
 ## v0.22.0: DavinTelop をテロップ専用機風に作り直し（TFX-Artist・Nixia・Neo-n を参考に・DaVinci / TeloCut 向け）
 
 **画面**

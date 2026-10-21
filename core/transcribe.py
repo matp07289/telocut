@@ -34,7 +34,59 @@ class Segment:
     text: str
 
 
+_CUDA_READY = None
+
+
+def cuda_ready() -> bool:
+    """faster-whisper（CTranslate2）が GPU で動くか。CUDA / cuDNN の DLL が無いと落ちる（例外にならない）ので先に調べる。
+    pip の nvidia-cublas-cu12 / nvidia-cudnn-cu12 が入っていれば、その DLL の場所も使う。"""
+    global _CUDA_READY
+    if _CUDA_READY is not None:
+        return _CUDA_READY
+    _CUDA_READY = False
+    try:
+        import ctranslate2
+        if ctranslate2.get_cuda_device_count() <= 0:
+            return False
+        ver = tuple(int(x) for x in ctranslate2.__version__.split(".")[:2])
+    except Exception:
+        return False
+    import os
+    if os.name != "nt":
+        _CUDA_READY = True
+        return True
+    import ctypes
+    import site
+    import sys
+    from pathlib import Path
+    roots = [Path(p) for p in (site.getsitepackages() + [site.getusersitepackages()])] + [Path(sys.prefix) / "Lib" / "site-packages"]
+    for r in roots:
+        for sub in ("cublas", "cudnn", "cuda_runtime"):
+            d = r / "nvidia" / sub / "bin"
+            if d.is_dir():
+                try:
+                    os.add_dll_directory(str(d))
+                    os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
+                except OSError:
+                    pass
+    if ver >= (4, 4):
+        need = ["cublas64_12.dll", "cudnn_ops64_9.dll"]
+    elif ver >= (4, 0):
+        need = ["cublas64_12.dll", "cudnn_ops_infer64_8.dll"]
+    else:
+        need = ["cublas64_11.dll", "cudnn_ops_infer64_8.dll"]
+    try:
+        for n in need:
+            ctypes.WinDLL(n)
+    except OSError:
+        return False
+    _CUDA_READY = True
+    return True
+
+
 def _get_model(model_size: str, use_gpu: bool):
+    if use_gpu and not cuda_ready():
+        use_gpu = False                 # CUDA の DLL が足りない → CPU（落ちないように）
     device = "cuda" if use_gpu else "cpu"
     compute = "float16" if use_gpu else "int8"
     key = (model_size, device, compute)
@@ -148,6 +200,9 @@ def _transcribe_subprocess(audio_path, model_size, language, use_gpu,
             if out:
                 return out
             last_err = (proc.stderr.read() or "")[-500:]
+            if use_gpu:
+                # GPU で失敗（CUDA の DLL が足りない など）→ CPU でやり直す
+                return _transcribe_subprocess(audio_path, model_size, language, False, progress_cb)
         except Exception as e:
             last_err = str(e)
             continue
