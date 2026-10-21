@@ -5103,6 +5103,7 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
     # ─── メインUI ────────────────────────────────
 
     def _setup_ui(self):
+        self._create_extra_design_vars()
         if self._layout_mode.get() == "tfx":
             # TFX-Artist 風（中央に大きな Program・左にプロパティとレイヤー・右に色・下にスタイル）。dt_layout.py
             self._setup_ui_tfx()
@@ -8583,6 +8584,7 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
         except tk.TclError:
             pass
 
+        self._collect_extra_design(s)   # 装飾（グラデーション・二重縁・光彩・変形・縦書き）
         return s
 
     def _apply_design_to_ui(self, s: DesignSettings):
@@ -8619,6 +8621,7 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
         self._cw_var.set(s.canvas_width)
         self._ch_var.set(s.canvas_height)
         self._fps_var.set(s.frame_rate)
+        self._apply_extra_design(s)
 
     def _on_design_change(self, *_):
         self.design = self._collect_design()

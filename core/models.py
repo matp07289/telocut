@@ -48,6 +48,23 @@ class DesignSettings:
     canvas_height: int = 1080
     frame_rate: float = 29.97
 
+    # 装飾（テロップ専用機のような見た目。既定はすべてオフ = 今までと同じ絵）
+    grad_enabled: bool = False     # 文字のグラデーション（文字色 → grad_color）
+    grad_color: str = "#FFD84A"
+    grad_angle: int = 0            # 0 = 上→下 / 90 = 左→右
+    stroke2_enabled: bool = False  # 二重縁（縁取りの外側にもう 1 本）
+    stroke2_color: str = "#FFFFFF"
+    stroke2_width: int = 6
+    glow_enabled: bool = False     # 光彩（文字のまわりをぼかして光らせる）
+    glow_color: str = "#66FFCC"
+    glow_size: int = 12
+    bg_shape: str = "rect"         # 背景の形: rect 四角 / round 角丸 / band 横いっぱいの帯
+    scale_x: int = 100             # 横の拡大率（%）
+    scale_y: int = 100             # 縦の拡大率（%）
+    rotation: float = 0.0          # 回転（度・時計回り）
+    skew: float = 0.0              # せん断（度・右に傾く）
+    vertical: bool = False         # 縦書き
+
     def to_dict(self) -> dict:
         return asdict(self)
 
