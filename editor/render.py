@@ -288,6 +288,18 @@ def _shape_image(seq: Sequence, clip: Clip, cf: int, W: int, H: int) -> Image.Im
         cxx = (box[0] + box[2]) / 2
         d.rectangle([cxx - tw / 2 - pad, box[1], cxx + tw / 2 + pad, box[1] + fh * 1.3], fill=(0, 0, 0, max(fo, 160)))
         d.text((cxx - tw / 2, box[1] + fh * 0.12), txt, font=f, fill=rgb + (255,))
+    elif shape == "countup":
+        # 数字が増えていく（count_frames で count_from → count_to。そのあとは止まる）。3 桁ごとに , を付ける
+        k = min(1.0, (cf - clip.start) / max(1, int(clip.prop("count_frames", 60) or 60)))
+        k = 1 - (1 - k) ** 3
+        a0, a1 = float(clip.prop("count_from", 0) or 0), float(clip.prop("count_to", 100) or 100)
+        val = a0 + (a1 - a0) * k
+        txt = f"{clip.prop('prefix', '') or ''}{int(round(val)):,}{clip.prop('suffix', '') or ''}"
+        from .render import _offline_font as _of
+        fnt = _of(max(10, int(box[3] - box[1])))
+        tw = d.textlength(txt, font=fnt)
+        d.text(((box[0] + box[2] - tw) / 2, box[1]), txt, font=fnt, fill=rgb + (255,),
+               stroke_width=max(2, H // 150), stroke_fill=(0, 0, 0, 255))
     elif shape == "subscribe":
         # チャンネル登録ボタン: 赤いボタン → 途中（60%）で押されて灰色の「登録済み」に。押す瞬間は少し縮む
         k = (cf - clip.start) / max(1, clip.duration)
@@ -349,8 +361,8 @@ def _noise(seed: int, frame: int) -> float:
 
 def _shake_offset(clip: Clip, cf: int, scale: float):
     for fx in clip.prop("effects") or []:
-        if fx.get("name") == "shake":
-            amp = float(fx.get("value", 10)) * scale
+        if fx.get("name") in ("shake", "q_shake") and fx.get("on", True):
+            amp = float((fx.get("params") or {}).get("amount", fx.get("value", 10))) * scale
             return _noise(1, cf) * amp, _noise(7, cf) * amp
     return 0.0, 0.0
 
@@ -428,7 +440,10 @@ def src_frame(clip: Clip, cf: int) -> float:
     sp = float(clip.prop("speed", 1.0) or 0.0)
     rel = cf - clip.start
     step = int(clip.props.get("frame_step") or 0)
-    if step > 1:                                   # カクカク（コマを間引く）
+    for fx in clip.props.get("effects") or ():
+        if fx.get("name") == "framestep" and fx.get("on", True):
+            step = int((fx.get("params") or {}).get("step", 3) or 3)
+    if step > 1:                                   # カクカク（コマを間引く。エフェクト「カクカク」でも）
         rel -= rel % step
     if sp == 0:
         return float(clip.src_in)
@@ -553,6 +568,9 @@ def frame_signature(seq: Sequence, frame: int, project: Project, scale: float, u
                 item.append(int(np.ceil((c.end - L.cf) / seq.fps)))
             elif c.prop("shape") == "timecode":
                 item += [L.cf, c.prop("tc_label", ""), seq.start_tc]
+            elif c.prop("shape") == "countup":
+                item += [min(L.cf - c.start, int(c.prop("count_frames", 60) or 60)), c.prop("count_from"), c.prop("count_to"),
+                         c.prop("prefix"), c.prop("suffix")]
             elif c.prop("shape") == "subscribe":
                 item += [L.cf - c.start, c.duration, c.prop("label", ""), c.prop("label_done", "")]
             elif c.prop("shape") == "rta_timer":
@@ -560,7 +578,7 @@ def frame_signature(seq: Sequence, frame: int, project: Project, scale: float, u
                          c.props.get("timer_rate"), c.props.get("timer_ms")]
         if c.kind == "text" and (c.prop("text_anim") or c.prop("karaoke") or c.prop("text_anim_out")):
             item += [c.prop("text_anim"), c.prop("karaoke"), c.prop("text_anim_out"), L.cf - c.start, c.end - L.cf]
-        if any(fx.get("name") == "shake" for fx in (c.prop("effects") or [])):
+        if any(fx.get("name") in ("shake", "q_shake") for fx in (c.prop("effects") or [])):
             item.append(L.cf)
         if c.prop("effects"):
             from .fxlib import is_animated
@@ -747,7 +765,8 @@ def fx_ctx(seq: Sequence, clip: Clip, cf: int, scale: float):
     except ValueError:
         from .motion import stable_seed
         seed = stable_seed(clip.id) % 100000
-    return Ctx(rel=cf - clip.start, fps=seq.fps, duration=clip.duration, scale=scale, seed=seed)
+    return Ctx(rel=cf - clip.start, fps=seq.fps, duration=clip.duration, scale=scale, seed=seed,
+               fw=int(round(seq.width * scale)), fh=int(round(seq.height * scale)))
 
 
 def apply_clip_fx(im: Image.Image, clip: Clip, seq: Sequence, cf: int, scale: float) -> Image.Image:

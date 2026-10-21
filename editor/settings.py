@@ -24,7 +24,7 @@ USER_KEYS = ("user_name", "keyboard_preset", "keymap", "keyboard_layout", "theme
              "timeline_show_waveforms", "timeline_show_thumbs", "default_telop_template", "use_proxy",
              "auto_dual", "dual_swap", "screen_roles", "idle_render", "menu_mode", "shortcut_hints", "toolbar_size",
              "toolbar_text", "lock_layout", "show_start_panel", "notify_export", "open_folder_after_export",
-             "recent_commands", "page", "export_name_template", "yt_templates", "last_export")
+             "recent_commands", "page", "export_name_template", "yt_templates", "last_export", "ng_words")
 
 
 @dataclass
@@ -106,6 +106,7 @@ class AppSettings:
     export_name_template: str = "{seq}"   # 書き出しファイル名のルール（{project} {seq} {date} {time} {user} {v}）
     yt_templates: List[dict] = field(default_factory=list)   # YouTube の説明のひな形 {name, description, tags}
     last_export: str = ""              # 最後に書き出したファイル（YouTube にアップロードの既定）
+    ng_words: List[str] = field(default_factory=list)   # テロップの NG ワード（空 = 既定の言葉）
     current_profile: str = "default"   # 使っているユーザー設定の名前（サイト設定にだけ保存）
     trial_started: str = ""            # Pro のお試しを始めた日（YYYY-MM-DD）
 

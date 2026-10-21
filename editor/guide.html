@@ -220,7 +220,8 @@ footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
   <li><b>タイムラインに置く</b> — <kbd>V</kbd>（スプライスイン = 後ろを押し出して挿入）か <kbd>B</kbd>（上書き）。再生ヘッドの位置に入ります。2〜4 をくり返して並べます。</li>
   <li><b>いらない部分を消す</b> — タイムラインで範囲に IN / OUT を付けて <kbd>X</kbd>（抽出 = 詰める）か <kbd>Z</kbd>（リフト = すき間を残す）。間違えたら <kbd>Ctrl</kbd>+<kbd>Z</kbd>。</li>
   <li><b>テロップを入れる</b> — テロップを出したい位置に再生ヘッドを置いて <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd>（テロップのテンプレート）。種類を選び、文字を入れて <b>配置</b>。すぐ入れるだけなら <kbd>Shift</kbd>+<kbd>T</kbd>。</li>
-  <li><b>テロップを直す</b> — タイムラインでテロップを選ぶと、右のエフェクトエディターで文字・フォント・色・縁取り・位置を変えられます。</li>
+  <li><b>テロップを直す</b> — タイムラインでテロップを選ぶと、右のエフェクトエディターで文字・フォント・色・縁取り・位置を変えられます。
+  <b>位置と大きさはモニターで直接</b>: レコードモニターをダブルクリックすると枠が出るので、中をドラッグで移動・角で大きさ・角の外で回転（中心や端にぴったり付きます。矢印キーで 1px）。</li>
   <li><b>保存</b> — <kbd>Ctrl</kbd>+<kbd>S</kbd>。自動保存（5 分ごと）とバックアップ（Attic）もあります。</li>
   <li><b>書き出し</b> — <kbd>Ctrl</kbd>+<kbd>E</kbd>。形式は「H.264（MP4）」のままで OK。保存先を選んで書き出します。</li>
 </ol>
@@ -303,6 +304,9 @@ footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
   <tr><td>字幕ファイルを付ける</td><td><span class="menu">便利 → ASS 字幕 / WebVTT 字幕を書き出し</span></td></tr>
   <tr><td>ショートで隠れる所を確かめる</td><td><span class="menu">再生 → ガイドを表示</span> →「ショート / TikTok の UI の位置」</td></tr>
 </table></div>
+<h3>公開前のチェック（テレビの「放送前チェック」）</h3>
+<p><span class="menu">整理・チェック → 放送前チェック → まとめてチェック</span>（<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F5</kbd>）。
+点滅・黒い画面・音割れ・長い無音・テロップの重なり・チャプターの決まり・冒頭のつかみ・NG ワード・クレジットの抜けなどを一度に調べ、一覧から直したい所へ飛べます。</p>
 <h3>YouTube にアップロード</h3>
 <ol class="steps">
   <li>はじめに 1 回だけ: Google Cloud で「YouTube Data API v3」を有効にして、OAuth クライアント ID（種類: デスクトップ アプリ）を作り、JSON をダウンロードします。</li>

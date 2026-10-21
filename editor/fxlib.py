@@ -61,6 +61,8 @@ class Ctx:
     duration: int = 1        # クリップの長さ（フレーム）
     scale: float = 1.0       # プレビューの縮小率（px のパラメーターに掛ける）
     seed: int = 0            # クリップごとに違う乱数の種
+    fw: int = 0              # 出力画面の幅・高さ（このプレビュー画質での px。ぼかし背景などが使う）
+    fh: int = 0
 
     @property
     def t(self) -> float:    # 秒
@@ -116,6 +118,7 @@ def load(force: bool = False):
     if _loaded and not force:
         return
     from . import fx_builtin  # noqa: F401  （import で登録される）
+    from . import fx_quick  # noqa: F401  （すぐ使う: ルック・背景を抜く・モザイク など）
     if force:
         for k in [k for k, e in REGISTRY.items() if e.source != "組み込み"]:
             REGISTRY.pop(k)

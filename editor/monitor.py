@@ -17,6 +17,9 @@ class VideoView(QWidget):
 
     clicked = pyqtSignal()
     zoom_rect = pyqtSignal(QRectF)      # Drag & Zoom: 画面上で囲んだ範囲（0〜1 の割合）
+    double_clicked = pyqtSignal(QPointF)        # ダブルクリックした所（0〜1 の割合）
+    tf_mouse = pyqtSignal(str, QPointF, int)    # ダイレクト操作: press / move / release / escape, 位置（割合）, 修飾キー
+    tf_key = pyqtSignal(int, int)               # ダイレクト操作: 矢印キー（px）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -29,8 +32,35 @@ class VideoView(QWidget):
         self.grid = False                 # 三分割のガイド
         self.guide = ""                   # 画面比率・セーフエリアのガイド（title / shorts / 4:3 / 1:1 / 9:16）
         self.message = ""
+        self.tf_mode = False              # ダイレクト操作中（クリック・ドラッグを tf_mouse で知らせる）
+        self.tf_box = None                # 枠の 4 隅 + 中心（割合）
+        self.snap_lines = []              # 付いた線 [("v" or "h", 割合)]
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.setMinimumSize(240, 135)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def _draw_tf(self, p: QPainter, r):
+        """ダイレクト操作の枠（4 隅の □・中心の ＋）と、付いた線。"""
+        pts = [QPointF(r.x() + x * r.width(), r.y() + y * r.height()) for x, y in self.tf_box]
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        for kind, v in self.snap_lines:
+            p.setPen(QPen(QColor(255, 60, 160, 220), 1, Qt.PenStyle.DashLine))
+            if kind == "v":
+                x = r.x() + v * r.width()
+                p.drawLine(QPointF(x, r.y()), QPointF(x, r.bottom()))
+            else:
+                y = r.y() + v * r.height()
+                p.drawLine(QPointF(r.x(), y), QPointF(r.right(), y))
+        p.setPen(QPen(QColor(80, 170, 255), 1.5))
+        for i in range(4):
+            p.drawLine(pts[i], pts[(i + 1) % 4])
+        p.setBrush(QColor(255, 255, 255))
+        for q in pts[:4]:
+            p.drawRect(QRectF(q.x() - 4, q.y() - 4, 8, 8))
+        c = pts[4]
+        p.drawLine(QPointF(c.x() - 6, c.y()), QPointF(c.x() + 6, c.y()))
+        p.drawLine(QPointF(c.x(), c.y() - 6), QPointF(c.x(), c.y() + 6))
+        p.setBrush(Qt.BrushStyle.NoBrush)
 
     def _draw_guide(self, p: QPainter, r):
         """画面比率の範囲（外は暗く）・タイトルセーフ・ショートの UI（右のボタン・下の説明文）の位置。"""
@@ -83,14 +113,43 @@ class VideoView(QWidget):
             vh = int(w / self.aspect)
         return QRect((w - vw) // 2, (h - vh) // 2, vw, vh)
 
+    def _norm(self, pos) -> QPointF:
+        r = self.video_rect()
+        return QPointF((pos.x() - r.x()) / max(1, r.width()), (pos.y() - r.y()) / max(1, r.height()))
+
+    def mouseDoubleClickEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton and not self.zoom_drag:
+            self.double_clicked.emit(self._norm(e.position()))
+            return
+        super().mouseDoubleClickEvent(e)
+
+    def keyPressEvent(self, e):
+        if self.tf_mode:
+            k = e.key()
+            step = 10 if e.modifiers() & Qt.KeyboardModifier.ShiftModifier else 1
+            moves = {Qt.Key.Key_Left: (-step, 0), Qt.Key.Key_Right: (step, 0), Qt.Key.Key_Up: (0, -step), Qt.Key.Key_Down: (0, step)}
+            if k in moves:
+                self.tf_key.emit(*moves[k])
+                return
+            if k == Qt.Key.Key_Escape:
+                self.tf_mouse.emit("escape", QPointF(0, 0), 0)
+                return
+        super().keyPressEvent(e)
+
     def mousePressEvent(self, e):
         self.clicked.emit()
+        if self.tf_mode and e.button() == Qt.MouseButton.LeftButton and not self.zoom_drag:
+            self.tf_mouse.emit("press", self._norm(e.position()), e.modifiers().value)
+            return
         if self.zoom_drag and e.button() == Qt.MouseButton.LeftButton:
             self._drag0 = self._drag1 = e.position()
             return
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
+        if self.tf_mode and e.buttons() & Qt.MouseButton.LeftButton and self._drag0 is None:
+            self.tf_mouse.emit("move", self._norm(e.position()), e.modifiers().value)
+            return
         if self._drag0 is not None:
             self._drag1 = e.position()
             self.update()
@@ -98,6 +157,9 @@ class VideoView(QWidget):
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
+        if self.tf_mode and e.button() == Qt.MouseButton.LeftButton and self._drag0 is None:
+            self.tf_mouse.emit("release", self._norm(e.position()), e.modifiers().value)
+            return
         if self._drag0 is not None:
             r = self.video_rect()
             a, b = self._drag0, e.position()
@@ -131,6 +193,8 @@ class VideoView(QWidget):
                 p.drawLine(r.x(), y, r.right(), y)
         if self.guide:
             self._draw_guide(p, r)
+        if self.tf_mode and self.tf_box:
+            self._draw_tf(p, r)
         if self.safe_area:
             p.setPen(QPen(QColor(255, 255, 255, 90), 1, Qt.PenStyle.DashLine))
             for f in (0.9, 0.8):
