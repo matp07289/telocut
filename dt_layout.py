@@ -341,10 +341,20 @@ class TfxLayoutMixin:
         self._safe_guides = tk.BooleanVar(value=True)
         ttk.Checkbutton(tb, text="▦ セーフエリア", variable=self._safe_guides,
                         command=self._schedule_preview_update).pack(side="left", padx=2)
+        self._pv_tc_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(tb, text="🎬 TeloCut を背景に", variable=self._pv_tc_var,
+                        command=self._toggle_program_telocut).pack(side="left", padx=2)
+        self._pv_show_bg = tk.BooleanVar(value=True)
+        ttk.Checkbutton(tb, text="映像を表示", variable=self._pv_show_bg,
+                        command=self._schedule_program_redraw_force).pack(side="left", padx=2)
         ttk.Separator(tb, orient="vertical").pack(side="left", fill="y", padx=6)
         ttk.Button(tb, text="＋ テロップ", command=self.add_entry).pack(side="left", padx=2)
         ttk.Button(tb, text="💾 プリセットに保存", command=self._tfx_save_preset).pack(side="left", padx=2)
         ttk.Button(tb, text="⇩ PNG 書き出し", command=self.export_png).pack(side="left", padx=2)
+
+    def _schedule_program_redraw_force(self):
+        self._pv_had_bg = True
+        self._schedule_program_redraw()
 
     # ── 下のステータスバー（画面の大きさ・テロップ・位置）──
     def _build_tfx_status(self):
@@ -360,6 +370,11 @@ class TfxLayoutMixin:
         try:
             st = self._tfx_status
             st["screen"].set(f"Screen w:{self._cw_var.get()}, h:{self._ch_var.get()}")
+            # 合成タブで止めた / 別のソースにしたら「TeloCut を背景に」も外す
+            from core.capture import TeloCutFrameThread
+            running = isinstance(getattr(self, "_comp_bg_thread", None), TeloCutFrameThread)
+            if self._pv_tc_var.get() != running:
+                self._pv_tc_var.set(running)
             sel = self._tree.selection() if hasattr(self, "_tree") else ()
             n = len(self.telop_list)
             idx = ""

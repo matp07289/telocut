@@ -6555,6 +6555,8 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
         self._comp_tc_fps_var = tk.IntVar(value=12)
         ttk.Spinbox(tc_row, from_=1, to=30, textvariable=self._comp_tc_fps_var, width=4).pack(side='left', padx=4)
         self._comp_tc_telops_var = tk.BooleanVar(value=False)
+        for _v in (self._comp_tc_telops_var, self._comp_tc_width_var, self._comp_tc_fps_var):
+            _v.trace_add('write', self._on_tc_option_change)
         ttk.Checkbutton(self._bg_telocut_frame, text="TeloCut のテロップも入れる（外すと DavinTelop のテロップだけを重ねる）",
                         variable=self._comp_tc_telops_var).pack(anchor='w', pady=(2, 0))
         ttk.Label(self._bg_telocut_frame,
@@ -6987,6 +6989,34 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
             self._comp_bg_thread.stop()
             self._comp_bg_thread = None
         self._comp_bg_status_var.set("停止中")
+        self._comp_bg_frame = None
+        self._redraw_composite()
+        self._schedule_program_redraw()
+
+    def _on_tc_option_change(self, *_):
+        """TeloCut の大きさ・FPS・テロップを入れるかを、動いている間にも反映する。"""
+        from core.capture import TeloCutFrameThread
+        t = self._comp_bg_thread
+        if not isinstance(t, TeloCutFrameThread):
+            return
+        try:
+            t.telops = bool(self._comp_tc_telops_var.get())
+            t.width = int(self._comp_tc_width_var.get() or 960)
+            t.fps = max(1.0, min(30.0, float(self._comp_tc_fps_var.get())))
+        except (ValueError, tk.TclError):
+            pass
+
+    def _toggle_program_telocut(self):
+        """ツールバーの「🎬 TeloCut を背景に」: TeloCut の今の絵（テロップ抜き）を Program に敷く / やめる。"""
+        from core.capture import TeloCutFrameThread
+        if self._pv_tc_var.get():
+            self._comp_bg_mode_var.set("telocut")
+            self._on_bg_mode_change()
+            self._comp_tc_telops_var.set(False)   # DavinTelop のテロップと二重にしない
+            self._pv_show_bg.set(True)
+            self._start_bg_capture()
+        elif isinstance(self._comp_bg_thread, TeloCutFrameThread):
+            self._stop_bg_capture()
 
     # ── テロップソース ──────────────────────────────
 
@@ -7052,6 +7082,8 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
             self._comp_fg_thread.stop()
             self._comp_fg_thread = None
         self._comp_fg_status_var.set("停止中")
+        self._comp_fg_frame = None
+        self._redraw_composite()
 
     # ── キューポーリング ────────────────────────────
 
@@ -7066,6 +7098,7 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
                 if tag == "frame":
                     self._comp_bg_frame = data
                     updated = True
+                    self._schedule_program_redraw()
                 elif tag == "error":
                     self._comp_bg_status_var.set(f"エラー: {data[:40]}")
                 elif tag == "status":
@@ -8670,10 +8703,20 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
             pv = getattr(self, '_pv_entry', None)
             if pv is not None and pv.text == preview_text and pv in self.telop_list:
                 s = s.with_overrides(pv.style)
-            img = render_telop_image(preview_text, s)
+            key = (preview_text, repr(sorted(vars(s).items())))
+            cache = getattr(self, '_pv_img_cache', None)
+            if cache is not None and cache[0] == key:
+                img = cache[1]
+            else:
+                img = render_telop_image(preview_text, s)
+                self._pv_img_cache = (key, img)
 
-            # チェッカーボード背景に合成してプレビュー (透過確認)
-            bg = _make_checker_bg(s.canvas_width, s.canvas_height)
+            # 背景: 合成の背景ソース（TeloCut・NDI など）が動いていればその絵、無ければチェッカーボード（透過確認）
+            frame = self._program_bg_frame()
+            if frame is not None:
+                bg = frame.convert("RGB").resize((s.canvas_width, s.canvas_height), Image.BILINEAR)
+            else:
+                bg = _make_checker_bg(s.canvas_width, s.canvas_height)
             bg.paste(img, (0, 0), img)
 
             # プレビューエリアに合わせてリサイズ
@@ -8713,6 +8756,24 @@ class DavinTelopApp(TfxLayoutMixin, tk.Tk):
             self._preview_canvas.create_text(
                 cw // 2, ch // 2, text=f"レンダリングエラー:\n{ex}",
                 fill='red', justify='center')
+
+    def _program_bg_frame(self):
+        """Program に敷く背景の絵（「映像を背景に」が入っていて、背景ソースが動いているとき）。"""
+        var = getattr(self, '_pv_show_bg', None)
+        if var is not None and not var.get():
+            return None
+        if getattr(self, '_comp_bg_thread', None) is None:
+            return None
+        return getattr(self, '_comp_bg_frame', None)
+
+    def _schedule_program_redraw(self):
+        """背景の絵が届いたら Program を描き直す（テロップの描き直しはキャッシュで省く）。"""
+        if self._program_bg_frame() is None and not getattr(self, '_pv_had_bg', False):
+            return
+        self._pv_had_bg = self._program_bg_frame() is not None
+        if not self._preview_pending:
+            self._preview_pending = True
+            self.after(15, self._update_preview)
 
     # ─── キャンバス 直接入力 / ドラッグ移動 ──────────
 
