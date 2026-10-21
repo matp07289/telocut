@@ -5,7 +5,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
                              QDoubleSpinBox, QSpinBox, QPlainTextEdit, QGroupBox, QPushButton,
-                             QComboBox, QScrollArea, QColorDialog, QCheckBox)
+                             QComboBox, QScrollArea, QColorDialog, QCheckBox, QGridLayout)
 
 from core.timecode import frames_to_timecode
 from .theme import C
@@ -71,6 +71,14 @@ class Inspector(QScrollArea):
         self.sub = QLabel("")
         self.sub.setObjectName("info")
         lay.addWidget(self.sub)
+        # すぐ使う（選んだクリップの種類に合う機能のボタン。中身は MainWindow.fill_quick）
+        self.quick_box = QGroupBox("すぐ使う")
+        self.quick_box.setObjectName("quick_box")
+        _qg = QGridLayout(self.quick_box)
+        _qg.setContentsMargins(4, 4, 4, 4)
+        _qg.setSpacing(3)
+        self.quick_box.setVisible(False)
+        lay.addWidget(self.quick_box)
 
         # テロップ
         self.g_text = QGroupBox("テロップ")
@@ -334,6 +342,8 @@ class Inspector(QScrollArea):
             for g in (self.g_text, self.g_motion, self.g_op, self.g_audio, self.g_color, self.g_fx,
                       self.g_speed, self.g_crop, self.g_key, self.g_anim, self.g_label, self.g_keys):
                 g.setVisible(False)
+            if hasattr(self.mw, "fill_quick"):
+                self.mw.fill_quick({x.kind for x in clips})
             if not clips:
                 self.header.setText("クリップを選択してください")
                 self.sub.setText("タイムラインでクリップを選ぶと、位置・スケール・不透明度・\n"

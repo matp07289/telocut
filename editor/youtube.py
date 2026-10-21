@@ -6,6 +6,7 @@ import copy
 import json
 import math
 import os
+import zlib
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -367,7 +368,8 @@ class SEPadPanel(QWidget):
             b = QPushButton(Path(p).stem[:14])
             b.setToolTip(p)
             b.setMinimumHeight(40)
-            b.setStyleSheet(f"background: {cols[hash(Path(p).parent.name) % len(cols)]}; color: white;")
+            col = cols[zlib.crc32(Path(p).parent.name.encode("utf-8")) % len(cols)]     # フォルダごとに毎回同じ色
+            b.setStyleSheet(f"background: {col}; color: white;")
             b.clicked.connect(lambda _=False, p=p: self.mw.place_se(p, self.track.currentIndex()))
             self.grid.addWidget(b, i // 4, i % 4)
         self.refresh_tracks()

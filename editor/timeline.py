@@ -1034,6 +1034,8 @@ class TimelineCanvas(QWidget):
             if clip.kind == "text":
                 m.addAction("テキストを編集", lambda: mw.clip_double_clicked(clip))
             m.addAction("インスペクタを表示", mw.show_inspector)
+            if hasattr(mw, "clip_context_actions"):
+                mw.clip_context_actions(m, clip)
         else:
             f = self.frame_at(pos.x())
             if row is not None:
@@ -1045,6 +1047,8 @@ class TimelineCanvas(QWidget):
             m.addSeparator()
             m.addAction("映像トラックを追加", lambda: mw.add_track("video"))
             m.addAction("音声トラックを追加", lambda: mw.add_track("audio"))
+            if hasattr(mw, "empty_context_actions"):
+                mw.empty_context_actions(m, f)
         m.exec(gpos)
 
     def _rename_track(self, t):

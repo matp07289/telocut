@@ -427,6 +427,9 @@ def src_frame(clip: Clip, cf: int) -> float:
         return float(clip.src_in + np.interp(rel, np.arange(len(rt)), rt))
     sp = float(clip.prop("speed", 1.0) or 0.0)
     rel = cf - clip.start
+    step = int(clip.props.get("frame_step") or 0)
+    if step > 1:                                   # カクカク（コマを間引く）
+        rel -= rel % step
     if sp == 0:
         return float(clip.src_in)
     if sp < 0:
@@ -742,7 +745,8 @@ def fx_ctx(seq: Sequence, clip: Clip, cf: int, scale: float):
     try:
         seed = int(clip.id[:6], 16)
     except ValueError:
-        seed = abs(hash(clip.id)) % 100000
+        from .motion import stable_seed
+        seed = stable_seed(clip.id) % 100000
     return Ctx(rel=cf - clip.start, fps=seq.fps, duration=clip.duration, scale=scale, seed=seed)
 
 

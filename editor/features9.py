@@ -36,7 +36,7 @@ PAGES: List[Tuple[str, str, List[str]]] = [
     ("telop", "テロップ", ["telop_editor", "telops", "insp", "presets"]),
     ("audio", "音声", ["mixer", "voice", "sepad", "insp"]),
     ("effects", "エフェクト", ["motion", "insp", "presets", "scopes", "graph", "nodes"]),
-    ("finish", "仕上げ", ["scopes", "markers", "history", "farm", "insp"]),
+    ("finish", "仕上げ", ["scopes", "markers", "todo", "history", "farm", "insp"]),
 ]
 ALWAYS = ("project", "bin", "tl")
 
@@ -46,6 +46,9 @@ SIMPLE_MENUS = ("ファイル", "編集", "クリップ", "テロップ", "オ�
 MENU_ORDER = ("ファイル", "編集", "クリップ", "テロップ", "オーディオ", "シーケンス", "トリム", "再生", "レンダリング", "ツール",
               "YouTube", "モーション", "3D / MMD", "整理・チェック", "変換・仕上げ", "便利", "AI / 連携", "連携・管理",
               "設定", "ウィンドウ", "ヘルプ")
+
+# 同じ名前のメニューを 1 つにするときの、サブメニューの名前
+MORE_MENUS = {"クリップ": "ネスト・テイク・スピードランプ など"}
 
 TOOLBAR_SIZES = {"small": (2, 8.5), "medium": (4, 9.5), "large": (8, 12.0)}
 
@@ -220,11 +223,12 @@ class Features9Mixin:
         by: Dict[str, object] = {}
         for a in acts:
             t = a.text()
-            if t in by:                                # 同じ名前（例: クリップ が 2 つ）→ 前のものに足して消す
+            if t in by:                                # 同じ名前（例: クリップ が 2 つ）→ 前のもののサブメニューにして消す
                 dst = by[t].menu()
                 dst.addSeparator()
+                sub_menu = dst.addMenu(MORE_MENUS.get(t, "もっと"))
                 for sub in list(a.menu().actions()):
-                    dst.addAction(sub)
+                    sub_menu.addAction(sub)
                 mb.removeAction(a)
             else:
                 by[t] = a
@@ -285,9 +289,29 @@ class Features9Mixin:
         self.apply_toolbar_style()
         self.apply_lock_layout()
 
-    def _labels(self) -> Dict[str, str]:
+    def _menu_only_actions(self):
+        """コマンド一覧に無い、メニューだけの項目（名前, QAction, メニューの道筋）。"""
+        known = set(id(a) for a in self.actions.values())
+        out = []
+
+        def walk(menu, path):
+            for a in menu.actions():
+                if a.isSeparator():
+                    continue
+                if a.menu() is not None:
+                    walk(a.menu(), path + [a.text()])
+                elif id(a) not in known and a.text().strip() and not a.text().startswith("（"):
+                    out.append((a.text().replace("&", ""), a, " → ".join(path)))
+        for top in self.menuBar().actions():
+            if top.menu() is not None:
+                walk(top.menu(), [top.text()])
+        return out
+
+    def _labels(self) -> Dict[str, object]:
         from .commands import COMMAND_INFO
         out = {}
+        for text, act, path in self._menu_only_actions():
+            out[f"{text}  — {path}"] = act
         for cid, a in self.actions.items():
             info = COMMAND_INFO.get(cid)
             if info is None:
@@ -314,7 +338,7 @@ class Features9Mixin:
                 hit = 1
             else:
                 hit = 2
-            return (hit, rank.get(lab[k], 99), k)
+            return (hit, rank.get(lab[k], 99) if isinstance(lab[k], str) else 100, k)
         self._search_model.setStringList(sorted(lab, key=score))
 
     def search_commands(self, text: str) -> List[str]:
@@ -332,7 +356,10 @@ class Features9Mixin:
             self.status.showMessage(f"「{text}」に合う機能がありません", 3000)
             return
         QTimer.singleShot(0, self.search_box.clear)
-        self.run_command(cid)
+        if isinstance(cid, str):
+            self.run_command(cid)
+        else:
+            cid.trigger()                               # メニューだけの項目
 
     def focus_search(self):
         self.search_box.setFocus()
@@ -389,6 +416,8 @@ class Features9Mixin:
                 bar.blockSignals(True)
                 bar.setCurrentIndex(i)
                 bar.blockSignals(False)
+        if hasattr(self, "fill_page_toolbar") and hasattr(self, "page_toolbar"):
+            self.fill_page_toolbar(key)
         self.status.showMessage(f"{page[1]}のページ", 2000)
         return shown
 

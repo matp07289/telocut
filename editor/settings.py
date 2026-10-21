@@ -24,7 +24,7 @@ USER_KEYS = ("user_name", "keyboard_preset", "keymap", "keyboard_layout", "theme
              "timeline_show_waveforms", "timeline_show_thumbs", "default_telop_template", "use_proxy",
              "auto_dual", "dual_swap", "screen_roles", "idle_render", "menu_mode", "shortcut_hints", "toolbar_size",
              "toolbar_text", "lock_layout", "show_start_panel", "notify_export", "open_folder_after_export",
-             "recent_commands", "page")
+             "recent_commands", "page", "export_name_template")
 
 
 @dataclass
@@ -102,6 +102,8 @@ class AppSettings:
     open_folder_after_export: bool = False
     recent_commands: List[str] = field(default_factory=list)   # 最近使ったコマンド（検索欄・パレットの上に）
     page: str = "edit"                 # 画面のページ（edit / telop / audio / effects / finish）
+    backup_dir: str = ""               # 保存のたびにプロジェクトのコピーを置くフォルダ（空 = しない）
+    export_name_template: str = "{seq}"   # 書き出しファイル名のルール（{project} {seq} {date} {time} {user} {v}）
     current_profile: str = "default"   # 使っているユーザー設定の名前（サイト設定にだけ保存）
     trial_started: str = ""            # Pro のお試しを始めた日（YYYY-MM-DD）
 

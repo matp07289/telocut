@@ -275,6 +275,8 @@ class BinView(QWidget):
             m.addSeparator()
         m.addAction("新規シーケンス", lambda: mw.new_sequence(self.bin_id))
         m.addAction("素材を読み込み...", self.container.import_requested.emit)
+        if hasattr(mw, "bin_context_actions"):
+            mw.bin_context_actions(m)
         m.exec(gpos)
 
 

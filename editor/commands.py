@@ -307,6 +307,41 @@ COMMANDS = [
     ("bins_by_kind", "ビンを種類で整理（映像・画像・音声）", "整理・チェック", "Bin整"),
     ("merge_duplicates", "重複した素材をまとめる", "整理・チェック", "重複"),
     ("work_report", "作業レポート（作業時間・編集の記録）", "整理・チェック", "日報"),
+    # ── テロップを整える・書き出す ──
+    ("telop_wrap", "テロップを N 文字で改行（句読点・助詞で区切る）", "テロップ", "改行"),
+    ("telop_merge", "選んだテロップを結合", "テロップ", "結合"),
+    ("telop_vertical", "縦書き / 横書きを切り替え", "テロップ", "縦書"),
+    ("telop_replace", "テロップの文字を置換", "テロップ", "置換"),
+    ("telop_anim_all", "テロップの動きを一括（出る・消える）", "テロップ", "動き"),
+    ("telop_png", "テロップを PNG で書き出し（背景透明）", "テロップ", "PNG"),
+    ("telop_csv", "テロップを CSV で書き出し（Excel で直して戻せる）", "テロップ", "CSV"),
+    # ── 編集 ──
+    ("clip_up", "クリップを 1 つ上のトラックへ", "編集", "↑Tr"),
+    ("clip_down", "クリップを 1 つ下のトラックへ", "編集", "↓Tr"),
+    ("trim_head_here", "クリップの頭を再生ヘッドに（詰めない）", "編集", "⇤"),
+    ("trim_tail_here", "クリップの終わりを再生ヘッドに（詰めない）", "編集", "⇥"),
+    ("back_to_last_edit", "前に編集した場所へ戻る", "編集", "↩編"),
+    ("select_label", "クリップカラー（ラベルの色）で選択", "編集", "色選"),
+    # ── 見た目と動き ──
+    ("look", "ルック（ワンクリックの色調: 明るく・シネマ・レトロ など）", "クリップ", "Look"),
+    ("key_out", "背景を抜く（緑・青・白・黒）", "クリップ", "抜く"),
+    ("mosaic", "モザイクを付ける", "クリップ", "Mosaic"),
+    ("shake_range", "揺れ（IN〜OUT / 再生ヘッドから 0.5 秒）", "クリップ", "揺れ"),
+    ("reset_transform", "位置・大きさ・回転をリセット", "クリップ", "Reset"),
+    ("frame_step", "カクカク（コマを間引く）/ 戻す", "クリップ", "カク"),
+    ("slow_range", "IN〜OUT をスローに（0.5 倍・後ろはずらす）", "クリップ", "Slow"),
+    ("fast_range", "IN〜OUT を早送りに（2 倍・▶▶ 表示）", "クリップ", "Fast"),
+    ("copy_clip_info", "クリップの情報をコピー（TC・長さ・ファイル）", "クリップ", "Info"),
+    # ── 音声 ──
+    ("vol_up", "選んだ音声の音量 +3dB", "オーディオ", "+3dB"),
+    ("vol_down", "選んだ音声の音量 −3dB", "オーディオ", "-3dB"),
+    # ── 制作 ──
+    ("target_length", "目標の長さ（残り / 超過を表示）", "整理・チェック", "目標"),
+    ("todo_panel", "やることリスト", "整理・チェック", "TODO"),
+    ("backup_folder", "保存のたびにバックアップするフォルダ", "整理・チェック", "BkDir"),
+    ("export_name_rule", "書き出しファイル名のルール", "整理・チェック", "名前"),
+    ("key_cheatsheet", "ショートカット早見表（印刷用）", "ウィンドウ", "早見"),
+    ("timeline_image", "タイムラインを画像に（保存・コピー）", "ウィンドウ", "TL画"),
     # ── 便利 ──
     ("mixdown_video", "ビデオミックスダウン（IN〜OUT を 1 本の映像に）", "便利", "MixV"),
     ("mixdown_audio", "オーディオミックスダウン（IN〜OUT の音を 1 本に）", "便利", "MixA"),
@@ -372,14 +407,18 @@ COMMANDS = [
 NEW_COMMAND_KEYS = {"command_palette": ["Ctrl+Shift+P"], "drag_zoom": ["Ctrl+Alt+Z"],
                     "script_gen": ["Ctrl+Alt+Y"], "ai_assist": ["Ctrl+Alt+C"],
                     "telop_editor": ["Ctrl+Shift+T"], "voice_panel": ["Ctrl+Shift+Y"],
-                    "node_editor": ["Ctrl+Shift+N"], "preflight": ["Ctrl+Alt+K"],
-                    "next_gap": ["Ctrl+Alt+Right"], "prev_gap": ["Ctrl+Alt+Left"],
-                    "marker_panel": ["Ctrl+Alt+M"], "snapshot": ["Ctrl+Alt+S"],
-                    "graph_editor": ["Shift+F3"], "motion_panel": ["Ctrl+Alt+G"],
-                    "select_at_playhead": ["D"], "auto_clip": ["Ctrl+Alt+Q"], "telop_template": ["Ctrl+Shift+L"], "copy_frame": ["Ctrl+Shift+C"], "biim_split": ["Ctrl+Alt+W"], "take_next": ["Ctrl+Alt+T", "Ctrl+Shift+J"], "nest": ["Ctrl+Alt+N", "Ctrl+Shift+U"],
+                    "node_editor": ["Ctrl+Shift+N", "Ctrl+Alt+F7"], "preflight": ["Ctrl+Alt+K", "Ctrl+Alt+P"],
+                    "next_gap": ["Ctrl+Alt+Right", "Ctrl+Alt+."], "prev_gap": ["Ctrl+Alt+Left", "Ctrl+Alt+,"],
+                    "marker_panel": ["Ctrl+Alt+M"], "snapshot": ["Ctrl+Alt+S", "Ctrl+Alt+F12"],
+                    "graph_editor": ["Shift+F3"], "motion_panel": ["Ctrl+Alt+G", "Ctrl+Shift+M"],
+                    "select_at_playhead": ["D", "Alt+D"], "auto_clip": ["Ctrl+Alt+Q"], "telop_template": ["Ctrl+Shift+L"], "copy_frame": ["Ctrl+Shift+C"], "biim_split": ["Ctrl+Alt+W"], "take_next": ["Ctrl+Alt+T", "Ctrl+Shift+J"], "nest": ["Ctrl+Alt+N", "Ctrl+Shift+U"],
                     "page_edit": ["Shift+F1"], "page_telop": ["Shift+F2"], "page_audio": ["Shift+F4"],
                     "page_effects": ["Shift+F5"], "page_finish": ["Shift+F6"], "find_action": ["Ctrl+Alt+F"],
-                    "focus_mode": ["F11", "Shift+F11"]}
+                    "focus_mode": ["F11", "Shift+F11"],
+                    "clip_up": ["Alt+Up"], "clip_down": ["Alt+Down"], "trim_head_here": ["Alt+["],
+                    "trim_tail_here": ["Alt+]"], "back_to_last_edit": ["Alt+B"], "vol_up": ["Ctrl+Alt+Up"],
+                    "vol_down": ["Ctrl+Alt+Down"], "slow_range": ["Alt+S"], "fast_range": ["Alt+F"],
+                    "telop_wrap": ["Alt+W"], "telop_merge": ["Alt+J"], "look": ["Alt+L"]}
 
 COMMAND_INFO = OrderedDict((c[0], c) for c in COMMANDS)
 CATEGORIES = list(OrderedDict.fromkeys(c[2] for c in COMMANDS))

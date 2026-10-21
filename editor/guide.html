@@ -198,6 +198,12 @@ footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
   <tr><td>エフェクト</td><td>モーション・グラフエディター・ノード・スコープ</td><td><kbd>Shift</kbd>+<kbd>F5</kbd></td></tr>
   <tr><td>仕上げ</td><td>スコープ・マーカー・履歴・ジョブ</td><td><kbd>Shift</kbd>+<kbd>F6</kbd></td></tr>
 </table></div>
+<h3>道具はページと選んだものに合わせて出る</h3>
+<ul>
+  <li><b>ツールバーの 2 段目</b>: 今のページでよく使うボタン（テロップのページなら テンプレート・文字起こし・表記チェック・改行・縦書き など）</li>
+  <li><b>エフェクトエディターの「すぐ使う」</b>: 選んだクリップに使える機能（テロップなら 改行・縦書き・結合、映像なら ルック・ワイプ・背景を抜く など）</li>
+  <li><b>右クリック</b>: タイムラインのクリップの上 →「このクリップで」。ビン →「ビンの整理」</li>
+</ul>
 <h3>機能を探す</h3>
 <p>ツールバー右の検索欄（<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd>）に「ピー」「書き出し」のように入れて <kbd>Enter</kbd>。メニューから使うと、キーがある機能はステータスバーでキーを教えてくれます。</p>
 <div class="box tip"><b>ヒント</b>メニューが多すぎると感じたら <span class="menu">ウィンドウ → メニュー: かんたん / すべて を切り替え</span>。よく使うメニューだけになります。モニターとタイムラインだけにしたいときはフォーカスモード（<kbd>F11</kbd>。Avid の並びでは <kbd>Shift</kbd>+<kbd>F11</kbd>）。</div>
@@ -310,6 +316,17 @@ footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
   <tr><td>ダイジェスト（予告）</td><td>マーカーの前後をつないだ新しいシーケンスを作ります</td></tr>
   <tr><td>盛り上がりにマーカー</td><td>音から盛り上がった所を探してマーカーを付けます</td></tr>
 </table></div>
+<h3>よく使う小技</h3>
+<div class="tbl"><table>
+  <tr><th>やりたいこと</th><th>操作</th></tr>
+  <tr><td>長いテロップを読みやすく改行</td><td>テロップを選んで <kbd>Alt</kbd>+<kbd>W</kbd>（句読点や「は・が・を」のあとで区切ります）</td></tr>
+  <tr><td>2 つのテロップを 1 つに</td><td>両方選んで <kbd>Alt</kbd>+<kbd>J</kbd></td></tr>
+  <tr><td>スロー / 早送り</td><td>IN と OUT を付けて <kbd>Alt</kbd>+<kbd>S</kbd> / <kbd>Alt</kbd>+<kbd>F</kbd>（後ろは自動でずれます）</td></tr>
+  <tr><td>色の雰囲気をすぐ変える</td><td>クリップを選んで <kbd>Alt</kbd>+<kbd>L</kbd>（ルック）</td></tr>
+  <tr><td>クリップを別のトラックへ</td><td><kbd>Alt</kbd>+<kbd>↑</kbd> / <kbd>Alt</kbd>+<kbd>↓</kbd></td></tr>
+  <tr><td>さっき直した所に戻る</td><td><kbd>Alt</kbd>+<kbd>B</kbd></td></tr>
+  <tr><td>動画を目標の長さに収める</td><td><span class="menu">整理・チェック → 目標の長さ</span>。ステータスバーに「あと何秒 / 何秒超過」</td></tr>
+</table></div>
 <p>テロップの仕上げには <span class="menu">テロップ → テロップの表記チェック</span>（「のの」などの打ち間違い・全角英数・カッコの対応）と <span class="menu">テロップ → 句読点を整える</span> も便利です。</p>
 </section>
 
@@ -351,6 +368,9 @@ footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
   <tr><td>プロジェクト設定</td><td>解像度・fps・既定のテロップ・書き出し先・メモ・作業時間</td><td>そのプロジェクトの中</td></tr>
   <tr><td>環境設定</td><td>ドライブ・キャッシュの場所・サーバーなど</td><td>この PC</td></tr>
 </table></div>
+<h3>保存と書き出しの名前</h3>
+<p><span class="menu">整理・チェック → 保存のたびにバックアップするフォルダ</span> を決めると、保存するたびに日時付きのコピーが残ります（新しい 20 個）。
+<span class="menu">整理・チェック → 書き出しファイル名のルール</span> で「{project}_{seq}_v{v}」のようにすると、書き出しの名前が自動で付き、版の番号も増えます。</p>
 <h3>画面と操作</h3>
 <p><span class="menu">設定 → ユーザー設定 → 画面と操作</span> で、メニュー（かんたん / すべて）・ツールバーの大きさ・パネルの配置のロック・スタート画面・書き出しが終わったときの知らせ方を選べます。</p>
 <h3>ショートカット</h3>
@@ -405,6 +425,9 @@ footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
   <tr><td>保存 / 元に戻す</td><td><kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td><kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Ctrl</kbd>+<kbd>Z</kbd></td></tr>
   <tr><td>書き出し</td><td><kbd>Ctrl</kbd>+<kbd>E</kbd></td><td><kbd>Ctrl</kbd>+<kbd>M</kbd></td></tr>
   <tr><td>フルスクリーン再生</td><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd></td><td><kbd>Ctrl</kbd>+<kbd>`</kbd></td></tr>
+  <tr><td>テロップを改行 / 結合</td><td colspan="2"><kbd>Alt</kbd>+<kbd>W</kbd> / <kbd>Alt</kbd>+<kbd>J</kbd></td></tr>
+  <tr><td>スロー / 早送り（IN〜OUT）</td><td colspan="2"><kbd>Alt</kbd>+<kbd>S</kbd> / <kbd>Alt</kbd>+<kbd>F</kbd></td></tr>
+  <tr><td>音量 +3dB / −3dB</td><td colspan="2"><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>↑</kbd> / <kbd>↓</kbd></td></tr>
   <tr><td>やりたいこと検索</td><td colspan="2"><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd></td></tr>
   <tr><td>ページ（編集 / テロップ / 音声 / エフェクト / 仕上げ）</td><td colspan="2"><kbd>Shift</kbd>+<kbd>F1</kbd> / <kbd>F2</kbd> / <kbd>F4</kbd> / <kbd>F5</kbd> / <kbd>F6</kbd></td></tr>
   <tr><td>コマンドパレット / キー一覧</td><td colspan="2"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> / <kbd>F1</kbd></td></tr>

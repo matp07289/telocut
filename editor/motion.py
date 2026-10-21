@@ -32,6 +32,12 @@ _ALLOWED_NODES = (ast.Expression, ast.BinOp, ast.UnaryOp, ast.Call, ast.Name, as
 _cache: Dict[str, object] = {}
 
 
+def stable_seed(text: str) -> int:
+    """文字列から毎回同じ数を作る（hash() は起動のたびに変わるので、プレビュー・書き出し・ファームの PC で揺れ方がずれる）。"""
+    import zlib
+    return zlib.crc32(str(text).encode("utf-8"))
+
+
 def _noise1(x: float, seed: int) -> float:
     """なめらかなノイズ（-1〜1）。"""
     i = math.floor(x)
@@ -96,7 +102,7 @@ def apply_expr(clip, key: str, value, cf: float):
     if not ex:
         return value
     try:
-        return eval_expr(ex, float(value or 0.0), cf - clip.start, FPS[0], seed=hash(clip.id) & 0xFFFF)
+        return eval_expr(ex, float(value or 0.0), cf - clip.start, FPS[0], seed=stable_seed(clip.id) & 0xFFFF)
     except Exception:
         return value
 

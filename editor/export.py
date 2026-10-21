@@ -274,7 +274,10 @@ class ExportDialog(QDialog):
             i = next((k for k in range(self.enc.count()) if self.enc.itemData(k)[0] == st["export_preset"]), -1)
             if i >= 0:
                 self.enc.setCurrentIndex(i)
-        if st.get("export_folder"):
+        folder = st.get("export_folder") or os.path.dirname(self.path.text())
+        if hasattr(mw, "export_file_name"):
+            self.path.setText(mw.export_file_name(folder, self.enc.currentData()[1]))
+        elif st.get("export_folder"):
             self.path.setText(os.path.join(st["export_folder"], f"{seq.name}{self.enc.currentData()[1]}"))
         self._on_enc(self.enc.currentIndex())
 
