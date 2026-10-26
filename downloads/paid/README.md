@@ -1,17 +1,17 @@
 # TeloCut v0.32.1 paid（parts ダウンロード）
 
-GitHub は 1 ファイル 100MB を越える push を受け付けないため、
-144.59MB の zip を 70MB の parts に分割してあります。
-.001, .002 の順に結合すると元の zip になります。
+GitHub は 1 ファイル 100MB を越える push を受け付けないため、144.59MB の zip を
+3 つの parts（70MB + 70MB + 4.59MB）に分割してあります。
+.001, .002, .003 の順に結合すると元の zip になります。
 
 ## 結合（Windows cmd）
 ```
-copy /b TeloCut_v0.32.1_paid.zip.001+TeloCut_v0.32.1_paid.zip.002 TeloCut_v0.32.1_paid.zip
+copy /b TeloCut_v0.32.1_paid.zip.001+TeloCut_v0.32.1_paid.zip.002+TeloCut_v0.32.1_paid.zip.003 TeloCut_v0.32.1_paid.zip
 ```
 ## 結合（PowerShell）
 ```
-$parts = Get-ChildItem 'TeloCut_v0.32.1_paid.zip.*' | Sort-Object Name
-$out = [System.IO.File]::Create('TeloCut_vpaid.zip')
+$parts = Get-ChildItem 'TeloCut_v0.32.1_paid.zip.0*' | Sort-Object Name
+$out = [System.IO.File]::Create('TeloCut_v0.32.1_paid.zip')
 foreach ($p in $parts) { $in = [System.IO.File]::OpenRead($p.FullName); $in.CopyTo($out); $in.Close() }
 $out.Close()
 ```
@@ -22,7 +22,6 @@ certutil -hashfile TeloCut_v0.32.1_paid.zip SHA256
 ```
 
 - 元の zip の SHA256: `cad7c7eedcf9fae01c2a78a2a655bd171d930467f7a95a483355013cdbc32348`
-- `TeloCut_v0.32.1_paid.zip` = 144.59MB, 3 parts
 
 | part | size | SHA256 |
 |---|---|---|
